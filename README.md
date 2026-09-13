@@ -21,13 +21,13 @@ phase; each phase is a single commit.
 
 ## Status
 
-Phase 0 (project setup) is complete:
+Latest finished phase: **Phase 1 — data types and serialization**. The
+column types, their byte encoding and the row serializer are in place; the
+storage engine is next.
 
-* Composer with PSR-4 autoloading (`MiniDatabase\` → `src/`, `MiniDatabase\Tests\` → `tests/`)
-* Docker (PHP 8.5-cli), PHPUnit 11, PHPStan level 6, PHP CS Fixer
-* a working — but still empty — `Schema\Database` class
-
-The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md).
+The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
+and the reasoning behind the designs that survived is in
+[docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Getting started
 

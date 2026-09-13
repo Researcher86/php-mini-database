@@ -861,12 +861,12 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** create the skeleton.
 
-- [ ] Initialize `composer.json`.
-- [ ] Configure PSR-4: `MiniDatabase\` → `src/`.
-- [ ] Install PHPUnit, PHPStan, PHP-CS-Fixer.
-- [ ] Create `phpunit.xml`, `phpstan.neon`, `.php-cs-fixer.php`.
-- [ ] Configure GitHub Actions.
-- [ ] Create `README.md` and `PLAN.md`.
+- [x] Initialize `composer.json`.
+- [x] Configure PSR-4: `MiniDatabase\` → `src/`.
+- [x] Install PHPUnit, PHPStan, PHP-CS-Fixer.
+- [x] Create `phpunit.xml`, `phpstan.neon`, `.php-cs-fixer.php`.
+- [x] Configure GitHub Actions.
+- [x] Create `README.md` and `PLAN.md`.
 
 **Result:** project builds, tests run, linters work.
 
@@ -876,12 +876,12 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 1. Data Types and Serialization
 
-- [ ] `Type` interface.
-- [ ] Implementations: `IntType`, `BigIntType`, `VarcharType`, `DecimalType`, `BoolType`, `DateType`, `DateTimeType`, `BlobType`.
-- [ ] Type casting and validation.
-- [ ] `RecordSerializer` for packing rows.
-- [ ] `ValueCodec` for serializing values into the protocol.
-- [ ] Tests for types, serialization, codec.
+- [x] `Type` interface.
+- [x] Implementations: `IntType`, `BigIntType`, `VarcharType`, `DecimalType`, `BoolType`, `DateType`, `DateTimeType`, `BlobType`.
+- [x] Type casting and validation.
+- [x] `RecordSerializer` for packing rows.
+- [x] `ValueCodec` for serializing values into the protocol.
+- [x] Tests for types, serialization, codec.
 
 **Estimate:** 3–4 days.
 
@@ -1467,8 +1467,8 @@ Client                          Server
 
 ## 23. Appendix: Implementation Order (Checklist)
 
-- [ ] Milestone 0. Project Setup.
-- [ ] Milestone 1. Data Types and Serialization.
+- [x] Milestone 0. Project Setup.
+- [x] Milestone 1. Data Types and Serialization.
 - [ ] Milestone 2. Storage Engine.
 - [ ] Milestone 3. Schema and Catalog.
 - [ ] Milestone 4. SQL Lexer and Parser.

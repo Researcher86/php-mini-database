@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Infrastructure;
+namespace PhpMiniDatabase\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\StorageException;
 
 /**
  * Replaces a file's contents in one step, or not at all.

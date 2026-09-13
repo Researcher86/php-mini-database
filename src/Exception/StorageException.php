@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Exception;
+namespace PhpMiniDatabase\Exception;
 
 /**
  * Raised when the on-disk or in-memory byte stream is not what a storage

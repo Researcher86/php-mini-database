@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Infrastructure;
+namespace PhpMiniDatabase\Tests\Unit\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Infrastructure\AtomicWriter;
-use MiniDatabase\Infrastructure\FileSystem;
-use MiniDatabase\Tests\Support\TemporaryDirectory;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Infrastructure\AtomicWriter;
+use PhpMiniDatabase\Infrastructure\FileSystem;
+use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
 final class AtomicWriterTest extends TestCase

@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Storage;
+namespace PhpMiniDatabase\Tests\Unit\Storage;
 
-use MiniDatabase\Storage\HeapFile;
-use MiniDatabase\Storage\Page;
-use MiniDatabase\Storage\RecordId;
-use MiniDatabase\Tests\Support\TemporaryDirectory;
+use PhpMiniDatabase\Storage\HeapFile;
+use PhpMiniDatabase\Storage\Page;
+use PhpMiniDatabase\Storage\RecordId;
+use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
 final class HeapFileTest extends TestCase

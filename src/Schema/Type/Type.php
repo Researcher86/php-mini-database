@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Schema\Type;
+namespace PhpMiniDatabase\Schema\Type;
 
 /**
  * A column type knows three things about its values:

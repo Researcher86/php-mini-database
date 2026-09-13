@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Storage;
+namespace PhpMiniDatabase\Storage;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Exception\TypeException;
-use MiniDatabase\Schema\Type\Type;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Schema\Type\Type;
 
 /**
  * Packs a row — an ordered list of column values (NULL allowed) into the byte

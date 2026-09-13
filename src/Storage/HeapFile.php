@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Storage;
+namespace PhpMiniDatabase\Storage;
 
 use Generator;
-use MiniDatabase\Infrastructure\FileSystem;
+use PhpMiniDatabase\Infrastructure\FileSystem;
 
 /**
  * An unordered file of records — the table itself, once a row has been

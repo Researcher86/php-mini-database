@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Schema\Type;
+namespace PhpMiniDatabase\Schema\Type;
 
-use MiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Exception\TypeException;
 
 /**
  * A boolean, stored as a single byte 0x00/0x01. cast() accepts PHP bools and

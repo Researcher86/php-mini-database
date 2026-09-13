@@ -4,12 +4,12 @@
     "license": "MIT",
     "autoload": {
         "psr-4": {
-            "MiniDatabase\\": "src/"
+            "PhpMiniDatabase\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "MiniDatabase\\Tests\\": "tests/"
+            "PhpMiniDatabase\\Tests\\": "tests/"
         }
     },
     "require": {

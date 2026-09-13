@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Schema\Type;
+namespace PhpMiniDatabase\Schema\Type;
 
-use MiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Exception\TypeException;
 
 /**
  * A signed 32-bit integer. Encoded as four big-endian bytes in a biased form:

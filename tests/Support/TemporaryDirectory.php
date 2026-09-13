@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Support;
+namespace PhpMiniDatabase\Tests\Support;
 
-use MiniDatabase\Infrastructure\FileSystem;
+use PhpMiniDatabase\Infrastructure\FileSystem;
 
 /**
  * A scratch directory per test, removed when the test ends.

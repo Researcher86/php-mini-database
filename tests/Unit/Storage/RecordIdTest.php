@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Storage;
+namespace PhpMiniDatabase\Tests\Unit\Storage;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Storage\RecordId;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Storage\RecordId;
 use PHPUnit\Framework\TestCase;
 
 final class RecordIdTest extends TestCase

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Exception;
+namespace PhpMiniDatabase\Exception;
 
 /**
  * Raised when a value does not fit a column type: wrong PHP kind, value out of

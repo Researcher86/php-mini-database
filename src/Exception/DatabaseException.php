@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Exception;
+namespace PhpMiniDatabase\Exception;
 
 use RuntimeException;
 

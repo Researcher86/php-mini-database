@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Storage;
+namespace PhpMiniDatabase\Storage;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Infrastructure\FileSystem;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Infrastructure\FileSystem;
 
 /**
  * Reads and writes whole pages of one file, addressed by page number.

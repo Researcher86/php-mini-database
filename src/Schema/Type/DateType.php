@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Schema\Type;
+namespace PhpMiniDatabase\Schema\Type;
 
 use DateTimeImmutable;
 use DateTimeInterface;
 use DateTimeZone;
-use MiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Exception\TypeException;
 
 /**
  * A calendar date without a time component. The canonical value is a

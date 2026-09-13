@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Infrastructure;
+namespace PhpMiniDatabase\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\StorageException;
 
 /**
  * Turns names into paths, safely.

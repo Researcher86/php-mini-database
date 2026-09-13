@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Schema\Type;
+namespace PhpMiniDatabase\Schema\Type;
 
-use MiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Exception\TypeException;
 
 /**
  * A signed 64-bit integer, the natural PHP int. Encoded as eight big-endian

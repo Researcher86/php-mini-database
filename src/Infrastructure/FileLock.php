@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Infrastructure;
+namespace PhpMiniDatabase\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\StorageException;
 
 /**
  * An advisory lock on a lock file, used to keep two processes from writing

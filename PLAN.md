@@ -679,7 +679,7 @@ return [
 ### 8.1. Embedded Mode
 
 ```php
-use MiniDatabase\Schema\Database;
+use PhpMiniDatabase\Schema\Database;
 
 $db = Database::open(__DIR__ . '/data/mydb');
 $db->execute("CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) UNIQUE)");
@@ -689,8 +689,8 @@ $result = $db->query('SELECT * FROM users');
 ### 8.2. Client Mode
 
 ```php
-use MiniDatabase\Client\Connection;
-use MiniDatabase\Client\ClientConfig;
+use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Client\ClientConfig;
 
 $config = new ClientConfig(
     host: '127.0.0.1',
@@ -718,7 +718,7 @@ $conn->close();
 ### 8.3. Connection Pool
 
 ```php
-use MiniDatabase\Client\ConnectionPool;
+use PhpMiniDatabase\Client\ConnectionPool;
 
 $pool = new ConnectionPool($config, maxConnections: 10);
 
@@ -750,9 +750,9 @@ try {
 ### 8.5. Exceptions
 
 ```php
-use MiniDatabase\Exception\NetworkException;
-use MiniDatabase\Exception\AuthException;
-use MiniDatabase\Exception\ConstraintViolationException;
+use PhpMiniDatabase\Exception\NetworkException;
+use PhpMiniDatabase\Exception\AuthException;
+use PhpMiniDatabase\Exception\ConstraintViolationException;
 
 try {
     $conn->query('SELECT * FROM missing_table');
@@ -862,7 +862,7 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 **Goal:** create the skeleton.
 
 - [x] Initialize `composer.json`.
-- [x] Configure PSR-4: `MiniDatabase\` → `src/`.
+- [x] Configure PSR-4: `PhpMiniDatabase\` → `src/`.
 - [x] Install PHPUnit, PHPStan, PHP-CS-Fixer.
 - [x] Create `phpunit.xml`, `phpstan.neon`, `.php-cs-fixer.php`.
 - [x] Configure GitHub Actions.
@@ -1331,7 +1331,7 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 require __DIR__ . '/vendor/autoload.php';
 
-use MiniDatabase\Schema\Database;
+use PhpMiniDatabase\Schema\Database;
 
 $db = Database::open(__DIR__ . '/data/mydb');
 
@@ -1367,8 +1367,8 @@ php bin/minidb-server start --host 127.0.0.1 --port 5433 --data ./data/mydb
 
 require __DIR__ . '/vendor/autoload.php';
 
-use MiniDatabase\Client\Connection;
-use MiniDatabase\Client\ClientConfig;
+use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Client\ClientConfig;
 
 $config = new ClientConfig(
     host: '127.0.0.1',

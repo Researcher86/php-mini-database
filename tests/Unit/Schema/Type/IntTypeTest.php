@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Schema\Type;
+namespace PhpMiniDatabase\Tests\Unit\Schema\Type;
 
-use MiniDatabase\Exception\TypeException;
-use MiniDatabase\Schema\Type\IntType;
-use MiniDatabase\Schema\Type\Type;
+use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Schema\Type\IntType;
+use PhpMiniDatabase\Schema\Type\Type;
 use PHPUnit\Framework\TestCase;
 
 final class IntTypeTest extends TestCase

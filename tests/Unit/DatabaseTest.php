@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit;
+namespace PhpMiniDatabase\Tests\Unit;
 
-use MiniDatabase\Schema\Database;
+use PhpMiniDatabase\Schema\Database;
 use PHPUnit\Framework\TestCase;
 
 /**

@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Infrastructure;
+namespace PhpMiniDatabase\Tests\Unit\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Infrastructure\Path;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Infrastructure\Path;
 use PHPUnit\Framework\TestCase;
 
 final class PathTest extends TestCase

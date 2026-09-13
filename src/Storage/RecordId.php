@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Storage;
+namespace PhpMiniDatabase\Storage;
 
-use MiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\StorageException;
 use Stringable;
 
 /**

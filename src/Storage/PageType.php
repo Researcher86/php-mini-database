@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Storage;
+namespace PhpMiniDatabase\Storage;
 
 /**
  * What a page holds. Written into the page header so that a file can be read

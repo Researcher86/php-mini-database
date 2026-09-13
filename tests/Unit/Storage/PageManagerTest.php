@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Storage;
+namespace PhpMiniDatabase\Tests\Unit\Storage;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Storage\Page;
-use MiniDatabase\Storage\PageManager;
-use MiniDatabase\Storage\PageType;
-use MiniDatabase\Tests\Support\TemporaryDirectory;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Storage\Page;
+use PhpMiniDatabase\Storage\PageManager;
+use PhpMiniDatabase\Storage\PageType;
+use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
 final class PageManagerTest extends TestCase

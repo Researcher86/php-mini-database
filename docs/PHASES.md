@@ -13,7 +13,7 @@ surface.
 ## Phase 0 — Project setup ✅
 
 Scaffold the repository: Composer with PSR-4 autoloading
-(`MiniDatabase\` → `src/`, `MiniDatabase\Tests\` → `tests/`), Docker
+(`PhpMiniDatabase\` → `src/`, `PhpMiniDatabase\Tests\` → `tests/`), Docker
 (PHP 8.5-cli, extensions used across milestones), PHPUnit 11, PHPStan
 level 6, PHP CS Fixer, the Makefile, and a package skeleton.
 

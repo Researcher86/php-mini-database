@@ -2,19 +2,19 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Schema\Type;
+namespace PhpMiniDatabase\Tests\Unit\Schema\Type;
 
-use MiniDatabase\Exception\TypeException;
-use MiniDatabase\Schema\Type\BigIntType;
-use MiniDatabase\Schema\Type\BlobType;
-use MiniDatabase\Schema\Type\BoolType;
-use MiniDatabase\Schema\Type\DateTimeType;
-use MiniDatabase\Schema\Type\DateType;
-use MiniDatabase\Schema\Type\DecimalType;
-use MiniDatabase\Schema\Type\IntType;
-use MiniDatabase\Schema\Type\Type;
-use MiniDatabase\Schema\Type\TypeFactory;
-use MiniDatabase\Schema\Type\VarcharType;
+use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Schema\Type\BigIntType;
+use PhpMiniDatabase\Schema\Type\BlobType;
+use PhpMiniDatabase\Schema\Type\BoolType;
+use PhpMiniDatabase\Schema\Type\DateTimeType;
+use PhpMiniDatabase\Schema\Type\DateType;
+use PhpMiniDatabase\Schema\Type\DecimalType;
+use PhpMiniDatabase\Schema\Type\IntType;
+use PhpMiniDatabase\Schema\Type\Type;
+use PhpMiniDatabase\Schema\Type\TypeFactory;
+use PhpMiniDatabase\Schema\Type\VarcharType;
 use PHPUnit\Framework\TestCase;
 
 final class TypeFactoryTest extends TestCase

@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Network\Protocol;
+namespace PhpMiniDatabase\Tests\Unit\Network\Protocol;
 
-use MiniDatabase\Network\Protocol\ValueCodec;
-use MiniDatabase\Schema\Type\IntType;
-use MiniDatabase\Schema\Type\VarcharType;
+use PhpMiniDatabase\Network\Protocol\ValueCodec;
+use PhpMiniDatabase\Schema\Type\IntType;
+use PhpMiniDatabase\Schema\Type\VarcharType;
 use PHPUnit\Framework\TestCase;
 
 final class ValueCodecTest extends TestCase

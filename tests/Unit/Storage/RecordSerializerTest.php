@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Storage;
+namespace PhpMiniDatabase\Tests\Unit\Storage;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Exception\TypeException;
-use MiniDatabase\Schema\Type\BoolType;
-use MiniDatabase\Schema\Type\IntType;
-use MiniDatabase\Schema\Type\Type;
-use MiniDatabase\Schema\Type\VarcharType;
-use MiniDatabase\Storage\RecordSerializer;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Schema\Type\BoolType;
+use PhpMiniDatabase\Schema\Type\IntType;
+use PhpMiniDatabase\Schema\Type\Type;
+use PhpMiniDatabase\Schema\Type\VarcharType;
+use PhpMiniDatabase\Storage\RecordSerializer;
 use PHPUnit\Framework\TestCase;
 
 final class RecordSerializerTest extends TestCase

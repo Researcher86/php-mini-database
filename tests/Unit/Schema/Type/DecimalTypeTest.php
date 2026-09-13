@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Schema\Type;
+namespace PhpMiniDatabase\Tests\Unit\Schema\Type;
 
-use MiniDatabase\Exception\TypeException;
-use MiniDatabase\Schema\Type\DecimalType;
-use MiniDatabase\Schema\Type\Type;
+use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Schema\Type\DecimalType;
+use PhpMiniDatabase\Schema\Type\Type;
 use PHPUnit\Framework\TestCase;
 
 final class DecimalTypeTest extends TestCase

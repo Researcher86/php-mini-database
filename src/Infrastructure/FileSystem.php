@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Infrastructure;
+namespace PhpMiniDatabase\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Exception\StorageException;
 
 /**
  * The database's one door to the filesystem.

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Schema;
+namespace PhpMiniDatabase\Schema;
 
 /**
  * The database root object. Deliberately empty at Phase 0: it exists so the

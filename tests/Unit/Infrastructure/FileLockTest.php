@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Tests\Unit\Infrastructure;
+namespace PhpMiniDatabase\Tests\Unit\Infrastructure;
 
-use MiniDatabase\Exception\StorageException;
-use MiniDatabase\Infrastructure\FileLock;
-use MiniDatabase\Tests\Support\TemporaryDirectory;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Infrastructure\FileLock;
+use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
 /**

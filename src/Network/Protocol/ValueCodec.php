@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace MiniDatabase\Network\Protocol;
+namespace PhpMiniDatabase\Network\Protocol;
 
-use MiniDatabase\Schema\Type\Type;
+use PhpMiniDatabase\Schema\Type\Type;
 
 /**
  * The protocol's codec for column values. A Type already knows its byte form,

@@ -1,1416 +1,1495 @@
-Ниже — один цельный Markdown-файл. Его можно полностью скопировать и сохранить как:
+# Implementation Plan for `php-mini-database` (Relational DBMS with TCP Server)
 
-```
-PLAN.md
-```
+## 0. Brief Description
 
-Markdown
+`php-mini-database` is an embeddable and client-server relational database in PHP. The server listens on a TCP port, accepts client connections over its own binary protocol, executes SQL queries, and returns results. The library can be used both in embedded mode (in-process) and in client-server mode.
 
-````
-# План реализации `php-mini-database`
-
-Подробный пошаговый план создания небольшой учебной реляционной базы данных на PHP.
-
-Проект должен быть не попыткой написать MySQL, а понятной лабораторией для изучения:
-
-- хранения данных на диске;
-- форматов файлов;
-- записей и страниц;
-- индексов;
-- SQL;
-- выполнения запросов;
-- транзакций;
-- WAL;
-- восстановления после падения;
-- блокировок;
-- конкурентного доступа;
-- производительности;
-- взаимодействия базы с другими системными компонентами.
+**Key idea:** a lightweight relational DBMS with an SQL parser, B-Tree indexes, WAL transactions, a TCP server with its own protocol, authentication, connection pooling, and a CLI client.
 
 ---
 
-# 1. Цель проекта
+## 1. Goals and Scope
 
-Создать небольшую учебную базу данных на PHP, которую можно использовать из:
+### 1.1. Goals
 
-- CLI;
-- PHP-приложения;
-- HTTP-сервера;
-- `php-systems-platform`;
-- тестовых и benchmark-сценариев.
+- Implement a relational model: tables, rows, columns, types, constraints.
+- Implement an SQL-like language: DDL, DML, SELECT with JOIN, GROUP BY, aggregates.
+- Implement B-Tree indexes and a query planner.
+- Implement transactions via WAL with ACID.
+- Implement a TCP server with multi-client support.
+- Develop a custom binary protocol (wire protocol).
+- Implement user authentication (SCRAM-like or challenge-response).
+- Implement a client library for PHP.
+- Provide a CLI server and CLI client.
+- Cover the code with tests, benchmarks, and documentation.
 
-База должна поддерживать:
+### 1.2. Out of Scope
 
-- таблицы;
-- записи;
-- первичный ключ;
-- вставку;
-- чтение;
-- обновление;
-- удаление;
-- простые условия `WHERE`;
-- сортировку;
-- ограничение количества строк;
-- индексы;
-- хранение на диске;
-- восстановление после перезапуска;
-- простые транзакции;
-- простой клиентский API;
-- ограниченный SQL;
-- измерения производительности.
+- Full ANSI SQL:2016 compatibility.
+- PostgreSQL/MySQL protocol compatibility (not required).
+- Replication, sharding, clustering.
+- Stored procedures, triggers, production-grade views.
+- TLS out of the box (optional in v1.1).
+- Support for > 10 million rows per table.
 
 ---
 
-# 2. Главный принцип проекта
+## 2. Requirements
 
-Проект развивается от простого к сложному:
+### 2.1. Functional Requirements
+
+#### Relational Model
+- [ ] Tables, columns, types, constraints.
+- [ ] `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `NOT NULL`, `CHECK`, `DEFAULT`.
+- [ ] B-Tree indexes (regular and unique).
+
+#### SQL
+- [ ] DDL: `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE`, `CREATE INDEX`, `DROP INDEX`.
+- [ ] DML: `INSERT`, `UPDATE`, `DELETE`, `SELECT`.
+- [ ] `JOIN` (INNER, LEFT, RIGHT).
+- [ ] `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`, `DISTINCT`.
+- [ ] Subqueries in `WHERE` and `FROM`.
+- [ ] Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`.
+- [ ] String/numeric/date functions.
+
+#### Transactions
+- [ ] `BEGIN`, `COMMIT`, `ROLLBACK`.
+- [ ] `SAVEPOINT`, `ROLLBACK TO SAVEPOINT`.
+- [ ] Isolation levels: `READ COMMITTED`, `REPEATABLE READ`, `SERIALIZABLE`.
+- [ ] ACID via WAL and lock manager.
+
+#### TCP Server
+- [ ] Listen on a TCP port (default 5433).
+- [ ] Multi-client mode (fork/process pool or event loop).
+- [ ] Custom binary protocol.
+- [ ] Authentication by login/password (challenge-response).
+- [ ] Prepared statements support.
+- [ ] Session-level transaction support.
+- [ ] Idle/query timeouts.
+- [ ] Max connections limit.
+- [ ] Graceful shutdown.
+- [ ] Query and error logging.
+- [ ] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
+
+#### Client
+- [ ] PHP client library.
+- [ ] Connection pool.
+- [ ] Reconnect on failure.
+- [ ] Connect/read/write timeouts.
+- [ ] Prepared statements support.
+- [ ] Transaction support.
+
+#### CLI
+- [ ] `minidb-server` — start the server.
+- [ ] `minidb` — CLI client with REPL.
+- [ ] Import/export SQL dump.
+- [ ] Backup/restore.
+
+#### Other
+- [ ] `EXPLAIN` query plan.
+- [ ] Metrics: connections, queries/sec, errors.
+- [ ] Configuration via file + ENV + flags.
+
+### 2.2. Non-Functional Requirements
+
+- PHP >= 8.1 (enum, readonly, fibers).
+- PSR-4, PSR-12.
+- Runtime dependencies: minimal; `ext-pcntl`, `ext-posix`, `ext-sockets` allowed.
+- Optional: `ext-event` or `ext-ev` for event loop.
+- Dev dependencies: PHPUnit, PHPStan, PHP-CS-Fixer, Infection.
+- Atomic file writes: temp + `rename`.
+- File locks via `flock`.
+- Performance: up to 1,000,000 rows per table.
+- Test coverage ≥ 85%.
+- Cross-platform: Linux, macOS (Windows with fork limitations).
+- Streaming results for large result sets.
+- Protection against SQL injection at the protocol level (prepared statements).
+
+---
+
+## 3. Architecture
+
+### 3.1. General Diagram
 
 ```text
-In-memory table
-    ↓
-File-backed storage
-    ↓
-Records and pages
-    ↓
-Primary index
-    ↓
-Table API
-    ↓
-Query executor
-    ↓
-SQL parser
-    ↓
-Transactions
-    ↓
-WAL
-    ↓
-Recovery
-    ↓
-Concurrency
-    ↓
-Network protocol
-````
-
-Не нужно начинать с SQL, транзакций и сетевого протокола.
-
-Сначала нужно сделать надёжное и понятное хранение записей.
-
-# 3. Что не нужно реализовывать
-
-На первом этапе не нужно делать:
-
-* полную совместимость с MySQL;
-
-* полноценный SQL standard;
-
-* сложный query optimizer;
-
-* distributed database;
-
-* replication;
-
-* sharding;
-
-* MVCC;
-
-* Raft;
-
-* сложный buffer pool;
-
-* полноценную систему прав;
-
-* сложные типы данных;
-
-* stored procedures;
-
-* triggers;
-
-* foreign keys;
-
-* сложные JOIN;
-
-* production-grade durability;
-
-* бинарный MySQL protocol.
-
-Проект должен оставаться маленьким и учебным.
-
-# 4. Предлагаемое название
-
-```
-php-mini-database
++---------------------+        +---------------------+
+|   PHP Client Lib    |        |    CLI minidb       |
+|  Connection, Pool   |        |  (uses Client Lib)  |
++----------+----------+        +----------+----------+
+           |                              |
+           |        TCP (binary proto)    |
+           +--------------+---------------+
+                          |
+                +---------v---------+
+                |    TCP Server     |
+                |  Acceptor, Pool   |
+                +---------+---------+
+                          |
+                +---------v---------+
+                |  Session Manager  |
+                |  Auth, Tx state   |
+                +---------+---------+
+                          |
+                +---------v---------+
+                |  Query Pipeline   |
+                |  Parse → Plan →   |
+                |  Optimize → Exec  |
+                +---------+---------+
+                          |
+                +---------v---------+
+                |  Storage Engine   |
+                |  Heap, B-Tree,    |
+                |  WAL, Locks       |
+                +---------+---------+
+                          |
+                +---------v---------+
+                |    File System    |
+                +-------------------+
 ```
 
-Короткое описание:
+### 3.2. Layers
 
-```
-A small educational relational database written in PHP.
-Explore storage engines, records, indexes, queries,
-transactions, WAL, recovery, and database internals.
-```
-
-# 5. Основные этапы
-
-```
-Phase 0   — Подготовка проекта
-Phase 1   — In-memory database
-Phase 2   — Table and row model
-Phase 3   — File format
-Phase 4   — Persistent storage
-Phase 5   — Primary key and indexes
-Phase 6   — Update and delete
-Phase 7   — Query API
-Phase 8   — SQL lexer
-Phase 9   — SQL parser
-Phase 10  — Query executor
-Phase 11  — Pages and buffer management
-Phase 12  — Transactions
-Phase 13  — WAL
-Phase 14  — Crash recovery
-Phase 15  — Concurrency and locking
-Phase 16  — Network protocol
-Phase 17  — Benchmarks
-Phase 18  — Documentation
-Phase 19  — Integration with php-systems-platform
+```text
++--------------------------------------+
+|            Network Layer             |
+|  Server, Acceptor, Session, Proto    |
++--------------------------------------+
+|            SQL Interface             |
+|  Lexer, Parser, AST, Planner         |
++--------------------------------------+
+|         Execution Engine             |
+|  Executor, Operators, Expressions    |
++--------------------------------------+
+|         Relational Model             |
+|  Table, Row, Column, Schema, Types   |
++--------------------------------------+
+|         Storage Engine               |
+|  PageManager, HeapFile, BTreeIndex   |
++--------------------------------------+
+|       Transaction Manager            |
+|  WAL, LockManager, MVCC              |
++--------------------------------------+
+|         Infrastructure               |
+|  FileSystem, AtomicWriter, Buffer    |
++--------------------------------------+
+|            File System               |
++--------------------------------------+
 ```
 
-# 6. Phase 0 — Подготовка проекта
+### 3.3. Main Components
 
-## Шаг 0.1 — Создать репозиторий
+#### Network
+- `Network\Server` — TCP server, acceptor, event loop.
+- `Network\ServerConfig` — configuration.
+- `Network\Session` — client session, transaction state, prepared statements.
+- `Network\SessionManager` — session registry, `KILL`, limits.
+- `Network\Protocol\Frame` — protocol frame.
+- `Network\Protocol\Message` — message types.
+- `Network\Protocol\Codec` — serialization/deserialization.
+- `Network\Auth\Authenticator` — login/password verification.
+- `Network\Auth\ScramChallenge` — challenge-response.
+- `Network\Auth\UserStore` — user storage.
 
-Создать репозиторий:
+#### Client
+- `Client\Connection` — TCP connection, handshake, auth.
+- `Client\ConnectionPool` — connection pool.
+- `Client\Statement` — prepared statement.
+- `Client\ResultSet` — result iterator.
+- `Client\ClientException`.
 
-```
-Researcher86/php-mini-database
-```
+#### SQL
+- `Sql\Lexer`, `Sql\Parser`, `Sql\Ast\*`.
+- `Sql\Planner`, `Sql\Optimizer`, `Sql\Rule\*`.
 
-## Шаг 0.2 — Создать базовую структуру
+#### Execution
+- `Execution\Executor`.
+- `Execution\Operator\*` (SeqScan, IndexScan, Filter, Project, Join, Sort, Limit, Aggregate).
+- `Execution\Expression\Evaluator`.
 
-Предлагаемая структура:
+#### Schema
+- `Schema\Database`, `Schema\Table`, `Schema\Column`, `Schema\Row`, `Schema\Type\*`, `Schema\Constraint\*`.
 
-```
+#### Storage
+- `Storage\PageManager`, `Storage\HeapFile`, `Storage\BTreeIndex`, `Storage\Catalog`.
+
+#### Transaction
+- `Transaction\TransactionManager`, `Transaction\Wal`, `Transaction\LockManager`.
+
+#### Infrastructure
+- `Infrastructure\FileSystem`, `AtomicWriter`, `FileLock`, `Path`, `Config`, `Logger`.
+
+### 3.4. Principles
+
+- Single writer, multiple readers at the DB level.
+- WAL-first: changes go to the journal first, then to data.
+- Atomic write: temp + `rename`.
+- Immutable AST and plans.
+- Streaming results.
+- Errors are not swallowed but thrown with context.
+- Protocol is versioned.
+- Client-server and embedded modes share the same execution engine.
+
+---
+
+## 4. Project Structure
+
+```text
 php-mini-database/
 ├── bin/
-│   └── database
-├── config/
-├── docs/
-├── examples/
+│   ├── minidb-server
+│   └── minidb
 ├── src/
-│   ├── Database.php
-│   ├── Table.php
-│   ├── Row.php
-│   ├── Schema/
-│   ├── Storage/
-│   ├── Index/
-│   ├── Query/
+│   ├── Network/
+│   │   ├── Server.php
+│   │   ├── ServerConfig.php
+│   │   ├── Session.php
+│   │   ├── SessionManager.php
+│   │   ├── Acceptor.php
+│   │   ├── EventLoop.php
+│   │   ├── Protocol/
+│   │   │   ├── Frame.php
+│   │   │   ├── Message.php
+│   │   │   ├── MessageType.php
+│   │   │   ├── Codec.php
+│   │   │   ├── Opcode.php
+│   │   │   └── ResultEncoder.php
+│   │   └── Auth/
+│   │       ├── Authenticator.php
+│   │       ├── ScramChallenge.php
+│   │       ├── UserStore.php
+│   │       └── PasswordHash.php
+│   ├── Client/
+│   │   ├── Connection.php
+│   │   ├── ConnectionPool.php
+│   │   ├── Statement.php
+│   │   ├── ResultSet.php
+│   │   ├── ClientConfig.php
+│   │   └── ClientException.php
 │   ├── Sql/
+│   │   ├── Lexer.php
+│   │   ├── Token.php
+│   │   ├── TokenType.php
+│   │   ├── Parser.php
+│   │   ├── Ast/
+│   │   │   ├── Node.php
+│   │   │   ├── SelectStatement.php
+│   │   │   ├── InsertStatement.php
+│   │   │   ├── UpdateStatement.php
+│   │   │   ├── DeleteStatement.php
+│   │   │   ├── CreateTableStatement.php
+│   │   │   ├── DropTableStatement.php
+│   │   │   ├── AlterTableStatement.php
+│   │   │   ├── CreateIndexStatement.php
+│   │   │   ├── Expression.php
+│   │   │   └── ...
+│   │   ├── Planner/
+│   │   │   ├── LogicalPlan.php
+│   │   │   ├── PhysicalPlan.php
+│   │   │   └── Planner.php
+│   │   └── Optimizer/
+│   │       ├── Optimizer.php
+│   │       └── Rule/
+│   │           ├── PredicatePushdown.php
+│   │           ├── ConstantFolding.php
+│   │           └── IndexSelection.php
+│   ├── Execution/
+│   │   ├── Executor.php
+│   │   ├── Operator/
+│   │   │   ├── Operator.php
+│   │   │   ├── SeqScan.php
+│   │   │   ├── IndexScan.php
+│   │   │   ├── Filter.php
+│   │   │   ├── Project.php
+│   │   │   ├── NestedLoopJoin.php
+│   │   │   ├── HashJoin.php
+│   │   │   ├── Sort.php
+│   │   │   ├── Limit.php
+│   │   │   └── Aggregate.php
+│   │   └── Expression/
+│   │       ├── Evaluator.php
+│   │       ├── BinaryOp.php
+│   │       ├── ColumnRef.php
+│   │       ├── Literal.php
+│   │       └── FunctionCall.php
+│   ├── Schema/
+│   │   ├── Database.php
+│   │   ├── Table.php
+│   │   ├── Column.php
+│   │   ├── Row.php
+│   │   ├── Schema.php
+│   │   ├── Constraint/
+│   │   │   ├── Constraint.php
+│   │   │   ├── PrimaryKey.php
+│   │   │   ├── ForeignKey.php
+│   │   │   ├── UniqueConstraint.php
+│   │   │   ├── NotNull.php
+│   │   │   ├── CheckConstraint.php
+│   │   │   └── DefaultValue.php
+│   │   └── Type/
+│   │       ├── Type.php
+│   │       ├── IntType.php
+│   │       ├── DecimalType.php
+│   │       ├── VarcharType.php
+│   │       ├── BoolType.php
+│   │       ├── DateType.php
+│   │       └── BlobType.php
+│   ├── Storage/
+│   │   ├── PageManager.php
+│   │   ├── Page.php
+│   │   ├── HeapFile.php
+│   │   ├── BTreeIndex.php
+│   │   ├── Catalog.php
+│   │   └── RecordSerializer.php
 │   ├── Transaction/
-│   └── Recovery/
+│   │   ├── TransactionManager.php
+│   │   ├── Transaction.php
+│   │   ├── Wal.php
+│   │   ├── WalRecord.php
+│   │   ├── LockManager.php
+│   │   └── IsolationLevel.php
+│   ├── Infrastructure/
+│   │   ├── FileSystem.php
+│   │   ├── AtomicWriter.php
+│   │   ├── FileLock.php
+│   │   ├── Path.php
+│   │   ├── Config.php
+│   │   └── Logger.php
+│   ├── Exception/
+│   │   ├── DatabaseException.php
+│   │   ├── NetworkException.php
+│   │   ├── AuthException.php
+│   │   ├── ProtocolException.php
+│   │   ├── ParserException.php
+│   │   ├── ExecutionException.php
+│   │   ├── ConstraintViolationException.php
+│   │   ├── TransactionException.php
+│   │   └── StorageException.php
+│   ├── Backup/
+│   │   ├── Dumper.php
+│   │   ├── Restorer.php
+│   │   └── BackupManager.php
+│   └── Cli/
+│       ├── ServerApplication.php
+│       ├── ClientApplication.php
+│       ├── Repl.php
+│       └── Command/
+│           ├── ServeCommand.php
+│           ├── QueryCommand.php
+│           ├── ShellCommand.php
+│           ├── ImportCommand.php
+│           ├── ExportCommand.php
+│           ├── UserCommand.php
+│           ├── BackupCommand.php
+│           └── RestoreCommand.php
+├── config/
+│   ├── server.php
+│   └── users.php
 ├── tests/
 │   ├── Unit/
+│   │   ├── Sql/
+│   │   ├── Execution/
+│   │   ├── Storage/
+│   │   ├── Transaction/
+│   │   ├── Network/
+│   │   └── Client/
 │   ├── Integration/
-│   └── Stress/
-├── benchmarks/
-├── var/
-│   └── data/
+│   │   ├── SqlEndToEndTest.php
+│   │   ├── TransactionTest.php
+│   │   ├── ConstraintTest.php
+│   │   ├── ServerClientTest.php
+│   │   ├── AuthTest.php
+│   │   └── ConcurrencyTest.php
+│   ├── Benchmark/
+│   │   ├── InsertBench.php
+│   │   ├── SelectBench.php
+│   │   ├── JoinBench.php
+│   │   └── NetworkBench.php
+│   └── Fixtures/
+├── examples/
+│   ├── embedded.php
+│   ├── client.php
+│   ├── pool.php
+│   └── transaction.php
+├── docs/
+│   ├── sql.md
+│   ├── architecture.md
+│   ├── protocol.md
+│   ├── storage.md
+│   ├── transactions.md
+│   ├── security.md
+│   └── cli.md
 ├── composer.json
 ├── phpunit.xml
+├── phpstan.neon
+├── .php-cs-fixer.php
+├── .gitignore
 ├── README.md
-└── LICENSE
+└── PLAN.md
 ```
 
-## Шаг 0.3 — Настроить Composer
+---
 
-Минимальные зависимости:
+## 5. TCP Protocol
 
-* PHP;
+### 5.1. General Principles
 
-* PHPUnit;
+- Binary protocol over TCP.
+- Fixed-structure frames: header + payload.
+- Versioning via handshake.
+- All numbers are big-endian.
+- All strings are length-prefixed (uint32) in UTF-8.
+- NULL values are encoded with a bitmap.
 
-* PHPStan или Psalm;
+### 5.2. Frame Format
 
-* PHP CS Fixer;
-
-* Symfony Console — по желанию.
-
-Не добавлять тяжёлые зависимости без необходимости.
-
-## Шаг 0.4 — Определить минимальную версию PHP
-
-Рекомендуемый вариант:
-
+```text
++--------+--------+--------+--------+
+| magic (4 bytes): 0x4D 0x44 0x42 0x31 |  "MDB1"
++--------+--------+--------+--------+
+| version (uint16)                  |
++--------+--------+--------+--------+
+| type    (uint8)                    |
++--------+--------+--------+--------+
+| flags   (uint8)                    |
++--------+--------+--------+--------+
+| length  (uint32) — payload length  |
++--------+--------+--------+--------+
+| payload (length bytes)             |
++------------------------------------+
 ```
-PHP 8.4+
+
+### 5.3. Message Types
+
+| Code | Name | Direction | Description |
+|------|------|-----------|-------------|
+| 0x01 | HELLO | C → S | Start handshake, client version |
+| 0x02 | HELLO_ACK | S → C | Server version, salt |
+| 0x03 | AUTH | C → S | Login + challenge response |
+| 0x04 | AUTH_OK | S → C | Authentication successful |
+| 0x05 | AUTH_FAIL | S → C | Authentication failed |
+| 0x10 | QUERY | C → S | SQL query (text) |
+| 0x11 | QUERY_RESULT | S → C | Result (rows) |
+| 0x12 | QUERY_ERROR | S → C | Execution error |
+| 0x13 | PREPARE | C → S | Prepare query |
+| 0x14 | PREPARE_OK | S → C | Prepared statement ID |
+| 0x15 | EXECUTE | C → S | Execute prepared |
+| 0x16 | CLOSE_STMT | C → S | Close prepared |
+| 0x17 | COPY_IN | C → S | Bulk insert |
+| 0x18 | COPY_OUT | S → C | Bulk export |
+| 0x20 | BEGIN | C → S | Begin transaction |
+| 0x21 | COMMIT | C → S | Commit |
+| 0x22 | ROLLBACK | C → S | Rollback |
+| 0x23 | SAVEPOINT | C → S | Set savepoint |
+| 0x30 | PING | C → S | Ping |
+| 0x31 | PONG | S → C | Pong |
+| 0x40 | CANCEL | C → S | Cancel current query |
+| 0x50 | GOODBYE | C ↔ S | Close |
+| 0x60 | SHOW_STATUS | C → S | Server status |
+| 0x61 | SHOW_CONNECTIONS | C → S | Connection list |
+| 0x62 | KILL | C → S | Kill connection |
+
+### 5.4. Handshake
+
+```text
+C → S: HELLO { protocol_version, client_name, client_version, capabilities }
+S → C: HELLO_ACK { server_version, auth_method, salt, capabilities }
+C → S: AUTH { username, challenge_response }
+S → C: AUTH_OK { session_id, server_time } | AUTH_FAIL { reason }
 ```
 
-Если проект должен использовать современные возможности PHP:
+### 5.5. Authentication (Challenge-Response)
 
+- The server stores `salt` and `hash = H(password, salt)`.
+- On connection, the client:
+    1. Receives `salt` and a random `nonce` from the server.
+    2. Computes `response = HMAC(hash, nonce)`.
+    3. Sends `username` and `response`.
+- The server compares `response` with the expected value.
+- The password is never transmitted in plaintext.
+
+### 5.6. SELECT Result Format
+
+```text
+payload:
+  uint16 column_count
+  for each column:
+    string name
+    uint8  type_code
+    uint8  flags (nullable, primary key, etc.)
+  uint64 row_count (or 0xFFFFFFFFFFFFFFFF for streaming)
+  rows:
+    uint8  null_bitmap[(column_count + 7) / 8]
+    for each non-null column:
+      value (by type)
 ```
-PHP 8.5+
+
+### 5.7. Error Codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0x01 | PARSER_ERROR | Syntax error |
+| 0x02 | TABLE_NOT_FOUND | Table not found |
+| 0x03 | COLUMN_NOT_FOUND | Column not found |
+| 0x04 | TYPE_MISMATCH | Incompatible types |
+| 0x05 | CONSTRAINT_VIOLATION | Constraint violation |
+| 0x06 | TRANSACTION_ERROR | Transaction error |
+| 0x07 | DEADLOCK | Deadlock |
+| 0x08 | STORAGE_ERROR | Storage error |
+| 0x09 | AUTH_FAILED | Authentication failed |
+| 0x0A | PERMISSION_DENIED | Permission denied |
+| 0x0B | QUERY_CANCELLED | Query cancelled |
+| 0x0C | TIMEOUT | Timeout |
+
+---
+
+## 6. Storage Format
+
+### 6.1. Directories
+
+```text
+data/
+└── mydb/
+    ├── catalog.json
+    ├── users.json
+    ├── wal/
+    │   ├── wal.0001.log
+    │   └── wal.0002.log
+    ├── tables/
+    │   ├── users/
+    │   │   ├── schema.json
+    │   │   ├── heap.dat
+    │   │   ├── pk.idx
+    │   │   └── idx_email.idx
+    │   └── orders/
+    │       ├── schema.json
+    │       ├── heap.dat
+    │       ├── pk.idx
+    │       └── idx_user_id.idx
+    ├── transactions/
+    │   └── tx_20250101_120000.state
+    └── locks/
+        ├── users.lock
+        └── orders.lock
 ```
 
-## Шаг 0.5 — Настроить проверки
+### 6.2. Pages
 
-Добавить команды:
+- Page size: 8192 bytes.
+- Header: `page_id`, `type`, `free_space`, `slot_count`.
+- Types: `HEAP`, `BTREE_INTERNAL`, `BTREE_LEAF`, `FREE`.
 
-JSON
+### 6.3. Table Schema
 
-```
+`schema.json`:
+
+```json
 {
-    "scripts": {
-        "test": "phpunit",
-        "analyse": "phpstan analyse",
-        "format": "php-cs-fixer fix",
-        "check": [
-            "@test",
-            "@analyse"
-        ]
-    }
+  "name": "users",
+  "columns": [
+    {"name": "id", "type": "INT", "not_null": true},
+    {"name": "email", "type": "VARCHAR(255)", "not_null": true},
+    {"name": "age", "type": "INT", "default": null}
+  ],
+  "constraints": [
+    {"type": "PRIMARY_KEY", "columns": ["id"]},
+    {"type": "UNIQUE", "columns": ["email"], "name": "uq_users_email"}
+  ],
+  "indexes": [
+    {"name": "idx_users_email", "columns": ["email"], "unique": true}
+  ]
 }
 ```
 
-## Результат этапа
+### 6.4. Users
 
-Должен существовать запускаемый проект с:
+`users.json`:
 
-* Composer;
-
-* тестами;
-
-* статическим анализом;
-
-* пустым, но рабочим `Database`;
-
-* базовым README.
-
-# 7. Phase 1 — In-memory database
-
-На первом этапе база работает только в памяти.
-
-Цель — сначала понять модель данных без файлов, сериализации и восстановления.
-
-## Шаг 1.1 — Создать класс `Database`
-
-Пример API:
-
-PHP
-
-```
-$database = new Database();
-
-$users = $database->createTable('users');
-```
-
-Обязанности `Database`:
-
-* хранить список таблиц;
-
-* создавать таблицу;
-
-* получать таблицу;
-
-* удалять таблицу;
-
-* проверять существование таблицы.
-
-## Шаг 1.2 — Создать класс `Table`
-
-Пример:
-
-PHP
-
-```
-$users = $database->createTable('users');
-
-$users->insert([
-    'id' => 1,
-    'name' => 'Tanat',
-]);
-```
-
-`Table` должен отвечать за:
-
-* строки;
-
-* схему;
-
-* вставку;
-
-* чтение;
-
-* обновление;
-
-* удаление;
-
-* поиск.
-
-## Шаг 1.3 — Создать модель строки
-
-Сначала можно использовать массив:
-
-PHP
-
-```
-[
-    'id' => 1,
-    'name' => 'Tanat',
-    'age' => 40,
-]
-```
-
-Но желательно выделить понятие строки:
-
-PHP
-
-```
-final class Row
+```json
 {
-    public function __construct(
-        public readonly array $values,
-    ) {
-    }
+  "alice": {
+    "salt": "base64...",
+    "hash": "base64...",
+    "roles": ["admin"]
+  },
+  "bob": {
+    "salt": "base64...",
+    "hash": "base64...",
+    "roles": ["reader"]
+  }
 }
 ```
 
-На этом этапе не нужно делать сложный объект.
+### 6.5. WAL
 
-## Шаг 1.4 — Реализовать вставку
-
-PHP
-
-```
-$users->insert([
-    'id' => 1,
-    'name' => 'Tanat',
-]);
+```json
+{"lsn":1,"tx":1,"op":"BEGIN"}
+{"lsn":2,"tx":1,"op":"INSERT","table":"users","row_id":42,"after":{...}}
+{"lsn":3,"tx":1,"op":"UPDATE","table":"users","row_id":42,"before":{...},"after":{...}}
+{"lsn":4,"tx":1,"op":"COMMIT"}
 ```
 
-Проверить:
+---
 
-* запись добавляется;
+## 7. Server Configuration
 
-* отсутствующие поля обрабатываются;
+### 7.1. File `config/server.php`
 
-* неизвестные поля отклоняются;
+```php
+<?php
 
-* повторная вставка пока либо разрешается, либо запрещается явно.
-
-## Шаг 1.5 — Реализовать чтение
-
-PHP
-
-```
-$users->all();
-
-$users->find(1);
-```
-
-Поддержать:
-
-* получение всех строк;
-
-* поиск по ID;
-
-* возврат `null`, если запись не найдена.
-
-## Шаг 1.6 — Реализовать удаление
-
-PHP
-
-```
-$users->delete(1);
-```
-
-Проверить:
-
-* удаление существующей записи;
-
-* удаление отсутствующей записи;
-
-* повторное удаление;
-
-* количество оставшихся строк.
-
-## Шаг 1.7 — Реализовать обновление
-
-PHP
-
-```
-$users->update(1, [
-    'name' => 'Updated',
-]);
-```
-
-Проверить:
-
-* обновление существующей строки;
-
-* обновление отсутствующей строки;
-
-* изменение одного поля;
-
-* сохранение остальных полей.
-
-## Шаг 1.8 — Добавить простую схему
-
-Пример:
-
-PHP
-
-```
-$users = $database->createTable('users', [
-    'id' => 'int',
-    'name' => 'string',
-    'age' => 'int',
-]);
-```
-
-Поддержать типы:
-
-* `int`;
-
-* `string`;
-
-* `bool`;
-
-* `float`;
-
-* `null`.
-
-Проверять типы при вставке и обновлении.
-
-## Результат Phase 1
-
-Должен работать следующий код:
-
-PHP
-
-```
-$database = new Database();
-
-$users = $database->createTable('users', [
-    'id' => 'int',
-    'name' => 'string',
-    'age' => 'int',
-]);
-
-$users->insert([
-    'id' => 1,
-    'name' => 'Tanat',
-    'age' => 40,
-]);
-
-$users->insert([
-    'id' => 2,
-    'name' => 'Alex',
-    'age' => 35,
-]);
-
-$user = $users->find(1);
-
-$users->update(1, [
-    'age' => 41,
-]);
-
-$users->delete(2);
-```
-
-# 8. Phase 2 — Table and schema model
-
-На этом этапе нужно отделить структуру таблицы от её данных.
-
-## Шаг 2.1 — Создать `ColumnDefinition`
-
-PHP
-
-```
-final class ColumnDefinition
-{
-    public function __construct(
-        public readonly string $name,
-        public readonly string $type,
-        public readonly bool $nullable = false,
-        public readonly mixed $default = null,
-    ) {
-    }
-}
-```
-
-## Шаг 2.2 — Создать `TableSchema`
-
-PHP
-
-```
-final class TableSchema
-{
-    /**
-     * @param list<ColumnDefinition> $columns
-     */
-    public function __construct(
-        public readonly string $tableName,
-        public readonly array $columns,
-    ) {
-    }
-}
-```
-
-## Шаг 2.3 — Поддержать обязательные поля
-
-Пример:
-
-PHP
-
-```
-$users = $database->createTable('users', [
-    'id' => [
-        'type' => 'int',
-        'nullable' => false,
+return [
+    'host' => getenv('MINIDB_HOST') ?: '127.0.0.1',
+    'port' => (int) (getenv('MINIDB_PORT') ?: 5433),
+    'data_dir' => getenv('MINIDB_DATA') ?: __DIR__ . '/../data/mydb',
+    'max_connections' => 100,
+    'backlog' => 128,
+    'idle_timeout' => 300,
+    'query_timeout' => 60,
+    'auth' => [
+        'enabled' => true,
+        'method' => 'challenge_response',
+        'user_store' => __DIR__ . '/users.php',
     ],
-    'name' => [
-        'type' => 'string',
-        'nullable' => false,
+    'logging' => [
+        'level' => 'info',
+        'file' => __DIR__ . '/../var/server.log',
     ],
-]);
+    'performance' => [
+        'page_size' => 8192,
+        'buffer_pool_size' => 1024,
+        'max_prepared_statements' => 100,
+    ],
+];
 ```
 
-Проверять:
+### 7.2. Environment Variables
 
-* обязательное поле присутствует;
+- `MINIDB_HOST`, `MINIDB_PORT`, `MINIDB_DATA`.
+- `MINIDB_MAX_CONNECTIONS`.
+- `MINIDB_LOG_LEVEL`.
 
-* nullable-поле может быть `null`;
+### 7.3. Priority
 
-* default применяется, если значение не передано.
+`CLI flags` > `ENV` > `config/server.php` > `defaults`.
 
-## Шаг 2.4 — Добавить первичный ключ в схему
+---
 
-PHP
+## 8. Public API
 
+### 8.1. Embedded Mode
+
+```php
+use MiniDatabase\Schema\Database;
+
+$db = Database::open(__DIR__ . '/data/mydb');
+$db->execute("CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255) UNIQUE)");
+$result = $db->query('SELECT * FROM users');
 ```
-$users = $database->createTable(
-    'users',
-    schema: [
-        'id' => 'int',
-        'name' => 'string',
-    ],
-    primaryKey: 'id',
+
+### 8.2. Client Mode
+
+```php
+use MiniDatabase\Client\Connection;
+use MiniDatabase\Client\ClientConfig;
+
+$config = new ClientConfig(
+    host: '127.0.0.1',
+    port: 5433,
+    user: 'alice',
+    password: 'secret',
+    database: 'mydb',
+    connectTimeout: 5.0,
+    readTimeout: 30.0,
 );
+
+$conn = Connection::connect($config);
+
+$result = $conn->query('SELECT id, email FROM users WHERE age >= 18');
+foreach ($result as $row) {
+    echo $row['email'] . PHP_EOL;
+}
+
+$stmt = $conn->prepare('INSERT INTO users (id, email, age) VALUES (?, ?, ?)');
+$stmt->execute([1, 'alice@example.com', 30]);
+
+$conn->close();
 ```
 
-Проверять:
+### 8.3. Connection Pool
 
-* первичный ключ существует;
+```php
+use MiniDatabase\Client\ConnectionPool;
 
-* значение ключа уникально;
+$pool = new ConnectionPool($config, maxConnections: 10);
 
-* ключ не может быть `null`;
+$conn = $pool->acquire();
+try {
+    $result = $conn->query('SELECT COUNT(*) AS c FROM users');
+    echo $result->fetch()['c'];
+} finally {
+    $pool->release($conn);
+}
 
-* ключ нельзя изменить без отдельной операции.
-
-## Результат Phase 2
-
-Появляется формальная модель:
-
-```
-Database
-  └── Table
-        ├── TableSchema
-        │     ├── Columns
-        │     └── PrimaryKey
-        └── Rows
+$pool->close();
 ```
 
-# 9. Phase 3 — Формат хранения записей
+### 8.4. Transactions
 
-Теперь нужно перейти от массивов PHP к собственному формату данных.
-
-Главная цель — понять, как запись превращается в байты.
-
-## Шаг 3.1 — Определить формат записи
-
-Для первой версии можно использовать length-prefixed binary format.
-
-Пример:
-
-```
-[record length]
-[record id]
-[column count]
-[column 1 length]
-[column 1 value]
-[column 2 length]
-[column 2 value]
-...
-```
-
-Не нужно сразу делать сложный page format.
-
-## Шаг 3.2 — Создать `RecordEncoder`
-
-PHP
-
-```
-interface RecordEncoder
-{
-    public function encode(Row $row): string;
-
-    public function decode(string $data): Row;
+```php
+$conn->beginTransaction();
+try {
+    $conn->execute("INSERT INTO users (id, email) VALUES (1, 'a@x.com')");
+    $conn->execute("INSERT INTO users (id, email) VALUES (2, 'b@x.com')");
+    $conn->commit();
+} catch (\Throwable $e) {
+    $conn->rollback();
+    throw $e;
 }
 ```
 
-## Шаг 3.3 — Определить кодирование типов
+### 8.5. Exceptions
 
-Пример:
+```php
+use MiniDatabase\Exception\NetworkException;
+use MiniDatabase\Exception\AuthException;
+use MiniDatabase\Exception\ConstraintViolationException;
 
-```
-int    → 8 bytes
-float  → 8 bytes
-bool   → 1 byte
-string → length + bytes
-null   → type marker
-```
-
-Для каждой колонки нужно хранить type marker.
-
-Пример:
-
-```
-0x01 = int
-0x02 = string
-0x03 = bool
-0x04 = float
-0x05 = null
-```
-
-## Шаг 3.4 — Сделать round-trip тесты
-
-Проверить:
-
-```
-Row → encode → decode → Row
-```
-
-Тестировать:
-
-* пустую строку;
-
-* строки с Unicode;
-
-* большие строки;
-
-* `null`;
-
-* отрицательные числа;
-
-* большие числа;
-
-* `float`;
-
-* `bool`;
-
-* разные комбинации полей.
-
-## Шаг 3.5 — Добавить checksum
-
-Для обнаружения повреждения записи можно использовать:
-
-* CRC32;
-
-* SHA-256;
-
-* другой простой checksum.
-
-Для учебного проекта достаточно CRC32.
-
-Формат:
-
-```
-[record length]
-[payload]
-[checksum]
-```
-
-Проверять checksum при чтении.
-
-## Результат Phase 3
-
-Можно преобразовать строку в байты и обратно:
-
-PHP
-
-```
-$encoded = $encoder->encode($row);
-
-$decoded = $encoder->decode($encoded);
-```
-
-# 10. Phase 4 — Persistent storage
-
-Теперь данные должны сохраняться на диске.
-
-## Шаг 4.1 — Создать `DataFile`
-
-PHP
-
-```
-final class DataFile
-{
-    public function append(string $data): int
-    {
-        // Возвращает offset записи.
-    }
-
-    public function read(int $offset, int $length): string
-    {
-    }
+try {
+    $conn->query('SELECT * FROM missing_table');
+} catch (ExecutionException $e) {
+    // ...
 }
 ```
 
-## Шаг 4.2 — Использовать append-only storage
+---
 
-Каждая новая запись добавляется в конец файла:
+## 9. CLI
 
-````
-record 1
-record 2
-record 3
-record 4
+### 9.1. Server
+
+```bash
+php bin/minidb-server start --config config/server.php
+php bin/minidb-server start --host 0.0.0.0 --port 5433 --data ./data/mydb
+php bin/minidb-server stop --pid-file /var/run/minidb.pid
+php bin/minidb-server status
+php bin/minidb-server reload
 ```
 
-Не нужно сразу перезаписывать старые записи.
+### 9.2. Client
 
-Преимущества:
+```bash
+php bin/minidb connect --host 127.0.0.1 --port 5433 --user alice
+php bin/minidb query --host 127.0.0.1 --user alice --password secret "SELECT * FROM users"
+php bin/minidb shell --host 127.0.0.1 --user alice
+php bin/minidb import --host 127.0.0.1 --user alice dump.sql
+php bin/minidb export --host 127.0.0.1 --user alice --output dump.sql
+php bin/minidb user add alice --password secret --role admin
+php bin/minidb user remove bob
+php bin/minidb user list
+```
 
-- простая реализация;
-- понятная модель;
-- последовательная запись;
-- удобная демонстрация recovery;
-- легко отслеживать offsets.
+### 9.3. REPL
+
+```text
+minidb> SELECT id, email FROM users;
++----+-------------------+
+| id | email             |
++----+-------------------+
+|  1 | alice@example.com |
+|  2 | bob@example.com   |
++----+-------------------+
+2 rows in set (0.001 sec)
+```
+
+### 9.4. Output Flags
+
+- `--json`, `--csv`, `--vertical`, `--quiet`.
 
 ---
 
-## Шаг 4.3 — Определить формат файла
+## 10. SQL Support
 
-Пример:
+### 10.1. DDL
 
-~~~text
-[database file header]
-
-[record header]
-[record payload]
-
-[record header]
-[record payload]
-
-[record header]
-[record payload]
-````
-
-Header может содержать:
-
-* magic bytes;
-
-* version;
-
-* page size;
-
-* table identifier;
-
-* checksum;
-
-* metadata offset.
-
-## Шаг 4.4 — Создать `RecordPointer`
-
-PHP
-
-```
-final class RecordPointer
-{
-    public function __construct(
-        public readonly int $offset,
-        public readonly int $length,
-    ) {
-    }
-}
-```
-
-## Шаг 4.5 — Хранить offsets вместо строк в памяти
-
-Вместо:
-
-PHP
-
-```
-[
-    1 => $row1,
-    2 => $row2,
-]
-```
-
-использовать:
-
-PHP
-
-```
-[
-    1 => new RecordPointer(offset: 100, length: 84),
-    2 => new RecordPointer(offset: 184, length: 91),
-]
-```
-
-## Шаг 4.6 — Реализовать загрузку после перезапуска
-
-При открытии базы:
-
-1. открыть файл;
-
-2. прочитать header;
-
-3. пройти по записям;
-
-4. восстановить offsets;
-
-5. восстановить primary index;
-
-6. пропустить удалённые записи;
-
-7. проверить checksum.
-
-## Шаг 4.7 — Добавить тест перезапуска
-
-Сценарий:
-
-```
-1. Открыть базу.
-2. Записать 100 строк.
-3. Закрыть базу.
-4. Создать новый объект Database.
-5. Открыть тот же каталог.
-6. Прочитать все строки.
-7. Проверить данные.
-```
-
-## Результат Phase 4
-
-Данные переживают:
-
-* завершение PHP-процесса;
-
-* создание нового экземпляра Database;
-
-* повторное открытие каталога базы.
-
-# 11. Phase 5 — Primary key and indexes
-
-Сначала поиск может делать полный scan.
-
-```
-find(id)
-  ↓
-прочитать все записи
-  ↓
-найти нужный id
-```
-
-Это просто, но медленно.
-
-## Шаг 5.1 — Реализовать `PrimaryIndex`
-
-Для начала можно использовать hash index:
-
-PHP
-
-```
-final class PrimaryIndex
-{
-    /**
-     * @var array<int, RecordPointer>
-     */
-    private array $entries = [];
-}
-```
-
-## Шаг 5.2 — Обновлять индекс при вставке
-
-При вставке:
-
-1. проверить уникальность ID;
-
-2. записать строку;
-
-3. получить offset;
-
-4. добавить offset в индекс.
-
-## Шаг 5.3 — Читать запись через индекс
-
-Алгоритм:
-
-```
-find(id)
-  ↓
-index[id]
-  ↓
-RecordPointer
-  ↓
-read(offset, length)
-  ↓
-decode()
-  ↓
-Row
-```
-
-## Шаг 5.4 — Восстанавливать индекс
-
-После открытия файла:
-
-1. прочитать записи;
-
-2. определить ID;
-
-3. определить состояние записи;
-
-4. добавить последнюю актуальную запись в индекс.
-
-## Шаг 5.5 — Добавить benchmark
-
-Сравнить:
-
-```
-100 rows
-1 000 rows
-10 000 rows
-100 000 rows
-```
-
-Сравнить:
-
-* full scan;
-
-* hash index.
-
-Измерять:
-
-* average lookup time;
-
-* p95;
-
-* p99;
-
-* количество операций чтения;
-
-* memory usage.
-
-## Шаг 5.6 — Добавить secondary index
-
-После primary index можно реализовать:
-
-PHP
-
-```
-$users->createIndex('email');
-```
-
-Пример структуры:
-
-````
-email@example.com → [1, 15, 20]
-```
-
-Пока достаточно индекса одного поля.
-
----
-
-## Результат Phase 5
-
-Поддерживаются:
-
-- быстрый поиск по primary key;
-- восстановление индекса;
-- простой secondary index;
-- benchmark поиска.
-
----
-
-# 12. Phase 6 — Update and delete
-
-В append-only storage обновление и удаление требуют отдельной модели.
-
----
-
-## Шаг 6.1 — Реализовать update через новую запись
-
-При обновлении:
-
-1. найти старую запись;
-2. создать новую версию;
-3. добавить её в конец файла;
-4. обновить index;
-5. пометить старую запись как устаревшую.
-
----
-
-## Шаг 6.2 — Ввести состояние записи
-
-Возможные состояния:
-
-~~~text
-ACTIVE
-DELETED
-REPLACED
-````
-
-Или через record type:
-
-```
-INSERT
-UPDATE
-DELETE
-```
-
-## Шаг 6.3 — Реализовать tombstone
-
-Удаление может записываться как tombstone:
-
-```
-DELETE key=10
-```
-
-При восстановлении:
-
-* запись с ID 10 считается удалённой;
-
-* старая версия больше не видна.
-
-## Шаг 6.4 — Добавить compaction
-
-Append-only файл со временем растёт.
-
-Compaction:
-
-1. прочитать актуальные записи;
-
-2. создать новый файл;
-
-3. записать только живые записи;
-
-4. построить новый индекс;
-
-5. заменить старый файл.
-
-## Шаг 6.5 — Защититься от повреждения во время compaction
-
-Минимальная схема:
-
-````
-data.db
-data.db.compacting
-data.db.backup
-```
-
-Порядок:
-
-1. создать временный файл;
-2. записать данные;
-3. выполнить flush;
-4. выполнить fsync;
-5. переименовать старый файл;
-6. переименовать новый файл;
-7. удалить backup после успешного завершения.
-
----
-
-## Шаг 6.6 — Тесты compaction
-
-Проверить:
-
-- данные не теряются;
-- удалённые записи не возвращаются;
-- offsets обновляются;
-- размер файла уменьшается;
-- база открывается после compaction.
-
----
-
-## Результат Phase 6
-
-Поддерживаются:
-
-- update;
-- delete;
-- tombstones;
-- append-only versions;
-- compaction.
-
----
-
-# 13. Phase 7 — Query API
-
-До SQL нужно сделать удобный PHP API.
-
----
-
-## Шаг 7.1 — Реализовать `QueryBuilder`
-
-Пример:
-
-~~~php
-$users
-    ->query()
-    ->where('age', '>', 30)
-    ->get();
-````
-
-## Шаг 7.2 — Поддержать операторы
-
-Минимальный набор:
-
-```
-=
-!=
->
->=
-<
-<=
-```
-
-## Шаг 7.3 — Поддержать несколько условий
-
-PHP
-
-```
-$users
-    ->query()
-    ->where('age', '>', 30)
-    ->where('active', '=', true)
-    ->get();
-```
-
-На первом этапе все условия можно объединять через `AND`.
-
-## Шаг 7.4 — Добавить сортировку
-
-PHP
-
-```
-$users
-    ->query()
-    ->orderBy('age', 'desc')
-    ->get();
-```
-
-Поддержать:
-
-* ascending;
-
-* descending;
-
-* одно поле;
-
-* затем несколько полей.
-
-## Шаг 7.5 — Добавить limit и offset
-
-PHP
-
-```
-$users
-    ->query()
-    ->orderBy('id')
-    ->limit(20)
-    ->offset(40)
-    ->get();
-```
-
-## Шаг 7.6 — Добавить first и count
-
-PHP
-
-```
-$user = $users
-    ->query()
-    ->where('id', '=', 10)
-    ->first();
-
-$count = $users
-    ->query()
-    ->where('active', '=', true)
-    ->count();
-```
-
-## Шаг 7.7 — Добавить explain
-
-Пример:
-
-PHP
-
-```
-$users
-    ->query()
-    ->where('id', '=', 10)
-    ->explain();
-```
-
-Результат:
-
-```
-Plan:
-- use primary index
-- read 1 record
-- no sort
-- no full scan
-```
-
-## Результат Phase 7
-
-Появляется удобный API для запросов без SQL.
-
-# 14. Phase 8 — SQL lexer
-
-Теперь можно добавить небольшой SQL-слой.
-
-Не нужно реализовывать весь SQL.
-
-## Шаг 8.1 — Определить поддерживаемый SQL
-
-Минимальный SQL:
-
-SQL
-
-```
+```sql
 CREATE TABLE users (
     id INT PRIMARY KEY,
-    name TEXT,
-    age INT
+    email VARCHAR(255) NOT NULL UNIQUE,
+    age INT DEFAULT 0 CHECK (age >= 0),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_users_age ON users (age);
+ALTER TABLE users ADD COLUMN status VARCHAR(20) DEFAULT 'active';
+ALTER TABLE users DROP COLUMN status;
+DROP TABLE users;
 ```
 
-SQL
+### 10.2. DML
 
-```
-INSERT INTO users (id, name, age)
-VALUES (1, 'Tanat', 40);
-```
-
-SQL
-
-```
-SELECT * FROM users;
+```sql
+INSERT INTO users (id, email, age) VALUES (1, 'a@x.com', 30);
+INSERT INTO users (id, email, age) VALUES (2, 'b@x.com', 25), (3, 'c@x.com', 35);
+UPDATE users SET age = age + 1 WHERE email LIKE '%@x.com';
+DELETE FROM users WHERE age < 18;
 ```
 
-SQL
+### 10.3. SELECT
 
-```
-SELECT * FROM users WHERE id = 1;
-```
-
-SQL
-
-```
-UPDATE users
-SET age = 41
-WHERE id = 1;
+```sql
+SELECT id, email FROM users WHERE age >= 18 ORDER BY email ASC LIMIT 10 OFFSET 0;
+SELECT COUNT(*), AVG(age) FROM users GROUP BY status HAVING COUNT(*) > 1;
+SELECT u.email, o.total FROM users u INNER JOIN orders o ON o.user_id = u.id WHERE o.total > 100;
 ```
 
-SQL
+### 10.4. Service Commands (Extension)
 
-```
-DELETE FROM users
-WHERE id = 1;
-```
-
-## Шаг 8.2 — Создать token types
-
-Минимальные токены:
-
-```
-SELECT
-INSERT
-UPDATE
-DELETE
-CREATE
-TABLE
-FROM
-WHERE
-VALUES
-SET
-PRIMARY
-KEY
-AND
-ORDER
-BY
-LIMIT
-IDENTIFIER
-STRING
-NUMBER
-COMMA
-LPAREN
-RPAREN
-EQUAL
-GREATER
-LESS
-SEMICOLON
-ASTERISK
-EOF
+```sql
+SHOW STATUS;
+SHOW CONNECTIONS;
+SHOW TABLES;
+SHOW INDEXES FROM users;
+KILL 42;
+EXPLAIN SELECT * FROM users WHERE age > 18;
 ```
 
-## Шаг 8.3 — Создать `Lexer`
+---
 
-PHP
+## 11. Implementation Stages
 
-```
-interface Lexer
-{
-    /**
-     * @return list<Token>
-     */
-    public function tokenize(string $sql): array;
+### Milestone 0. Project Setup
+
+**Goal:** create the skeleton.
+
+- [ ] Initialize `composer.json`.
+- [ ] Configure PSR-4: `MiniDatabase\` → `src/`.
+- [ ] Install PHPUnit, PHPStan, PHP-CS-Fixer.
+- [ ] Create `phpunit.xml`, `phpstan.neon`, `.php-cs-fixer.php`.
+- [ ] Configure GitHub Actions.
+- [ ] Create `README.md` and `PLAN.md`.
+
+**Result:** project builds, tests run, linters work.
+
+**Estimate:** 1–2 days.
+
+---
+
+### Milestone 1. Data Types and Serialization
+
+- [ ] `Type` interface.
+- [ ] Implementations: `IntType`, `BigIntType`, `VarcharType`, `DecimalType`, `BoolType`, `DateType`, `DateTimeType`, `BlobType`.
+- [ ] Type casting and validation.
+- [ ] `RecordSerializer` for packing rows.
+- [ ] `ValueCodec` for serializing values into the protocol.
+- [ ] Tests for types, serialization, codec.
+
+**Estimate:** 3–4 days.
+
+---
+
+### Milestone 2. Storage Engine
+
+- [ ] `Page`, `PageManager`.
+- [ ] `HeapFile`: insert, read, delete, scan.
+- [ ] `AtomicWriter`, `FileSystem`, `FileLock`.
+- [ ] Compaction (VACUUM).
+- [ ] Storage tests.
+
+**Estimate:** 5–6 days.
+
+---
+
+### Milestone 3. Schema and Catalog
+
+- [ ] `Database`, `Table`, `Column`, `Schema`.
+- [ ] `Catalog`: reading/writing metadata.
+- [ ] Constraints: `PrimaryKey`, `Unique`, `NotNull`, `ForeignKey`, `Check`, `Default`.
+- [ ] Schema validation.
+- [ ] Schema and catalog tests.
+
+**Estimate:** 4–5 days.
+
+---
+
+### Milestone 4. SQL Lexer and Parser
+
+- [ ] `Lexer`, `Token`, `TokenType`.
+- [ ] `Parser` (recursive descent).
+- [ ] AST nodes for all constructs.
+- [ ] Expressions and functions.
+- [ ] `ParserException` with position.
+- [ ] Parser tests.
+
+**Estimate:** 7–10 days.
+
+---
+
+### Milestone 5. Execution Engine (Basic)
+
+- [ ] `Executor`.
+- [ ] Operators: `SeqScan`, `Filter`, `Project`, `Limit`.
+- [ ] Expression `Evaluator`.
+- [ ] `INSERT`, `UPDATE`, `DELETE`, `SELECT` (without JOIN).
+- [ ] End-to-end tests.
+
+**Estimate:** 6–8 days.
+
+---
+
+### Milestone 6. B-Tree Indexes
+
+- [ ] `BTreeIndex`: insert, search, delete, range.
+- [ ] Disk persistence.
+- [ ] `IndexScan`.
+- [ ] Index usage by the planner.
+- [ ] Unique indexes.
+- [ ] Tests and benchmarks.
+
+**Estimate:** 7–10 days.
+
+---
+
+### Milestone 7. JOIN, GROUP BY, Aggregates
+
+- [ ] `NestedLoopJoin`, `HashJoin`.
+- [ ] `LEFT JOIN`, `RIGHT JOIN`, `INNER JOIN`.
+- [ ] `Sort`, `Aggregate`.
+- [ ] `GROUP BY`, `HAVING`, `DISTINCT`.
+- [ ] JOIN and aggregate tests.
+
+**Estimate:** 8–10 days.
+
+---
+
+### Milestone 8. Transactions and WAL
+
+- [ ] `Wal`, `WalRecord`.
+- [ ] `TransactionManager`, `Transaction`.
+- [ ] `BEGIN`, `COMMIT`, `ROLLBACK`.
+- [ ] `SAVEPOINT`.
+- [ ] `LockManager` (row/table locks).
+- [ ] Isolation levels.
+- [ ] Recovery after crash.
+- [ ] Transaction tests.
+
+**Estimate:** 10–14 days.
+
+---
+
+### Milestone 9. Planner and Optimizer
+
+- [ ] `Planner`, `Optimizer`.
+- [ ] Rules: predicate pushdown, constant folding, index selection, join reordering.
+- [ ] `EXPLAIN`.
+- [ ] Plan tests.
+
+**Estimate:** 7–10 days.
+
+---
+
+### Milestone 10. Integrity Constraints
+
+- [ ] `NOT NULL`, `UNIQUE`, `PRIMARY KEY`.
+- [ ] `FOREIGN KEY` with `ON DELETE`/`ON UPDATE`.
+- [ ] `CHECK`, `DEFAULT`.
+- [ ] Constraint tests.
+
+**Estimate:** 5–7 days.
+
+---
+
+### Milestone 11. TCP Protocol
+
+**Goal:** define and implement the wire protocol.
+
+- [ ] `Frame`, `Message`, `MessageType`, `Opcode`.
+- [ ] `Codec` — frame serialization/deserialization.
+- [ ] `ResultEncoder` — result encoding.
+- [ ] Partial read handling (streaming).
+- [ ] Protocol error handling.
+- [ ] Codec tests: roundtrip, edge cases, corrupted frames.
+- [ ] Documentation `docs/protocol.md`.
+
+**Result:** protocol fully defined and tested.
+
+**Estimate:** 5–7 days.
+
+---
+
+### Milestone 12. TCP Server (Core)
+
+**Goal:** server accepts connections and executes simple queries.
+
+- [ ] `Server`, `Acceptor`, `EventLoop`.
+- [ ] `ServerConfig`.
+- [ ] `Session`, `SessionManager`.
+- [ ] Handshake (`HELLO`, `HELLO_ACK`).
+- [ ] Handle `QUERY` without authentication (dev mode).
+- [ ] Handle `QUERY_RESULT`, `QUERY_ERROR`.
+- [ ] `PING`/`PONG`.
+- [ ] Graceful shutdown by signal.
+- [ ] Logging.
+- [ ] Tests: connect, query, disconnect.
+
+**Result:** server executes SQL from a client.
+
+**Estimate:** 7–10 days.
+
+---
+
+### Milestone 13. Authentication
+
+**Goal:** secure connections.
+
+- [ ] `Authenticator`, `ScramChallenge`, `UserStore`, `PasswordHash`.
+- [ ] Messages `AUTH`, `AUTH_OK`, `AUTH_FAIL`.
+- [ ] CLI `user add/remove/list`.
+- [ ] Password hashing (Argon2id or bcrypt).
+- [ ] Challenge-response via HMAC.
+- [ ] Authentication tests: success, failure, retry, brute-force protection.
+
+**Result:** only authorized clients can work with the DB.
+
+**Estimate:** 5–6 days.
+
+---
+
+### Milestone 14. Prepared Statements
+
+**Goal:** parameterized queries over the network.
+
+- [ ] `PREPARE`, `PREPARE_OK`, `EXECUTE`, `CLOSE_STMT`.
+- [ ] Store prepared statements in the session.
+- [ ] Limit on the number of prepared statements.
+- [ ] Prepared statement tests.
+- [ ] Protection against SQL injection.
+
+**Estimate:** 4–5 days.
+
+---
+
+### Milestone 15. Transactions over the Network
+
+**Goal:** transaction management via the protocol.
+
+- [ ] Messages `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`.
+- [ ] Transaction state in `Session`.
+- [ ] Handling timeouts and disconnects.
+- [ ] Transaction tests via the client.
+
+**Estimate:** 3–4 days.
+
+---
+
+### Milestone 16. Client Library
+
+**Goal:** convenient PHP client.
+
+- [ ] `ClientConfig`, `Connection`, `Statement`, `ResultSet`.
+- [ ] Handshake and auth in the client.
+- [ ] Connect/read/write timeouts.
+- [ ] Reconnect on failure.
+- [ ] `ConnectionPool`.
+- [ ] Error handling.
+- [ ] Client and pool tests.
+
+**Estimate:** 6–8 days.
+
+---
+
+### Milestone 17. CLI Client and REPL
+
+- [ ] `bin/minidb` with commands `connect`, `query`, `shell`, `import`, `export`, `user`, `backup`, `restore`.
+- [ ] REPL with history and autocompletion.
+- [ ] Output in table/json/csv/vertical.
+- [ ] CLI tests.
+
+**Estimate:** 5–6 days.
+
+---
+
+### Milestone 18. Server Administration
+
+- [ ] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
+- [ ] Metrics: connections, queries/sec, errors.
+- [ ] PID file.
+- [ ] Daemonize (`--daemon`).
+- [ ] Handle `SIGHUP` (reload), `SIGTERM` (graceful stop).
+- [ ] Administration tests.
+
+**Estimate:** 4–5 days.
+
+---
+
+### Milestone 19. Backup, Dump, Restore
+
+- [ ] `Dumper`: SQL dump of schema and data.
+- [ ] `Restorer`.
+- [ ] `BackupManager`: tar.gz backups.
+- [ ] Works via server and embedded.
+- [ ] Roundtrip tests.
+
+**Estimate:** 3–4 days.
+
+---
+
+### Milestone 20. Testing, Optimization, Documentation
+
+- [ ] Unit tests ≥ 85%.
+- [ ] Integration tests (embedded + client-server).
+- [ ] Concurrency tests (many clients).
+- [ ] Load tests (network benchmark).
+- [ ] Profiling and optimization.
+- [ ] PHPStan level 8.
+- [ ] Documentation: SQL, protocol, architecture, security, CLI.
+- [ ] Examples in `examples/`.
+
+**Estimate:** 7–10 days.
+
+---
+
+### Milestone 21. Release v1.0.0
+
+- [ ] CHANGELOG.
+- [ ] Tag `v1.0.0`.
+- [ ] Publish on Packagist.
+- [ ] Optional: PHAR build for server.
+- [ ] Announcement.
+
+**Estimate:** 2–3 days.
+
+---
+
+## 12. Testing
+
+### 12.1. Unit Tests
+
+- Lexer, Parser, AST.
+- Types, Serializer, Codec.
+- B-Tree, HeapFile, PageManager.
+- Filter, Sort, Projection, Aggregates.
+- Planner, Optimizer.
+- WAL, TransactionManager, LockManager.
+- Protocol Codec, Frame, Message.
+- Client Connection, Statement, ResultSet.
+- Auth: PasswordHash, ScramChallenge.
+
+### 12.2. Integration Tests
+
+- Embedded: full SQL cycle.
+- Client-server: connect → auth → query → close.
+- Prepared statements.
+- Transactions via the client.
+- Concurrent clients (N parallel).
+- Connection drop during a query.
+- Recovery after server crash.
+- Integrity constraints.
+- Import/export via CLI.
+
+### 12.3. Concurrency Tests
+
+- 10, 50, 100 simultaneous clients.
+- Simultaneous writes to one table.
+- Reads during writes.
+- Deadlock detection.
+- Timeouts and query cancellation.
+
+### 12.4. Benchmarks
+
+- 1k, 10k, 100k, 1M rows.
+- Insert/select/update/delete.
+- Search without index vs with index.
+- Nested loop vs hash join.
+- Network measurements: latency, throughput, connections/sec.
+- Connection pool: reuse vs new connection.
+
+---
+
+## 13. Security
+
+### 13.1. Authentication
+
+- Argon2id for password storage.
+- Challenge-response via HMAC-SHA256.
+- Unique salt per user.
+- Protection against replay attacks via nonce.
+
+### 13.2. Authorization
+
+- Roles: `admin`, `writer`, `reader`.
+- DB/table-level privileges.
+- `GRANT`, `REVOKE` (in v1.1).
+
+### 13.3. Network
+
+- Bind to `127.0.0.1` by default.
+- Optional: TLS in v1.1.
+- Frame size limit (OOM protection).
+- Idle/query timeouts.
+- Max connections limit.
+- Rate limiting on auth attempts.
+
+### 13.4. SQL Injection
+
+- Prepared statements as the main path.
+- Literal escaping in the parser.
+- Identifier validation.
+
+### 13.5. File System
+
+- Validate collection/table names.
+- Path traversal protection.
+- Data file permissions: 0600.
+
+---
+
+## 14. CI/CD
+
+### 14.1. GitHub Actions
+
+- PHP matrix: 8.1, 8.2, 8.3, 8.4.
+- Steps:
+    - `composer install`
+    - `php-cs-fixer --dry-run`
+    - `phpstan analyse`
+    - `phpunit`
+    - `composer validate`
+- Separate job: start server + client tests.
+
+### 14.2. Release
+
+- Tag `vX.Y.Z`.
+- Generate CHANGELOG.
+- Publish on Packagist.
+- Optional: build PHAR for server and client.
+
+---
+
+## 15. Risks and Solutions
+
+| Risk | Solution |
+|------|----------|
+| File corruption during write | AtomicWriter: temp + rename |
+| Concurrent access | flock + WAL + lock manager |
+| Slow search | B-Tree, predicate pushdown |
+| Memory leak on large data | Iterators, streaming, limits |
+| Path traversal | Name validation, normalization |
+| SQL parser complexity | Incremental support, test coverage |
+| Deadlock in transactions | Lock manager with cycle detection |
+| Data loss on crash | WAL + recovery + backups |
+| Slow JOINs | Hash join, optimizer |
+| Heap file growth | VACUUM |
+| B-Tree complexity | Incremental implementation, tests |
+| Client disconnect during transaction | Timeout + auto-rollback |
+| Slowloris on TCP | Timeouts on handshake and idle |
+| Auth brute force | Rate limiting + backoff |
+| OOM on large results | Streaming + frame size limit |
+| Fork issues on Windows | Document limitations |
+
+---
+
+## 16. Roadmap
+
+- `v0.1.0` — Types + Storage Engine.
+- `v0.2.0` — Schema + Catalog.
+- `v0.3.0` — Lexer + Parser.
+- `v0.4.0` — Execution Engine (basic).
+- `v0.5.0` — B-Tree indexes.
+- `v0.6.0` — JOIN, GROUP BY, aggregates.
+- `v0.7.0` — Transactions + WAL.
+- `v0.8.0` — Planner and Optimizer.
+- `v0.9.0` — TCP Protocol + Server (core).
+- `v0.9.5` — Authentication.
+- `v0.9.7` — Prepared statements + transactions over the network.
+- `v0.9.9` — Client Library + CLI client.
+- `v0.9.10` — Backups + administration.
+- `v0.9.15` — Tests, optimization, documentation.
+- `v1.0.0` — Stable release.
+
+---
+
+## 17. Definition of Done for v1.0.0
+
+- [ ] All functional requirements are met.
+- [ ] Test coverage ≥ 85%.
+- [ ] PHPStan level 8 with no errors.
+- [ ] PHP-CS-Fixer with no violations.
+- [ ] Documentation: SQL, protocol, architecture, security, CLI.
+- [ ] Usage examples (embedded + client-server).
+- [ ] CI passes on all supported PHP versions.
+- [ ] Package is available on Packagist.
+- [ ] Benchmarks are published.
+- [ ] Server sustains 100 simultaneous clients.
+- [ ] No critical bugs.
+
+---
+
+## 18. Example: Embedded
+
+```php
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+use MiniDatabase\Schema\Database;
+
+$db = Database::open(__DIR__ . '/data/mydb');
+
+$db->execute('
+    CREATE TABLE IF NOT EXISTS users (
+        id INT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        age INT DEFAULT 0 CHECK (age >= 0)
+    )
+');
+
+$db->execute("INSERT INTO users (id, email, age) VALUES (1, 'alice@example.com', 30)");
+
+foreach ($db->query('SELECT * FROM users') as $row) {
+    print_r($row);
 }
 ```
 
-## Шаг 8.4 — Реализовать lexer постепенно
+---
 
-Порядок:
+## 19. Example: Client-Server
 
-1. пробелы;
+### 19.1. Start the Server
 
-2. идентификаторы;
-
-3. ключевые слова;
-
-4. числа;
-
-5. строки;
-
-6. знаки пунктуации;
-
-7. операторы;
-
-8. ошибки.
-
-## Шаг 8.5 — Тестировать lexer
-
-Пример:
-
-SQL
-
-```
-SELECT id, name FROM users WHERE age >= 30;
+```bash
+php bin/minidb-server start --host 127.0.0.1 --port 5433 --data ./data/mydb
 ```
 
-Ожидаемые токены:
+### 19.2. Connect the Client
 
+```php
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+use MiniDatabase\Client\Connection;
+use MiniDatabase\Client\ClientConfig;
+
+$config = new ClientConfig(
+    host: '127.0.0.1',
+    port: 5433,
+    user: 'alice',
+    password: 'secret',
+    database: 'mydb',
+);
+
+$conn = Connection::connect($config);
+
+$stmt = $conn->prepare('INSERT INTO users (id, email, age) VALUES (?, ?, ?)');
+$stmt->execute([1, 'alice@example.com', 30]);
+
+$result = $conn->query('SELECT id, email FROM users WHERE age >= ?', [18]);
+foreach ($result as $row) {
+    printf("#%d %s\n", $row['id'], $row['email']);
+}
+
+$conn->close();
 ```
-SELECT
-IDENTIFIER(id)
-COMMA
-IDENTIFIER(name)
-FROM
-IDENTIFIER(users)
-WHERE
-IDENTIFIER(age)
-GREATER_OR_EQUAL
-NUMBER(30)
-SEMICOLON
-EOF
+
+---
+
+## 20. Appendix: Protocol Error Format
+
+```json
+{
+  "error": {
+    "code": "CONSTRAINT_VIOLATION",
+    "message": "Duplicate entry 'alice@example.com' for key 'uq_users_email'",
+    "context": {
+      "table": "users",
+      "constraint": "uq_users_email",
+      "value": "alice@example.com"
+    }
+  }
+}
 ```
+
+Error codes:
+
+- `PARSER_ERROR`, `TABLE_NOT_FOUND`, `COLUMN_NOT_FOUND`.
+- `TYPE_MISMATCH`, `CONSTRAINT_VIOLATION`.
+- `TRANSACTION_ERROR`, `DEADLOCK`.
+- `STORAGE_ERROR`, `AUTH_FAILED`, `PERMISSION_DENIED`.
+- `QUERY_CANCELLED`, `TIMEOUT`.
+
+---
+
+## 21. Appendix: Transaction Isolation
+
+| Level | Dirty Read | Non-Repeatable Read | Phantom Reads |
+|-------|------------|---------------------|---------------|
+| READ COMMITTED | no | yes | yes |
+| REPEATABLE READ | no | no | yes |
+| SERIALIZABLE | no | no | no |
+
+Implementation:
+
+- `READ COMMITTED` — read locks released immediately.
+- `REPEATABLE READ` — row snapshot.
+- `SERIALIZABLE` — predicate locks or SSI.
+
+---
+
+## 22. Appendix: Connection Lifecycle
+
+```text
+Client                          Server
+  |                               |
+  |------- TCP connect ---------->|
+  |------- HELLO ---------------->|
+  |<------ HELLO_ACK -------------|
+  |------- AUTH ----------------->|
+  |<------ AUTH_OK / AUTH_FAIL ---|
+  |                               |
+  |------- QUERY ----------------->|
+  |<------ QUERY_RESULT ----------|
+  |                               |
+  |------- PREPARE -------------->|
+  |<------ PREPARE_OK ------------|
+  |------- EXECUTE -------------->|
+  |<------ QUERY_RESULT ----------|
+  |                               |
+  |------- BEGIN ---------------->|
+  |------- QUERY ---------------->|
+  |------- COMMIT --------------->|
+  |                               |
+  |------- GOODBYE -------------->|
+  |<------ GOODBYE ---------------|
+  |------- TCP close ------------>|
+```
+
+---
+
+## 23. Appendix: Implementation Order (Checklist)
+
+- [ ] Milestone 0. Project Setup.
+- [ ] Milestone 1. Data Types and Serialization.
+- [ ] Milestone 2. Storage Engine.
+- [ ] Milestone 3. Schema and Catalog.
+- [ ] Milestone 4. SQL Lexer and Parser.
+- [ ] Milestone 5. Execution Engine (Basic).
+- [ ] Milestone 6. B-Tree Indexes.
+- [ ] Milestone 7. JOIN, GROUP BY, Aggregates.
+- [ ] Milestone 8. Transactions and WAL.
+- [ ] Milestone 9. Planner and Optimizer.
+- [ ] Milestone 10. Integrity Constraints.
+- [ ] Milestone 11. TCP Protocol.
+- [ ] Milestone 12. TCP Server (Core).
+- [ ] Milestone 13. Authentication.
+- [ ] Milestone 14. Prepared Statements.
+- [ ] Milestone 15. Transactions over the Network.
+- [ ] Milestone 16. Client Library.
+- [ ] Milestone 17. CLI Client and REPL.
+- [ ] Milestone 18. Server Administration.
+- [ ] Milestone 19. Backup, Dump, Restore.
+- [ ] Milestone 20. Testing, Optimization, Documentation.
+- [ ] Milestone 21. Release v1.0.0.
+
+---
+
+**Summary:** The plan covers architecture, TCP protocol, authentication, client library, implementation stages, testing, security, CI/CD, risks, and definition of done for a PHP relational mini-DBMS with client-server mode. It can be used as a roadmap from an empty repository to a stable `v1.0.0` release.

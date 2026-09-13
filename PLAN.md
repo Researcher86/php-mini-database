@@ -889,11 +889,11 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 2. Storage Engine
 
-- [ ] `Page`, `PageManager`.
-- [ ] `HeapFile`: insert, read, delete, scan.
-- [ ] `AtomicWriter`, `FileSystem`, `FileLock`.
-- [ ] Compaction (VACUUM).
-- [ ] Storage tests.
+- [x] `Page`, `PageManager`.
+- [x] `HeapFile`: insert, read, delete, scan.
+- [x] `AtomicWriter`, `FileSystem`, `FileLock`.
+- [x] Compaction (VACUUM).
+- [x] Storage tests.
 
 **Estimate:** 5–6 days.
 
@@ -1469,7 +1469,7 @@ Client                          Server
 
 - [x] Milestone 0. Project Setup.
 - [x] Milestone 1. Data Types and Serialization.
-- [ ] Milestone 2. Storage Engine.
+- [x] Milestone 2. Storage Engine.
 - [ ] Milestone 3. Schema and Catalog.
 - [ ] Milestone 4. SQL Lexer and Parser.
 - [ ] Milestone 5. Execution Engine (Basic).

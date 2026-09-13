@@ -21,9 +21,10 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 1 — data types and serialization**. The
-column types, their byte encoding and the row serializer are in place; the
-storage engine is next.
+Latest finished phase: **Phase 2 — storage engine**. Column types and
+their byte encoding, slotted pages, a heap file with VACUUM, and the
+filesystem primitives underneath them are in place; the schema and catalog
+are next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

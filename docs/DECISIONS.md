@@ -18,6 +18,11 @@ project is built from is [PLAN.md](../PLAN.md).
 | Ordered types encode sign-flipped, so byte order is value order | current, [why](#byte-order-is-value-order) |
 | `DECIMAL` is an integer scaled by `10^scale`, surfaced as a fixed-scale string | current, [why](#decimal-is-a-scaled-integer-not-a-float) |
 | A type is rebuilt from its *name*; its wire code is only a classification | current, [why](#names-rebuild-a-type-codes-only-classify) |
+| Rows live in slotted pages and are addressed by slot, never by offset | current, [why](#slotted-pages-and-addresses-that-survive) |
+| A page is held decoded in memory and laid out only on the way to disk | current, [why](#a-page-is-decoded-in-memory) |
+| No buffer pool: every read decodes a fresh page | current, [why](#no-buffer-pool-yet) |
+| An insert goes into the last page; freed space comes back only at VACUUM | current, [why](#inserts-go-to-the-last-page) |
+| The write lock is held on a `.lock` file, not on the data file | current, [why](#the-lock-is-on-its-own-file) |
 
 ## One byte format for disk and wire
 
@@ -88,3 +93,90 @@ the value wrongly but plausibly. The consequence lands on the protocol: a
 column descriptor has to carry the type name, not only its `uint8` code, for
 any parametrised type. That is one string per column per result set, paid
 once in the header.
+
+## Slotted pages and addresses that survive
+
+A row is addressed as `page:slot` — `Storage\RecordId` — and the slot is an
+index into the page's directory, not a byte offset. The indirection is the
+whole point: the directory entry can be rewritten when the bytes move, so
+compacting a page, or deleting the record next to this one, leaves every
+other record findable at the address it already had.
+
+The alternative, addressing a row by its byte offset in the file, is simpler
+by exactly one level and wrong the first time anything moves. A B-Tree leaf
+holds thousands of these addresses; an `UPDATE` that shortened a row would
+otherwise have to find and rewrite every one of them.
+
+Deleting leaves a tombstone — offset 0, length 0, which is unmistakable
+because offset 0 is inside the header — rather than removing the directory
+entry, for the same reason: removing it would renumber every later slot on
+the page. `insert()` reuses a tombstone before appending, so the directory
+does not grow without bound under a delete/insert cycle.
+
+## A page is decoded in memory
+
+`Page` holds a list of record strings, one per slot, and builds the 8 KiB
+layout only in `toBytes()`. It does not keep the page's bytes around and
+edit them in place.
+
+In-place editing is what a database written in C does, and for a good
+reason: it can write back just the bytes that changed. This one cannot —
+`PageManager` writes whole pages, because a partial page write is not atomic
+and recovering from a torn one needs machinery (full-page writes in the WAL)
+that is well beyond this project. Given that every write is 8192 bytes
+anyway, in-place editing buys nothing and costs the offset arithmetic that
+slotted-page bugs are made of.
+
+The memory cost is nil in practice: the decoded records are the same bytes,
+minus the free space.
+
+## No buffer pool yet
+
+`PageManager::read()` hits the file and decodes a new `Page` every time.
+
+A buffer pool — keep hot pages in memory, track which are dirty, write them
+out on eviction — is the single biggest performance lever in a storage
+engine, and it is also three new ways to be wrong: a dirty page lost on
+eviction, two callers mutating the same cached `Page` while each believes it
+owns it, and a cache that disagrees with the file after a crash.
+
+It is postponed rather than rejected. The seam is this one class: a pool
+lives entirely inside `read()`/`write()`/`sync()`, and no caller would
+change. The right time to add it is Phase 20, with a benchmark to show what
+it bought.
+
+## Inserts go to the last page
+
+`HeapFile::insert()` tries the last page in the file and allocates a new one
+if it does not fit. It never looks for the page in the middle of the file
+that a `DELETE` left half empty.
+
+The consequence is real: under a delete-heavy workload the file grows and
+only `vacuum()` gives the space back. The alternative is a free-space map —
+per-page free bytes, consulted on insert, updated on delete — which is a
+second on-disk structure that has to stay consistent with the pages
+themselves, including across a crash, and it would have to be built and
+maintained through every phase that follows.
+
+The trade is: pay a VACUUM now, keep the crash-consistency argument down to
+one structure for the transaction phases. `insert()`'s choice of page is the
+only thing that would change.
+
+## The lock is on its own file
+
+`FileLock` locks `something.lock`, never the data file it protects.
+
+`flock()` attaches to an open file description, which attaches to an inode.
+`AtomicWriter` replaces files by renaming a new inode over the old name — so
+a lock taken on the data file would, after any atomic write, be held on an
+inode that no longer has a name, while a second process locking the *new*
+file would get it immediately. Both processes would believe they held the
+write lock.
+
+A lock file is never replaced, only locked, so the inode is stable for as
+long as the database exists.
+
+Waiting is a poll of non-blocking `flock()` rather than a blocking one,
+because a blocking `flock()` cannot be given a timeout, and a server that
+hangs forever on a lock held by a crashed process is worse than one that
+reports it could not get the lock.

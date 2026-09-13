@@ -49,3 +49,39 @@ cast, round trip, byte layout and truncated input;
 `tests/Unit/Schema/Type/TypeFactoryTest.php` for the name and code mappings;
 `tests/Unit/Storage/RecordSerializerTest.php` for the null bitmap and row
 round trip; `tests/Unit/Network/Protocol/ValueCodecTest.php`.
+
+## Phase 2 — Storage engine ✅
+
+Bytes on disk. `Storage\Page` is a fixed 8 KiB slotted page: a header, a slot
+directory growing down from the front, record data growing up from the back,
+and a tombstone for a deleted slot so that slot numbers — and therefore
+record addresses — never shift. `Storage\PageManager` maps page *N* to the
+bytes at *N* × 8192 and does nothing else, deliberately: there is no buffer
+pool yet, and no caller would change if there were.
+
+`Storage\HeapFile` is the table as a file of records, with `insert`, `read`,
+`update`, `delete`, a streaming `scan()` and a `vacuum()` that rewrites the
+file without its dead records. `Storage\RecordId` is a row's physical
+address, "page:slot".
+
+Underneath, `Infrastructure\` gets the four pieces the rest of the database
+will keep reaching for: `FileSystem` (one door to the filesystem, failures as
+exceptions, owner-only by default), `AtomicWriter` (temp file, fsync,
+rename), `FileLock` (bounded, non-blocking `flock`) and `Path` (identifier
+validation and path-traversal refusal).
+
+Five decisions from this phase are in [DECISIONS.md](DECISIONS.md): the
+slotted page and stable slot numbers, holding a page decoded in memory, no
+buffer pool, inserting only into the last page, and locking a separate file
+rather than the data file.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Storage/PageTest.php` — layout, round trip, tombstone
+reuse and four kinds of corrupted page; `PageManagerTest.php` — page
+addressing, reopening, out-of-range access; `HeapFileTest.php` — spilling
+across pages, the update that moves a record, vacuum;
+`RecordIdTest.php`; and `tests/Unit/Infrastructure/*Test.php`, where
+`AtomicWriterTest::testAFailedWriteLeavesTheDirectoryUntouched` and
+`FileLockTest::testASecondExclusiveLockTimesOut` are the two that matter
+most.

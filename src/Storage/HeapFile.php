@@ -71,6 +71,16 @@ final class HeapFile
         return new RecordId($page->id, $slot);
     }
 
+    /**
+     * How many pages the file currently has — an O(1) proxy for the
+     * table's size, cheap enough for `Sql\Optimizer\Rule\JoinReordering`
+     * to call while planning a query, unlike counting rows via `scan()`.
+     */
+    public function pageCount(): int
+    {
+        return $this->pages->pageCount();
+    }
+
     /** The record, or null if that slot has been deleted. */
     public function read(RecordId $id): ?string
     {

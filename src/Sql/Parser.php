@@ -18,6 +18,7 @@ use PhpMiniDatabase\Sql\Ast\CreateTableStatement;
 use PhpMiniDatabase\Sql\Ast\DeleteStatement;
 use PhpMiniDatabase\Sql\Ast\DropIndexStatement;
 use PhpMiniDatabase\Sql\Ast\DropTableStatement;
+use PhpMiniDatabase\Sql\Ast\ExplainStatement;
 use PhpMiniDatabase\Sql\Ast\Expression;
 use PhpMiniDatabase\Sql\Ast\Expression\Between;
 use PhpMiniDatabase\Sql\Ast\Expression\BinaryOp;
@@ -145,8 +146,21 @@ final class Parser
             TokenType::ROLLBACK => $this->rollbackStatement(),
             TokenType::SAVEPOINT => $this->savepointStatement(),
             TokenType::RELEASE => $this->releaseSavepointStatement(),
+            TokenType::EXPLAIN => $this->explainStatement(),
             default => throw $this->error('Expected a statement.'),
         };
+    }
+
+    private function explainStatement(): ExplainStatement
+    {
+        $this->expect(TokenType::EXPLAIN);
+        $inner = $this->statement();
+
+        if (!$inner instanceof SelectStatement) {
+            throw $this->error('EXPLAIN only supports SELECT.');
+        }
+
+        return new ExplainStatement($inner);
     }
 
     private function createStatement(): Statement

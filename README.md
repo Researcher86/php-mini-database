@@ -21,14 +21,14 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 8 — Transactions and WAL**. `BEGIN`/
-`COMMIT`/`ROLLBACK`/`SAVEPOINT` work end to end against a logical,
-`fsync`'d write-ahead log; `INSERT`/`UPDATE`/`DELETE` run inside an
-implicit transaction when none is open, giving a multi-row `INSERT`
-statement-level atomicity for the first time; `READ COMMITTED`/
-`REPEATABLE READ`/`SERIALIZABLE` are enforced with row/table locking; and
-an interrupted transaction is undone automatically the next time the
-database opens. The planner and optimizer are next.
+Latest finished phase: **Phase 9 — Planner and Optimizer**. A `SELECT`
+now goes through a real `Planner`/`Optimizer` pair instead of the
+executor building its pipeline ad hoc: constant folding, predicate
+pushdown past a `JOIN` (correctness-checked around outer joins), index
+selection — now reaching a `JOIN` side too — and a join-reordering rule
+that swaps sides by table size so `HashJoin` always builds its hash table
+from the smaller one. `EXPLAIN` prints the resulting plan without running
+it. Integrity constraints (`FOREIGN KEY`, `CHECK`) are next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

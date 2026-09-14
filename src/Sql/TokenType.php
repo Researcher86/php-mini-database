@@ -113,6 +113,9 @@ enum TokenType
     case REPEATABLE;
     case SERIALIZABLE;
 
+    // Diagnostics
+    case EXPLAIN;
+
     // Punctuation and operators
     case LPAREN;
     case RPAREN;
@@ -218,6 +221,7 @@ enum TokenType
             'COMMITTED' => self::COMMITTED,
             'REPEATABLE' => self::REPEATABLE,
             'SERIALIZABLE' => self::SERIALIZABLE,
+            'EXPLAIN' => self::EXPLAIN,
         ];
     }
 }

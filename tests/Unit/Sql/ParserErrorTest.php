@@ -31,7 +31,7 @@ final class ParserErrorTest extends TestCase
     public function testAnUnknownStatementKeywordThrows(): void
     {
         $this->expectException(ParserException::class);
-        Parser::parseOne('EXPLAIN SELECT 1');
+        Parser::parseOne('VACUUM users');
     }
 
     public function testCreateWithoutTableOrIndexThrows(): void

@@ -35,6 +35,9 @@ project is built from is [PLAN.md](../PLAN.md).
 | Recovery assumes a single crash | current, [why](#recovery-assumes-a-single-crash) |
 | `Database`, not `Executor`, owns transaction and lock state | current, [why](#database-not-executor-owns-transaction-and-lock-state) |
 | DDL is not transactional | current, [why](#ddl-is-not-transactional) |
+| A `LogicalPlan` node carries its own physical decision; there is no separate physical plan | current, [why](#a-logicalplan-node-carries-its-own-physical-decision) |
+| A predicate never pushes past an outer join's nullable side | current, [why](#a-predicate-never-pushes-past-an-outer-joins-nullable-side) |
+| Join reordering is a two-table swap by page count, not a search | current, [why](#join-reordering-is-a-two-table-swap-by-page-count-not-a-search) |
 
 ## One byte format for disk and wire
 
@@ -998,3 +1001,74 @@ databases (MySQL among them) make the same choice for the same reason:
 DDL's effects are cheap to redo by hand if a mistake is caught immediately
 after, and the machinery to make it fully transactional is disproportionate
 to how often a schema change needs undoing compared to a row's data.
+
+## A `LogicalPlan` node carries its own physical decision
+
+`Sql\Planner\Plan\Scan::$index` and `Plan\Join::$hash` both start `null`
+and get filled in by an `Sql\Optimizer\Rule\*` once one applies — the same
+`Scan` or `Join` object changes from "not yet decided" to "decided", in
+place, rather than a `LogicalPlan` tree being rewritten into a separate
+`PhysicalPlan` tree the way PLAN.md's own file layout
+(`Planner/LogicalPlan.php`, `Planner/PhysicalPlan.php`) sketches.
+
+A real physical-plan split earns its keep when a planner has to keep more
+than one candidate physical strategy alive at once to compare their cost —
+that is what "logical" (the question) versus "physical" (one candidate
+answer) is for. This optimizer never does that: every rule commits to its
+rewrite immediately, there is no alternative plan sitting alongside the
+chosen one to discard. Splitting the type in two here would mean two
+parallel class hierarchies (`Plan\Scan` and, say, `PhysicalScan`)
+representing the same node through two different points in its life,
+doubling the types `Sql\Optimizer\Rule\*` and `Execution\Executor::compile()`
+both have to know about for no reader benefit — nothing downstream needs
+"has this node been decided yet" to be a difference in *type*, only in
+whether a nullable field is still `null`.
+
+## A predicate never pushes past an outer join's nullable side
+
+`Sql\Optimizer\Rule\PredicatePushdown` will move a `WHERE` conjunct onto a
+`LEFT JOIN`'s left side or a `RIGHT JOIN`'s right side, but never onto the
+other, nullable one. This is not a narrower version of the rule for
+simplicity's sake — it is the one restriction that has to hold for the
+rule to be correct at all.
+
+An outer join keeps an unmatched preserved-side row by null-padding the
+columns that would have come from the other side. Moving a `WHERE`
+condition on that nullable side to run *before* the join, instead of after
+it as part of `WHERE`, changes what "unmatched" means: a right row that
+fails the pushed-down condition now looks, to the join, exactly like a
+right row that was never there in the first place, so the left row is kept
+and null-padded — where evaluating the same condition *after* the join, as
+written, would instead have discarded that row outright for failing a
+`WHERE` clause on a real, matched value. These are different result sets
+in general, not merely different plans for the same one — a `LEFT
+JOIN ... WHERE right.col = x` that happens to reject nulls is the
+well-known case where the two would coincide, but this rule does not
+attempt to detect that case and push anyway; it always leaves the
+condition where `WHERE` put it whenever the side is nullable.
+
+## Join reordering is a two-table swap by page count, not a search
+
+`Sql\Optimizer\Rule\JoinReordering` only ever does one thing: given an
+`INNER JOIN` whose two sides are each directly a table (a `Scan`, or a
+`Scan` under a `Filter` — not a nested `Join`), it compares
+`HeapFile::pageCount()` for each side and swaps which one is `left` versus
+`right` if that puts the smaller table on `HashJoin`'s hash-built `$right`.
+A three-or-more-table query keeps exactly the join order its `FROM` clause
+wrote, however each table's actual size compares.
+
+Real query optimizers solve a harder version of this: given `N` tables and
+a set of join conditions among them, search the space of legal join
+orders (and of which pairs to join before which) for the cheapest overall
+plan — an `O(N!)` space in the worst case, tamed in practice with dynamic
+programming or heuristics, and dependent on cost estimates (row counts,
+selectivity) this project has never needed to build for anything else.
+Solving that properly is a project of its own, disproportionate to what
+this rule needs to demonstrate: that the plan tree can carry a physical
+decision an earlier phase's ad hoc code never got to make (`HashJoin`
+always kept whichever side the `FROM` clause happened to name as `$right`),
+and that even a single, narrow cost signal — a page count already sitting
+in memory, not a fresh statistic gathered for this purpose — can improve a
+plan a rule-based, non-cost-based optimizer would otherwise leave alone.
+Extending it to a real join-order search is future work, named here rather
+than attempted narrowly and incorrectly.

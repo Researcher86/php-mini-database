@@ -26,7 +26,6 @@ use PhpMiniDatabase\Execution\Operator\Sort;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Row;
-use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Sql\Ast\AlterTableStatement;
 use PhpMiniDatabase\Sql\Ast\BeginStatement;
 use PhpMiniDatabase\Sql\Ast\CommitStatement;
@@ -35,17 +34,8 @@ use PhpMiniDatabase\Sql\Ast\CreateTableStatement;
 use PhpMiniDatabase\Sql\Ast\DeleteStatement;
 use PhpMiniDatabase\Sql\Ast\DropIndexStatement;
 use PhpMiniDatabase\Sql\Ast\DropTableStatement;
-use PhpMiniDatabase\Sql\Ast\Expression;
-use PhpMiniDatabase\Sql\Ast\Expression\BinaryOp;
-use PhpMiniDatabase\Sql\Ast\Expression\BinaryOperator;
-use PhpMiniDatabase\Sql\Ast\Expression\ColumnRef;
-use PhpMiniDatabase\Sql\Ast\Expression\FunctionCall;
-use PhpMiniDatabase\Sql\Ast\Expression\Literal;
-use PhpMiniDatabase\Sql\Ast\Expression\Placeholder;
+use PhpMiniDatabase\Sql\Ast\ExplainStatement;
 use PhpMiniDatabase\Sql\Ast\Expression\Star;
-use PhpMiniDatabase\Sql\Ast\Expression\UnaryOp;
-use PhpMiniDatabase\Sql\Ast\From\FromItem;
-use PhpMiniDatabase\Sql\Ast\From\Join;
 use PhpMiniDatabase\Sql\Ast\From\JoinType;
 use PhpMiniDatabase\Sql\Ast\From\TableReference;
 use PhpMiniDatabase\Sql\Ast\InsertStatement;
@@ -57,7 +47,20 @@ use PhpMiniDatabase\Sql\Ast\SelectItem;
 use PhpMiniDatabase\Sql\Ast\SelectStatement;
 use PhpMiniDatabase\Sql\Ast\Statement;
 use PhpMiniDatabase\Sql\Ast\UpdateStatement;
+use PhpMiniDatabase\Sql\Optimizer\Optimizer;
+use PhpMiniDatabase\Sql\Optimizer\PlanContext;
 use PhpMiniDatabase\Sql\Parser;
+use PhpMiniDatabase\Sql\Planner\LogicalPlan;
+use PhpMiniDatabase\Sql\Planner\Plan\Aggregate as PlanAggregate;
+use PhpMiniDatabase\Sql\Planner\Plan\Distinct as PlanDistinct;
+use PhpMiniDatabase\Sql\Planner\Plan\Filter as PlanFilter;
+use PhpMiniDatabase\Sql\Planner\Plan\Join as PlanJoin;
+use PhpMiniDatabase\Sql\Planner\Plan\Limit as PlanLimit;
+use PhpMiniDatabase\Sql\Planner\Plan\Project as PlanProject;
+use PhpMiniDatabase\Sql\Planner\Plan\Scan as PlanScan;
+use PhpMiniDatabase\Sql\Planner\Plan\Sort as PlanSort;
+use PhpMiniDatabase\Sql\Planner\PlannedQuery;
+use PhpMiniDatabase\Sql\Planner\Planner;
 use PhpMiniDatabase\Storage\RecordId;
 use PhpMiniDatabase\Transaction\IsolationLevel;
 use PhpMiniDatabase\Transaction\LockManager;
@@ -70,37 +73,40 @@ use Throwable;
 /**
  * Runs one parsed `Statement` against a `Database`.
  *
- * `execute()` returns whichever of the three shapes a statement produces:
+ * `execute()` returns whichever of the four shapes a statement produces:
  * a `QueryResult` for `SELECT`, the number of affected rows (`int`) for
- * `INSERT`/`UPDATE`/`DELETE`, or `null` for a DDL statement that only
- * changed the catalog. A caller that already knows which kind it sent can
- * narrow the result itself; `run()` is the convenience for a caller that
- * has SQL text and nothing more specific to do with the answer.
+ * `INSERT`/`UPDATE`/`DELETE`, `null` for a DDL or transaction-control
+ * statement, or a `QueryResult` describing a plan for `EXPLAIN`. A caller
+ * that already knows which kind it sent can narrow the result itself;
+ * `run()` is the convenience for a caller that has SQL text and nothing
+ * more specific to do with the answer.
  *
  * `INSERT`/`UPDATE`/`DELETE` keep every single-column index in step via
  * `IndexMaintainer` — uniqueness is checked before anything is written, not
- * after (see its own docblock). `SELECT` reaches for an `IndexScan` instead
- * of a `SeqScan` when the `WHERE` clause (or the first conjunct of an `AND`
- * chain) is a plain `column <op> constant` comparison against a column with
- * a single-column index; a `JOIN` becomes a `HashJoin` when it is a plain
- * equality between one column from each side, and a `NestedLoopJoin`
- * otherwise. Both are small, fixed rules standing in for Milestone 9's
- * planner — see `selectSource()`/`equiJoinKeys()` and DECISIONS.md.
+ * after (see its own docblock).
+ *
+ * A `SELECT` with a `FROM` clause runs through `Sql\Planner\Planner` and
+ * `Sql\Optimizer\Optimizer` (Phase 9): `plan()` builds the `LogicalPlan`
+ * PLAN.md's Milestone 9 asks for, `Optimizer` rewrites it (predicate
+ * pushdown, constant folding, index selection, join reordering — see each
+ * `Sql\Optimizer\Rule\*`), and `compile()` is the one place a `Plan\*` node
+ * ever becomes the `Execution\Operator\*` it describes. `EXPLAIN` stops
+ * after the same two steps and prints the result instead of compiling it.
  *
  * A query against a `JOIN` evaluates `WHERE`/`ON`/the select list against
  * `QualifiedRowContext` (columns named `"ref.column"`) rather than the
  * plain `RowContext` a single table uses — and, for that reason, does not
  * support a bare `SELECT *`/`t.*` yet: expanding a star needs to enumerate
- * every table in the join, which `expandStars()` does not do. List columns
- * explicitly instead.
+ * every table in the join, which `Planner` does not do for one. List
+ * columns explicitly instead.
  *
  * What this phase does *not* do, deliberately, and reports clearly rather
- * than silently mishandling: derived tables and subqueries (need the
- * planner — Phase 9); `ALTER TABLE` (Phase 10); enforcing `FOREIGN KEY`
- * and `CHECK` on a write (Phase 10 — `NOT NULL` is enforced by
- * `Schema\Table` itself, and `UNIQUE`/`PRIMARY KEY` by `IndexMaintainer`,
- * since neither needs anything this layer does not already have). See
- * DECISIONS.md for the reasoning behind each.
+ * than silently mishandling: derived tables and subqueries (still need a
+ * planner that can run a nested `SELECT`); `ALTER TABLE` (Phase 10);
+ * enforcing `FOREIGN KEY` and `CHECK` on a write (Phase 10 — `NOT NULL` is
+ * enforced by `Schema\Table` itself, and `UNIQUE`/`PRIMARY KEY` by
+ * `IndexMaintainer`, since neither needs anything this layer does not
+ * already have). See DECISIONS.md for the reasoning behind each.
  *
  * `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` (Phase 8) dispatch straight to
  * `TransactionManager`. Every `INSERT`/`UPDATE`/`DELETE` runs inside a
@@ -123,6 +129,10 @@ final readonly class Executor
 
     private TransactionManager $transactions;
 
+    private Planner $planner;
+
+    private Optimizer $optimizer;
+
     public function __construct(
         private Database $database,
         private Evaluator $evaluator = new Evaluator(),
@@ -133,6 +143,8 @@ final readonly class Executor
         $this->transactions = $database->transactions();
         $this->transactions->setUndoHandler($this->undo(...));
         $this->transactions->recover();
+        $this->planner = new Planner($database);
+        $this->optimizer = new Optimizer();
     }
 
     /** @param list<mixed> $parameters */
@@ -159,6 +171,7 @@ final readonly class Executor
             $statement instanceof SavepointStatement => $this->executeSavepoint($statement),
             $statement instanceof ReleaseSavepointStatement => $this->executeReleaseSavepoint($statement),
             $statement instanceof RollbackToSavepointStatement => $this->executeRollbackToSavepoint($statement),
+            $statement instanceof ExplainStatement => $this->executeExplain($statement),
             $statement instanceof AlterTableStatement => throw new ExecutionException(
                 sprintf('%s is not supported yet.', $statement::class),
             ),
@@ -181,166 +194,159 @@ final readonly class Executor
             return $this->executeSelectWithoutFrom($statement, $parameters);
         }
 
-        if ($statement->from instanceof TableReference) {
-            return $this->executeSelectFromTable($statement, $statement->from, $parameters);
-        }
+        return $this->runPlan($this->plan($statement), $statement, $parameters);
+    }
 
-        if ($statement->from instanceof Join) {
-            return $this->executeSelectFromJoin($statement, $statement->from, $parameters);
-        }
+    /** Plans and optimizes a `SELECT` — the shared first half of running it and of `EXPLAIN`ing it. */
+    private function plan(SelectStatement $statement): PlannedQuery
+    {
+        $planned = $this->planner->plan($statement);
 
-        throw new ExecutionException('Derived tables are not supported yet.');
+        return new PlannedQuery(
+            $this->optimizer->optimize($planned->plan, new PlanContext($this->database)),
+            $planned->labels,
+        );
     }
 
     /** @param list<mixed> $parameters */
-    private function executeSelectFromTable(SelectStatement $statement, TableReference $reference, array $parameters): QueryResult
+    private function runPlan(PlannedQuery $planned, SelectStatement $statement, array $parameters): QueryResult
+    {
+        $isJoin = !$statement->from instanceof TableReference;
+        $contextFor = $isJoin
+            ? static fn (Row $row): EvaluationContext => new QualifiedRowContext($row, $parameters)
+            : $this->tableContextFor($statement->from, $parameters);
+
+        $operator = $this->compile($planned->plan, $isJoin, $parameters, $contextFor);
+
+        return new QueryResult($planned->labels, $this->stripKeys($operator));
+    }
+
+    /** @param list<mixed> $parameters */
+    private function tableContextFor(TableReference $reference, array $parameters): Closure
     {
         $table = $this->database->table($reference->table);
-        $items = $this->expandStars($statement->columns, $table, $reference->referenceName());
-        $labels = $this->labelsFor($items);
 
-        $pipeline = $this->selectSource($table, $statement->where, $parameters);
-        $pipeline = $this->lockForRead($pipeline, $table->name, $pipeline instanceof SeqScan);
-        $contextFor = static fn (Row $row): EvaluationContext => new RowContext($row, $table->name, $reference->alias, $parameters);
-
-        return $this->finishSelect($pipeline, $contextFor, $statement, $items, $labels);
-    }
-
-    /** @param list<mixed> $parameters */
-    private function executeSelectFromJoin(SelectStatement $statement, Join $from, array $parameters): QueryResult
-    {
-        foreach ($statement->columns as $item) {
-            if ($item->expression instanceof Star) {
-                throw new ExecutionException('SELECT * is not supported for JOIN queries yet; list the columns explicitly.');
-            }
-        }
-
-        $pipeline = $this->buildJoinPipeline($from, $parameters);
-        $contextFor = static fn (Row $row): EvaluationContext => new QualifiedRowContext($row, $parameters);
-        $labels = $this->labelsFor($statement->columns);
-
-        return $this->finishSelect($pipeline, $contextFor, $statement, $statement->columns, $labels);
+        return static fn (Row $row): EvaluationContext => new RowContext($row, $table->name, $reference->alias, $parameters);
     }
 
     /**
-     * The shared tail of both FROM shapes above, once each has built its
-     * own source pipeline and the right kind of evaluation context: apply
-     * WHERE, then either GROUP BY/HAVING/aggregates (via `Aggregate`, which
-     * already produces the final labelled rows) or a plain `Project`, then
-     * DISTINCT, then LIMIT/OFFSET. `ORDER BY` runs *before* projection for
-     * a plain query (so it can reference a column that was never
-     * selected), and *after* aggregation for a grouped one (so it can
-     * reference an aggregate's alias, which exists only once computed).
+     * Turns an optimized `LogicalPlan` into the `Operator` pipeline that
+     * actually runs it — the one place a `Sql\Planner\Plan\*` node ever
+     * becomes the `Execution\Operator\*` it describes.
      *
-     * @param Closure(Row): EvaluationContext $contextFor
-     * @param list<SelectItem>                $items
-     * @param list<string>                    $labels
-     */
-    private function finishSelect(Operator $pipeline, Closure $contextFor, SelectStatement $statement, array $items, array $labels): QueryResult
-    {
-        if ($statement->where !== null) {
-            $pipeline = new Filter($pipeline, $statement->where, $this->evaluator, $contextFor);
-        }
-
-        if ($statement->groupBy !== [] || $statement->having !== null || $this->containsAggregate($items)) {
-            $pipeline = new Aggregate($pipeline, $statement->groupBy, $items, $labels, $statement->having, $this->evaluator, $contextFor);
-
-            if ($statement->orderBy !== []) {
-                $outputContext = static fn (Row $row): EvaluationContext => new RowContext($row);
-                $pipeline = new Sort($pipeline, $statement->orderBy, $this->evaluator, $outputContext);
-            }
-        } else {
-            if ($statement->orderBy !== []) {
-                $pipeline = new Sort($pipeline, $statement->orderBy, $this->evaluator, $contextFor);
-            }
-
-            $pipeline = new Project($pipeline, $items, $labels, $this->evaluator, $contextFor);
-        }
-
-        if ($statement->distinct) {
-            $pipeline = new Distinct($pipeline);
-        }
-
-        $pipeline = new Limit($pipeline, $statement->limit, $statement->offset ?? 0);
-
-        return new QueryResult($labels, $this->stripKeys($pipeline));
-    }
-
-    /**
-     * A `SeqScan`, unless the `WHERE` clause (or the first conjunct of an
-     * `AND` chain) is a `column <op> constant` comparison against a column
-     * with a single-column index, in which case an `IndexScan` reads only
-     * the matching rows. `Filter` still runs afterward regardless — this
-     * only narrows what it has to look at, it never has to be the *whole*
-     * answer to be safe to use, which is what keeps this rule this small.
+     * `$isJoin` is decided once, in `runPlan()`, and threaded through
+     * unchanged: it is what a `Plan\Scan` uses to decide whether it needs
+     * `Qualify` wrapped around it, and what every other node uses to pick
+     * `$contextFor`. The one exception is a `Plan\Sort` sitting *directly*
+     * above a `Plan\Aggregate`: an aggregate's output row is always flat
+     * and already labelled, whether or not its source was a join, so that
+     * `Sort` always gets a plain `RowContext` regardless of `$isJoin` — see
+     * `Sql\Planner\Planner::tail()`'s docblock for why `ORDER BY` sits in a
+     * different place in the pipeline for a grouped query at all.
      *
      * @param list<mixed> $parameters
      */
-    private function selectSource(Table $table, ?Expression $where, array $parameters): Operator
+    private function compile(LogicalPlan $plan, bool $isJoin, array $parameters, Closure $contextFor): Operator
     {
-        $heap = $this->database->heapFile($table->name);
-        $predicate = $where === null ? null : $this->indexablePredicate($where);
-        $indexName = $predicate === null ? null : $this->singleColumnIndexNameFor($table, $predicate['column']);
-
-        if ($predicate === null || $indexName === null) {
-            return new SeqScan($table, $heap);
-        }
-
-        $index = $this->database->index($table->name, $indexName);
-        $value = $this->evaluator->evaluate($predicate['value'], new RowContext(parameters: $parameters));
-
-        return match ($predicate['op']) {
-            'eq' => IndexScan::equals($table, $heap, $index, $value),
-            'lt' => IndexScan::range($table, $heap, $index, null, true, $value, false),
-            'lte' => IndexScan::range($table, $heap, $index, null, true, $value, true),
-            'gt' => IndexScan::range($table, $heap, $index, $value, false, null, true),
-            'gte' => IndexScan::range($table, $heap, $index, $value, true, null, true),
+        return match (true) {
+            $plan instanceof PlanScan => $this->compileScan($plan, $isJoin, $parameters),
+            $plan instanceof PlanFilter => new Filter(
+                $this->compile($plan->source, $isJoin, $parameters, $contextFor),
+                $plan->predicate,
+                $this->evaluator,
+                $contextFor,
+            ),
+            $plan instanceof PlanJoin => $this->compileJoin($plan, $isJoin, $parameters, $contextFor),
+            $plan instanceof PlanAggregate => new Aggregate(
+                $this->compile($plan->source, $isJoin, $parameters, $contextFor),
+                $plan->groupBy,
+                $plan->items,
+                $plan->labels,
+                $plan->having,
+                $this->evaluator,
+                $contextFor,
+            ),
+            $plan instanceof PlanSort => new Sort(
+                $this->compile($plan->source, $isJoin, $parameters, $contextFor),
+                $plan->orderBy,
+                $this->evaluator,
+                $plan->source instanceof PlanAggregate ? static fn (Row $row): EvaluationContext => new RowContext($row) : $contextFor,
+            ),
+            $plan instanceof PlanProject => new Project(
+                $this->compile($plan->source, $isJoin, $parameters, $contextFor),
+                $plan->items,
+                $plan->labels,
+                $this->evaluator,
+                $contextFor,
+            ),
+            $plan instanceof PlanDistinct => new Distinct($this->compile($plan->source, $isJoin, $parameters, $contextFor)),
+            $plan instanceof PlanLimit => new Limit($this->compile($plan->source, $isJoin, $parameters, $contextFor), $plan->limit, $plan->offset),
+            default => throw new ExecutionException(sprintf('Cannot compile plan node %s.', $plan::class)),
         };
     }
 
-    /**
-     * @return array{column: string, op: 'eq'|'lt'|'lte'|'gt'|'gte', value: Expression}|null
-     */
-    private function indexablePredicate(Expression $where): ?array
+    /** @param list<mixed> $parameters */
+    private function compileScan(PlanScan $plan, bool $isJoin, array $parameters): Operator
     {
-        if (!$where instanceof BinaryOp) {
-            return null;
+        $heap = $this->database->heapFile($plan->table->name);
+
+        if ($plan->index === null) {
+            $operator = new SeqScan($plan->table, $heap);
+        } else {
+            $index = $this->database->index($plan->table->name, $plan->index->indexName);
+            $value = $this->evaluator->evaluate($plan->index->value, new RowContext(parameters: $parameters));
+
+            $operator = match ($plan->index->operator) {
+                'eq' => IndexScan::equals($plan->table, $heap, $index, $value),
+                'lt' => IndexScan::range($plan->table, $heap, $index, null, true, $value, false),
+                'lte' => IndexScan::range($plan->table, $heap, $index, null, true, $value, true),
+                'gt' => IndexScan::range($plan->table, $heap, $index, $value, false, null, true),
+                'gte' => IndexScan::range($plan->table, $heap, $index, $value, true, null, true),
+            };
         }
 
-        if ($where->operator === BinaryOperator::AND) {
-            return $this->indexablePredicate($where->left) ?? $this->indexablePredicate($where->right);
-        }
+        $operator = $this->lockForRead($operator, $plan->table->name, $plan->index === null);
 
-        $op = match ($where->operator) {
-            BinaryOperator::EQUAL => 'eq',
-            BinaryOperator::LESS_THAN => 'lt',
-            BinaryOperator::LESS_THAN_OR_EQUAL => 'lte',
-            BinaryOperator::GREATER_THAN => 'gt',
-            BinaryOperator::GREATER_THAN_OR_EQUAL => 'gte',
-            default => null,
-        };
-
-        if ($op === null || !$where->left instanceof ColumnRef || !$this->isConstant($where->right)) {
-            return null;
-        }
-
-        return ['column' => $where->left->column, 'op' => $op, 'value' => $where->right];
+        return $isJoin ? new Qualify($operator, $plan->reference()) : $operator;
     }
 
-    private function isConstant(Expression $expression): bool
+    /** @param list<mixed> $parameters */
+    private function compileJoin(PlanJoin $plan, bool $isJoin, array $parameters, Closure $contextFor): Operator
     {
-        return $expression instanceof Literal || $expression instanceof Placeholder;
-    }
+        $left = $this->compile($plan->left, $isJoin, $parameters, $contextFor);
+        $right = $this->compile($plan->right, $isJoin, $parameters, $contextFor);
 
-    private function singleColumnIndexNameFor(Table $table, string $column): ?string
-    {
-        foreach ($table->indexes() as $definition) {
-            if ($definition->columns() === [$column]) {
-                return $definition->name;
-            }
+        if ($plan->hash !== null) {
+            return new HashJoin($left, $right, $plan->hash->leftKey, $plan->hash->rightKey);
         }
 
-        return null;
+        if ($plan->type === JoinType::INNER) {
+            return new NestedLoopJoin($left, $right, false, $plan->on, $this->evaluator, $parameters, []);
+        }
+
+        if ($plan->type === JoinType::LEFT) {
+            return new NestedLoopJoin($left, $right, true, $plan->on, $this->evaluator, $parameters, $this->qualifiedColumnKeys($plan->right));
+        }
+
+        // RIGHT JOIN a b ON x == LEFT JOIN b a ON x: the ON expression does
+        // not care which physical side a value came from, so swapping
+        // which input is "left" reuses NestedLoopJoin's LEFT handling
+        // without a third case in that class.
+        return new NestedLoopJoin($right, $left, true, $plan->on, $this->evaluator, $parameters, $this->qualifiedColumnKeys($plan->left));
+    }
+
+    /** @return list<string> */
+    private function qualifiedColumnKeys(LogicalPlan $plan): array
+    {
+        if ($plan instanceof PlanScan) {
+            return array_map(static fn (string $column): string => $plan->reference() . '.' . $column, $plan->table->columnNames());
+        }
+
+        if ($plan instanceof PlanJoin) {
+            return [...$this->qualifiedColumnKeys($plan->left), ...$this->qualifiedColumnKeys($plan->right)];
+        }
+
+        throw new ExecutionException('Derived tables are not supported yet.');
     }
 
     /**
@@ -370,135 +376,29 @@ final readonly class Executor
     }
 
     // -----------------------------------------------------------------
-    // JOIN
+    // EXPLAIN
     // -----------------------------------------------------------------
 
-    /** @param list<mixed> $parameters */
-    private function buildJoinPipeline(FromItem $from, array $parameters): Operator
+    private function executeExplain(ExplainStatement $statement): QueryResult
     {
-        if ($from instanceof TableReference) {
-            $table = $this->database->table($from->table);
-            $heap = $this->database->heapFile($from->table);
-
-            return new Qualify(new SeqScan($table, $heap), $from->referenceName());
+        if ($statement->statement->from === null) {
+            throw new ExecutionException('EXPLAIN requires a FROM clause.');
         }
 
-        if (!$from instanceof Join) {
-            throw new ExecutionException('Derived tables are not supported yet.');
-        }
+        $lines = [];
+        $this->explainLines($this->plan($statement->statement)->plan, 0, $lines);
 
-        $left = $this->buildJoinPipeline($from->left, $parameters);
-        $right = $this->buildJoinPipeline($from->right, $parameters);
-
-        if ($from->type === JoinType::INNER) {
-            $equiJoin = $this->equiJoinKeys($from);
-
-            return $equiJoin !== null
-                ? new HashJoin($left, $right, $equiJoin[0], $equiJoin[1])
-                : new NestedLoopJoin($left, $right, false, $from->on, $this->evaluator, $parameters, []);
-        }
-
-        if ($from->type === JoinType::LEFT) {
-            return new NestedLoopJoin($left, $right, true, $from->on, $this->evaluator, $parameters, $this->qualifiedColumnKeys($from->right));
-        }
-
-        // RIGHT JOIN a b ON x == LEFT JOIN b a ON x: the ON expression does
-        // not care which physical side a value came from, so swapping
-        // which input is "left" reuses NestedLoopJoin's LEFT handling
-        // without a third case in that class.
-        return new NestedLoopJoin($right, $left, true, $from->on, $this->evaluator, $parameters, $this->qualifiedColumnKeys($from->left));
+        return new QueryResult(['plan'], array_map(static fn (string $line): Row => new Row(['plan' => $line]), $lines));
     }
 
-    /** @return array{0: string, 1: string}|null qualified left key, then qualified right key */
-    private function equiJoinKeys(Join $from): ?array
+    /** @param list<string> $lines */
+    private function explainLines(LogicalPlan $plan, int $depth, array &$lines): void
     {
-        if (!$from->on instanceof BinaryOp
-            || $from->on->operator !== BinaryOperator::EQUAL
-            || !$from->on->left instanceof ColumnRef
-            || !$from->on->right instanceof ColumnRef
-            || $from->on->left->qualifier === null
-            || $from->on->right->qualifier === null
-        ) {
-            return null;
+        $lines[] = str_repeat('  ', $depth) . $plan->describe();
+
+        foreach ($plan->children() as $child) {
+            $this->explainLines($child, $depth + 1, $lines);
         }
-
-        $leftRefs = $this->tableRefs($from->left);
-        $rightRefs = $this->tableRefs($from->right);
-        $a = $from->on->left;
-        $b = $from->on->right;
-
-        if (in_array($a->qualifier, $leftRefs, true) && in_array($b->qualifier, $rightRefs, true)) {
-            return ["{$a->qualifier}.{$a->column}", "{$b->qualifier}.{$b->column}"];
-        }
-
-        if (in_array($b->qualifier, $leftRefs, true) && in_array($a->qualifier, $rightRefs, true)) {
-            return ["{$b->qualifier}.{$b->column}", "{$a->qualifier}.{$a->column}"];
-        }
-
-        return null;
-    }
-
-    /** @return list<string> */
-    private function qualifiedColumnKeys(FromItem $from): array
-    {
-        if ($from instanceof TableReference) {
-            $table = $this->database->table($from->table);
-
-            return array_map(static fn (string $column): string => $from->referenceName() . '.' . $column, $table->columnNames());
-        }
-
-        if ($from instanceof Join) {
-            return [...$this->qualifiedColumnKeys($from->left), ...$this->qualifiedColumnKeys($from->right)];
-        }
-
-        throw new ExecutionException('Derived tables are not supported yet.');
-    }
-
-    /** @return list<string> */
-    private function tableRefs(FromItem $from): array
-    {
-        if ($from instanceof TableReference) {
-            return [$from->referenceName()];
-        }
-
-        if ($from instanceof Join) {
-            return [...$this->tableRefs($from->left), ...$this->tableRefs($from->right)];
-        }
-
-        throw new ExecutionException('Derived tables are not supported yet.');
-    }
-
-    // -----------------------------------------------------------------
-    // GROUP BY / aggregate detection
-    // -----------------------------------------------------------------
-
-    /** @param list<SelectItem> $items */
-    private function containsAggregate(array $items): bool
-    {
-        foreach ($items as $item) {
-            if ($this->expressionContainsAggregate($item->expression)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function expressionContainsAggregate(Expression $expression): bool
-    {
-        if ($expression instanceof FunctionCall) {
-            return in_array(strtoupper($expression->name), Aggregate::AGGREGATE_FUNCTIONS, true);
-        }
-
-        if ($expression instanceof BinaryOp) {
-            return $this->expressionContainsAggregate($expression->left) || $this->expressionContainsAggregate($expression->right);
-        }
-
-        if ($expression instanceof UnaryOp) {
-            return $this->expressionContainsAggregate($expression->operand);
-        }
-
-        return false;
     }
 
     // -----------------------------------------------------------------
@@ -523,39 +423,6 @@ final readonly class Executor
         }
 
         return new QueryResult($labels, [new Row($values)]);
-    }
-
-    /**
-     * Replaces a bare `*`/`t.*` with one `SelectItem` per column of the
-     * table, in table order — the only expansion `Project` needs to
-     * remain ignorant of any schema. Only used for a single-table `FROM`;
-     * see `executeSelectFromJoin()` for why a joined query disallows `*`
-     * instead of expanding it.
-     *
-     * @param list<SelectItem> $items
-     *
-     * @return list<SelectItem>
-     */
-    private function expandStars(array $items, Table $table, string $reference): array
-    {
-        $expanded = [];
-
-        foreach ($items as $item) {
-            if (!$item->expression instanceof Star) {
-                $expanded[] = $item;
-                continue;
-            }
-
-            if ($item->expression->qualifier !== null && $item->expression->qualifier !== $reference) {
-                throw new ExecutionException(sprintf('Unknown table or alias "%s".', $item->expression->qualifier));
-            }
-
-            foreach ($table->columnNames() as $column) {
-                $expanded[] = new SelectItem(new ColumnRef($column));
-            }
-        }
-
-        return $expanded;
     }
 
     /**

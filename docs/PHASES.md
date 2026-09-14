@@ -435,3 +435,64 @@ transaction, and — since two genuinely overlapping transactions cannot
 exist through `Executor::run()` alone in this single-session engine yet —
 the read/write locking rules exercised directly against the shared
 `LockManager` `Database::locks()` now exposes.
+
+## Phase 9 — Planner and Optimizer ✅
+
+A `SELECT` with a `FROM` clause no longer builds its `Operator` pipeline by
+hand inside `Execution\Executor`: it goes through `Sql\Planner\Planner`,
+which turns the statement into a `LogicalPlan` tree (`Plan\Scan`,
+`Plan\Filter`, `Plan\Join`, `Plan\Project`, `Plan\Aggregate`, `Plan\Sort`,
+`Plan\Distinct`, `Plan\Limit`), and `Sql\Optimizer\Optimizer`, which
+rewrites that tree with a fixed sequence of rules before `Executor::compile()`
+turns the result into the same `Execution\Operator\*` classes every earlier
+phase already built. This is a direct extraction, not a new execution
+model: the tree shape `Planner` builds is exactly the pipeline
+`executeSelectFromTable()`/`executeSelectFromJoin()`/`finishSelect()` used
+to construct ad hoc, and `compile()` is the mirror image of that — the one
+place a plan node ever becomes the operator it describes. There is no
+separate `PhysicalPlan` type alongside `LogicalPlan`, unlike PLAN.md's own
+file layout: `Plan\Scan`'s `$index` and `Plan\Join`'s `$hash` start `null`
+and get filled in by a rule once one applies, so the same node carries a
+decision once made rather than a second tree existing just to hold it.
+
+Four rules run in a fixed order — `ConstantFolding`, `PredicatePushdown`,
+`IndexSelection`, `JoinReordering` — each doing its own direct recursive
+match over the plan tree, the same way `Execution\Expression\Evaluator`
+matches `Expression` subtypes directly rather than through a generic
+visitor. `ConstantFolding` collapses a `BinaryOp`/`UnaryOp` whose operands
+are already literal into one `Literal`, recursing into every other
+expression shape's sub-expressions without ever folding a `Placeholder` or
+collapsing a function call itself. `PredicatePushdown` moves each
+top-level `AND` conjunct of a `WHERE` sitting above a `Join` onto whichever
+side alone can answer it — recursing through nested joins, and refusing
+outright to push past an outer join's nullable side, since that specific
+transformation is not merely narrower but actually unsound (it would
+convert an unmatched left row's null-padding into an excluded row, or the
+reverse). `IndexSelection` is `Executor::selectSource()`'s exact old rule,
+relocated — and, because it runs after `PredicatePushdown`, it now also
+applies to a `JOIN` side for the first time, something no phase before this
+one did. `JoinReordering` recognizes the same equi-join shape
+`Executor::equiJoinKeys()` used to, and additionally swaps which physical
+side is `left`/`right` — using each side's `HeapFile::pageCount()` as a
+free, already-cached size estimate — so the smaller side always ends up as
+`HashJoin`'s hash-built `$right`; it is never applied to an outer join
+(swapping those sides would change the query's meaning, not just its
+plan), and it is skipped whenever either side is not directly a table
+(general N-way join-order search is out of scope, the same kind of
+narrowing `IndexScan`/`HashJoin` selection already accepted in Phase 6).
+
+`EXPLAIN <select>` plans and optimizes exactly as a real run would, then
+prints the tree instead of compiling it — one line per node
+(`LogicalPlan::describe()`), indented under its `children()`. It never
+executes the statement it describes.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Sql/Planner/PlannerTest.php` for the tree shape
+every clause combination produces; one file per rule
+(`Sql/Optimizer/ConstantFoldingTest.php`, `PredicatePushdownTest.php` —
+including the outer-join-nullable-side refusal — `IndexSelectionTest.php`,
+`JoinReorderingTest.php` — including a nested join being left alone and an
+outer join never being reordered); `tests/Unit/Sql/ParserExplainTest.php`
+for the grammar; and `tests/Unit/Execution/ExecutorExplainTest.php` for
+the end-to-end path, including that `EXPLAIN` never mutates anything.

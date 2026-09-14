@@ -978,10 +978,10 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 9. Planner and Optimizer
 
-- [ ] `Planner`, `Optimizer`.
-- [ ] Rules: predicate pushdown, constant folding, index selection, join reordering.
-- [ ] `EXPLAIN`.
-- [ ] Plan tests.
+- [x] `Planner`, `Optimizer`.
+- [x] Rules: predicate pushdown, constant folding, index selection, join reordering.
+- [x] `EXPLAIN`.
+- [x] Plan tests.
 
 **Estimate:** 7–10 days.
 
@@ -1436,7 +1436,7 @@ Client                          Server
 - [x] Milestone 6. B-Tree Indexes.
 - [x] Milestone 7. JOIN, GROUP BY, Aggregates.
 - [x] Milestone 8. Transactions and WAL.
-- [ ] Milestone 9. Planner and Optimizer.
+- [x] Milestone 9. Planner and Optimizer.
 - [ ] Milestone 10. Integrity Constraints.
 - [ ] Milestone 11. TCP Protocol.
 - [ ] Milestone 12. TCP Server (Core).

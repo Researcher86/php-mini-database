@@ -198,4 +198,30 @@ final class TableTest extends TestCase
 
         self::assertSame($row->toArray(), $table->deserializeRow($record)->toArray());
     }
+
+    public function testWithIndexAddsAnIndexWithoutChangingAnythingElse(): void
+    {
+        $table = $this->usersTable();
+
+        $withIndex = $table->withIndex(new IndexDefinition('idx_users_age', ['age']));
+
+        self::assertFalse($table->hasIndex('idx_users_age'));
+        self::assertTrue($withIndex->hasIndex('idx_users_age'));
+        self::assertSame($table->columnNames(), $withIndex->columnNames());
+    }
+
+    public function testWithoutIndexRemovesIt(): void
+    {
+        $table = $this->usersTable()->withIndex(new IndexDefinition('idx_users_age', ['age']));
+
+        $without = $table->withoutIndex('idx_users_age');
+
+        self::assertFalse($without->hasIndex('idx_users_age'));
+    }
+
+    public function testWithoutIndexOnAnUnknownNameThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->usersTable()->withoutIndex('missing');
+    }
 }

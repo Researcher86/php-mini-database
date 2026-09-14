@@ -226,3 +226,64 @@ AST-to-Schema conversion, including the plan's own example DDL; and
 `Database`, `INSERT`/`UPDATE`/`DELETE`/`SELECT` against it, and a dedicated
 test that an `UPDATE` growing a row past its page does not revisit and
 re-apply itself to the moved copy.
+
+## Phase 6 — B-Tree indexes ✅
+
+A second way to find a row: not reading every page, but walking a tree
+built to answer one question fast. `Storage\BTreeIndex` is a B+Tree over a
+single column, built from the exact same `Storage\Page` a `HeapFile` uses —
+an internal or leaf node is one page, a one-byte tag inside each slotted
+record distinguishing a real entry from the one reserved slot every node
+carries instead of a key (a leaf's link to the next leaf; an internal
+node's "less than everything else here" child pointer). Only page 0, a new
+`PageType::BTREE_META`, is special: it holds the current root's page id,
+the one thing that changes identity as the tree grows a level.
+
+The design detail that took a real, caught-by-a-stress-test bug to get
+right: the byte string actually stored and compared is not the indexed
+value but `value + RecordId`. Two rows sharing an indexed value — the
+normal case for a non-unique index — would otherwise be *the same key
+twice*, and a B+Tree's separators cannot represent that; a search
+descending past a separator equal to the key it wants has no way to know
+matching entries still exist on the other side of it. Appending the
+RecordId makes every stored key globally unique, so separators are never
+ambiguous; `search()` and `range()` build the right value-prefix bounds
+once and everything else just compares whole keys with `strcmp()`. See
+[DECISIONS.md](DECISIONS.md) for the full story, including the earlier,
+wrong version and how a reproduction script (not just the test suite,
+which didn't yet stress duplicate keys hard enough) found it — and for why
+that same fix also erased an accidental O(n²) cost that had one stress test
+taking 40 seconds.
+
+`Execution\Operator\IndexScan` is `SeqScan`'s counterpart for a query the
+index can answer; `Executor` reaches for one, still standing in for
+Milestone 9's real planner, when a `WHERE` clause (or the first conjunct of
+an `AND`) is a plain `column <op> constant` test against an indexed column
+— `Filter` still runs on top regardless, so a wrong or incomplete choice
+here is never a correctness risk, only an efficiency one.
+`Execution\IndexMaintainer` keeps every single-column index — the explicit
+ones from `CREATE INDEX` and the ones `TableBuilder` now backs a
+single-column `PRIMARY KEY`/`UNIQUE` constraint with automatically —
+in step with `INSERT`/`UPDATE`/`DELETE`, checking uniqueness *before*
+writing anything, which is what a `PRIMARY KEY` or `UNIQUE` violation now
+means for the first time in this project.
+
+A composite (multi-column) `PRIMARY KEY`, `UNIQUE`, or `CREATE INDEX` is
+recorded in the schema but has no backing `BTreeIndex` file yet — a
+concatenated multi-column key has its own correctness pitfalls this phase
+did not need to take on to deliver single-column indexing, and it is a
+named, tested gap rather than a silent one.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Storage/BTreeIndexTest.php` — including forced
+multi-level splits over thousands of entries, and the specific regression
+for a duplicate key spanning a leaf split; `tests/Unit/Execution/Operator/IndexScanTest.php`;
+`tests/Unit/Execution/IndexMaintainerTest.php` for the uniqueness checks,
+including the update-against-its-own-value case; `tests/Unit/Execution/ExecutorIndexTest.php`
+for the end-to-end behaviour — `CREATE`/`DROP INDEX`, backfilling an index
+over existing rows, a dropped-and-recreated index starting empty rather
+than stale, and `SELECT` actually returning the right rows whether or not
+an index was available. `benchmarks/index_vs_seqscan.php` measures the
+same point lookup through an indexed column against a column with no
+index.

@@ -97,9 +97,29 @@ final readonly class Catalog
             throw new SchemaException(sprintf('Table "%s" already exists.', $table->name));
         }
 
+        $this->files->ensureDirectory(Path::join($this->tablesDirectory, $table->name));
+        $this->save($table);
+    }
+
+    /**
+     * Overwrites an existing table's schema.json — how `CREATE INDEX` and
+     * `DROP INDEX` persist the index they added or removed, via
+     * `Table::withIndex()`/`withoutIndex()`. The table must already exist;
+     * this never creates or drops its directory.
+     */
+    public function updateTable(Table $table): void
+    {
+        if (!$this->hasTable($table->name)) {
+            throw new SchemaException(sprintf('Table "%s" does not exist.', $table->name));
+        }
+
+        $this->save($table);
+    }
+
+    private function save(Table $table): void
+    {
         $this->validateForeignKeys($table);
 
-        $this->files->ensureDirectory(Path::join($this->tablesDirectory, $table->name));
         $this->writer->write($this->schemaPath($table->name), json_encode($this->codec->encode($table), JSON_THROW_ON_ERROR));
     }
 

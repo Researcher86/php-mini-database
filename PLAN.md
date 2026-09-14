@@ -938,12 +938,12 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 6. B-Tree Indexes
 
-- [ ] `BTreeIndex`: insert, search, delete, range.
-- [ ] Disk persistence.
-- [ ] `IndexScan`.
-- [ ] Index usage by the planner.
-- [ ] Unique indexes.
-- [ ] Tests and benchmarks.
+- [x] `BTreeIndex`: insert, search, delete, range.
+- [x] Disk persistence.
+- [x] `IndexScan`.
+- [x] Index usage by the planner.
+- [x] Unique indexes.
+- [x] Tests and benchmarks.
 
 **Estimate:** 7–10 days.
 
@@ -1473,7 +1473,7 @@ Client                          Server
 - [x] Milestone 3. Schema and Catalog.
 - [x] Milestone 4. SQL Lexer and Parser.
 - [x] Milestone 5. Execution Engine (Basic).
-- [ ] Milestone 6. B-Tree Indexes.
+- [x] Milestone 6. B-Tree Indexes.
 - [ ] Milestone 7. JOIN, GROUP BY, Aggregates.
 - [ ] Milestone 8. Transactions and WAL.
 - [ ] Milestone 9. Planner and Optimizer.

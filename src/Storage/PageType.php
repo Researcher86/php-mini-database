@@ -24,4 +24,11 @@ enum PageType: int
 
     /** B-Tree node with keys and record ids (Phase 6). */
     case BTREE_LEAF = 3;
+
+    /**
+     * A B-Tree index file's one header page (always page 0): holds the
+     * current root page id, the only piece of the tree that changes
+     * identity as it grows a level.
+     */
+    case BTREE_META = 4;
 }

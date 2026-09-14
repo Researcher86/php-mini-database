@@ -481,3 +481,199 @@ Every one of these raises `ExecutionException` with a specific message
 rather than executing partially or silently ignoring part of a statement —
 a caller finds out immediately that a query needs a later phase, not from a
 wrong answer it has to notice on its own.
+
+## A B-Tree node is just a page
+
+`BTreeIndex` defines no page format of its own. An internal or leaf node is
+one `Storage\Page` — the identical slotted structure `HeapFile` stores
+table rows in — with `PageType::BTREE_INTERNAL`/`BTREE_LEAF` as the only
+difference from a heap page, and a one-byte tag inside each record telling
+a normal entry from the single reserved slot every node keeps instead of a
+key.
+
+The alternative was to give the B-Tree its own fixed-layout node format,
+directly manipulating page bytes the way an implementation with a stronger
+performance requirement would. `Page` already provides exactly what a node
+needs — variable-length slotted records, tombstone-and-reuse deletion,
+one write of the whole page — and reusing it means the B-Tree gained a
+correct, already-tested page format for free, at the cost of the one-byte
+tag each record now needs to disambiguate its two possible shapes. `Page`
+itself needed no change at all.
+
+## A stored key is `value + RecordId`, not just the value
+
+Every entry `BTreeIndex` stores is keyed by the indexed value's sortable
+bytes *followed by* the row's 8-byte `RecordId` — never the value alone,
+even though only one `RecordId` at a time is ever being searched for.
+
+This was not the first design. The first one stored the value alone, and a
+stress test inserting many rows under one repeated key found it broken:
+`search()` for that key returned only a fraction of the rows that actually
+had it. The cause was structural, not a typo. A B+Tree's internal
+separators are drawn from real leaf keys, and when a leaf full of
+duplicate-valued entries splits, the promoted separator equals the value
+itself — meaning descent for that value lands on whichever child the
+*most recent* split routed it to, and the earlier leaves holding the same
+value, now on the other side of that separator, are never visited again,
+because `search()` only chains *forward* through the leaf list from where
+it landed. The fraction found kept shrinking as more of the table was
+scanned, because the "current" leaf for that value kept moving right one
+split at a time — a reproduction script narrowed it to exactly this before
+the fix.
+
+Appending the `RecordId` removes the possibility outright: two entries can
+never again be byte-identical, so no separator is ever ambiguous, and the
+descent that finds "the first leaf that could hold this value" is provably
+correct rather than merely usually right. A value-only lookup becomes a
+search for the *range* of stored keys carrying that value as their prefix
+— `search()` finds the minimum possible full key for the value and reads
+forward while the prefix still matches; `range()` builds a low and a high
+boundary key the same way. Every other method in the class was already
+just comparing whole byte strings with `strcmp()`, so nothing about them
+had to change once the strings themselves stopped being ambiguous.
+
+The same fix incidentally erased a second bug that had nothing to do with
+correctness: the original leaf-insert path re-decoded, re-sorted and fully
+rewrote a page's *entire* entry list on every single insert, which made
+filling one page from empty an O(page-size²) operation and one stress test
+take 40 seconds. The rewrite is fixed to try `Page::insert()` directly
+first now (see the next decision) — a change made at the same time,
+because touching this code once to fix correctness was the moment to also
+fix what filling a page actually cost.
+
+## A node with room is edited directly, not rebuilt
+
+`insertIntoNode()`'s fast path calls `Page::insert()` on the page it
+already read and writes that same page straight back — it does not decode
+the node's existing entries, add the new one, and rewrite all of them,
+unless the page turns out to be full and a split is actually needed.
+
+A page's slots do not need to be stored in sorted order for this to be
+correct: every read (`readLeafEntries()`, `readInternalEntries()`) decodes
+and re-sorts regardless of what order the slots happen to be in, so an
+insert that just appends a new slot wherever `Page::insert()` puts it
+costs nothing extra on the read side later. This is also the fix for the
+40-second stress test mentioned in the decision above — the *cost* half of
+the same change that fixed the *correctness* half.
+
+## `BTreeIndex::delete()` does not rebalance
+
+Removing an entry drops it from its leaf and rewrites that one page; it
+never merges an underflowed leaf with a sibling or shrinks the tree's
+height.
+
+This is the identical trade `HeapFile` already made for `DELETE`
+(PLAN.md's "no free-space reuse until VACUUM"): rebalancing a B-Tree
+correctly — deciding when a node is too empty, finding a sibling to merge
+with or borrow from, propagating that change up through parents that may
+themselves then underflow — is a meaningfully larger amount of logic than
+insertion's splitting, for a benefit (reclaimed page space) `DROP INDEX` +
+`CREATE INDEX` already gives back today, the same way `VACUUM` does for a
+heap file grown sparse from deletes.
+
+## Only single-column indexes are backed
+
+`Schema\IndexDefinition` already supports naming several columns
+(Phase 3), but `Storage\BTreeIndex` indexes exactly one. A composite
+`PRIMARY KEY`, `UNIQUE` constraint, or `CREATE INDEX` is recorded in the
+schema — `TableBuilder::backingIndexes()` and `Executor::executeCreateIndex()`
+both check the column count — but gets no `BTreeIndex` file, no uniqueness
+enforcement, and is never chosen by `Executor::selectSource()`.
+
+A composite key's bytes are not simply its columns' bytes concatenated.
+`VarcharType`/`BlobType` sort keys have no length prefix (Phase 1's
+decision, kept for `BTreeIndex` too — see "Byte order is value order"), so
+concatenating a variable-length column with anything after it is ambiguous:
+`"AB" + "C"` and `"A" + "BC"` produce the identical bytes from different
+original values, in exactly the way a `VARCHAR`'s own sort key already
+had to be made unambiguous for a *single* column, except now between
+columns instead of within one. Solving that correctly needs either a
+length-framed encoding for every non-terminal column or restricting where
+a variable-width column may appear in a composite key — real design work
+that single-column indexing does not need to block on. The gap is a
+`SchemaException`-free but physically absent index, not a silently wrong
+one: a composite `UNIQUE` constraint is simply not yet enforced.
+
+## `PRIMARY KEY`/`UNIQUE` gets an automatic index
+
+A single-column `PRIMARY KEY` or `UNIQUE` constraint gets a matching
+`IndexDefinition` — same columns, `unique: true`, named after the
+constraint — added to the table by `TableBuilder::backingIndexes()`, so it
+has a `BTreeIndex` maintained for it exactly like an explicit
+`CREATE INDEX ... UNIQUE` would.
+
+This is what "Unique indexes," itemized under this phase in PLAN.md's own
+checklist, turns out to mean once there is somewhere to put one: a
+`PRIMARY KEY`/`UNIQUE` constraint and a unique index are, mechanically, the
+same structure enforcing the same rule. Building the backing index only
+when `CREATE INDEX` is written explicitly would leave the far more common
+spelling — `id INT PRIMARY KEY`, `email VARCHAR(255) UNIQUE` — silently
+unenforced, which is a worse gap than deferring the whole feature would
+have been. `FOREIGN KEY` and `CHECK` are not given the same treatment: they
+need a different table's data or an expression evaluator running against a
+stored row, not just an index, and stay Milestone 10's job as originally
+planned.
+
+## Uniqueness is checked before any write
+
+`IndexMaintainer::assertUniqueForInsert()`/`assertUniqueForUpdate()` run
+*before* `Executor` writes anything — before the heap insert/update for
+`INSERT`, and for `UPDATE`, during the read-only collection pass, before
+any row in the statement is touched.
+
+Without a WAL (Phase 8), there is no way to undo a heap write or an
+already-updated index once a *later* one in the same operation fails. If
+the check ran after writing (the natural order to reach for — write, then
+let the unique index itself refuse the duplicate), a rejected `INSERT`
+would leave an orphaned row in the heap file with no index entry pointing
+to it, and a rejected multi-row `UPDATE` would leave earlier matches in the
+same statement already changed while a later one failed. Checking first
+means a rejected write never reaches the heap at all, and for `UPDATE`
+specifically, collecting every match before writing any of them (already
+required to avoid the Halloween problem — see above) means a single
+uniqueness violation anywhere in the statement leaves every row untouched,
+not just the ones after it.
+
+What this does not fix: a multi-row `INSERT` still applies its rows one at
+a time, so a later row's failure does not roll back an earlier row in the
+*same* `INSERT` statement that already succeeded — the same documented gap
+already noted for `INSERT` before this phase, now also the reason `UPDATE`
+was built to check every row before writing any of them, rather than
+inheriting the same per-row exposure.
+
+## A rule, not a planner, for `IndexScan`
+
+`Executor::selectSource()` reaches for an `IndexScan` when a `WHERE` clause
+— or the first conjunct it finds walking an `AND` chain — is a direct
+`column <op> constant` comparison against a column carrying a single-column
+index. Anything else (an expression on the column, a comparison the wrong
+way round, no matching index) falls back to `SeqScan`.
+
+This is deliberately not Milestone 9's planner arriving early. A real
+planner would cost multiple access paths, consider more shapes than one
+leading conjunct, and choose among joins once they exist; this rule
+recognizes exactly one shape and takes it or does not. What makes the
+narrowness safe rather than a correctness risk: `Filter` still runs on the
+*complete*, original `WHERE` clause afterward regardless of which source
+fed it, including re-checking the very condition `IndexScan` already
+narrowed by. A wrong or missed opportunity here only costs a slower scan,
+never a wrong answer — which is exactly the property that let this ship
+now instead of waiting for Milestone 9, and the property Milestone 9's
+version should preserve as it replaces this rule with something that
+actually costs its choices.
+
+## `DROP INDEX` deletes the file
+
+`Database::dropIndex()` removes the `.idx` file from disk, not just the
+`IndexDefinition` from the table's schema.
+
+Leaving the file behind while only forgetting the schema's reference to it
+was tried first, and breaks the moment the same index name is reused: a
+`BTreeIndex` decides whether to initialize a fresh tree by checking whether
+its file has zero pages, and a stale file left over from before the drop
+already has pages full of whatever the dropped index last contained. A
+`CREATE INDEX` reusing that name would silently reopen and serve that
+old tree — wrong entries, or a `unique` flag from before that no longer
+matches what was just declared — rather than building a new one. Deleting
+the file is what makes "dropped" and "never existed" the same starting
+state for whatever comes next.

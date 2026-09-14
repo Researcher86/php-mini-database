@@ -9,6 +9,7 @@ use PhpMiniDatabase\Schema\Column;
 use PhpMiniDatabase\Schema\Constraint\ForeignKey;
 use PhpMiniDatabase\Schema\Constraint\PrimaryKey;
 use PhpMiniDatabase\Schema\Constraint\UniqueConstraint;
+use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Schema\Type\IntType;
 use PhpMiniDatabase\Schema\Type\VarcharType;
@@ -176,5 +177,22 @@ final class CatalogTest extends TestCase
 
         $this->expectException(SchemaException::class);
         $this->catalog->dropTable('users');
+    }
+
+    public function testUpdateTableOverwritesAnExistingTablesSchema(): void
+    {
+        $this->catalog->createTable($this->usersTable());
+
+        $this->catalog->updateTable($this->catalog->table('users')->withIndex(
+            new IndexDefinition('idx_users_email', ['email']),
+        ));
+
+        self::assertTrue($this->catalog->table('users')->hasIndex('idx_users_email'));
+    }
+
+    public function testUpdateTableOnAnUnknownTableThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->catalog->updateTable(new Table('missing', [new Column('id', new IntType())]));
     }
 }

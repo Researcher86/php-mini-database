@@ -121,6 +121,35 @@ final readonly class Table
         return null;
     }
 
+    public function hasIndex(string $name): bool
+    {
+        foreach ($this->indexes as $index) {
+            if ($index->name === $name) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** A copy of this table with one more index declared. */
+    public function withIndex(IndexDefinition $index): self
+    {
+        return new self($this->name, $this->columns, $this->constraints, [...$this->indexes, $index], $this->serializer);
+    }
+
+    /** A copy of this table with the named index no longer declared. */
+    public function withoutIndex(string $name): self
+    {
+        if (!$this->hasIndex($name)) {
+            throw new SchemaException(sprintf('Table "%s" has no index "%s".', $this->name, $name));
+        }
+
+        $remaining = array_values(array_filter($this->indexes, static fn (IndexDefinition $i): bool => $i->name !== $name));
+
+        return new self($this->name, $this->columns, $this->constraints, $remaining, $this->serializer);
+    }
+
     /**
      * Resolve a Row into the positional values RecordSerializer expects: one
      * per column, in column order, missing values filled from defaults.

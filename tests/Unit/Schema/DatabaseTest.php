@@ -8,9 +8,11 @@ use PhpMiniDatabase\Exception\SchemaException;
 use PhpMiniDatabase\Schema\Column;
 use PhpMiniDatabase\Schema\Constraint\PrimaryKey;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Schema\Type\IntType;
+use PhpMiniDatabase\Storage\RecordId;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
@@ -99,5 +101,70 @@ final class DatabaseTest extends TestCase
         $reopened = Database::open($this->path('mydb'));
 
         self::assertSame(['id' => 1], $reopened->table('users')->deserializeRow($reopened->heapFile('users')->read($id))->toArray());
+    }
+
+    public function testAddIndexMakesItAvailableThroughIndex(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+
+        $db->addIndex('users', new IndexDefinition('idx_users_id', ['id']));
+
+        self::assertTrue($db->table('users')->hasIndex('idx_users_id'));
+
+        $index = $db->index('users', 'idx_users_id');
+        $index->insert(1, new RecordId(0, 0));
+
+        self::assertCount(1, iterator_to_array($index->search(1), false));
+
+        $db->close();
+    }
+
+    public function testIndexIsCachedAcrossCalls(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+        $db->addIndex('users', new IndexDefinition('idx_users_id', ['id']));
+
+        self::assertSame($db->index('users', 'idx_users_id'), $db->index('users', 'idx_users_id'));
+
+        $db->close();
+    }
+
+    public function testIndexForAnUndeclaredNameThrows(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+
+        $this->expectException(SchemaException::class);
+        $db->index('users', 'missing');
+    }
+
+    public function testDropIndexRemovesTheDeclarationAndUncachesTheOpenFile(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+        $db->addIndex('users', new IndexDefinition('idx_users_id', ['id']));
+        $db->index('users', 'idx_users_id');
+
+        $db->dropIndex('users', 'idx_users_id');
+
+        self::assertFalse($db->table('users')->hasIndex('idx_users_id'));
+
+        $this->expectException(SchemaException::class);
+        $db->index('users', 'idx_users_id');
+    }
+
+    public function testAnIndexSurvivesReopeningTheDatabase(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+        $db->addIndex('users', new IndexDefinition('idx_users_id', ['id']));
+        $db->index('users', 'idx_users_id')->insert(1, new RecordId(0, 0));
+        $db->close();
+
+        $reopened = Database::open($this->path('mydb'));
+
+        self::assertCount(1, iterator_to_array($reopened->index('users', 'idx_users_id')->search(1), false));
     }
 }

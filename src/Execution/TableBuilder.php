@@ -13,6 +13,7 @@ use PhpMiniDatabase\Schema\Constraint\Constraint;
 use PhpMiniDatabase\Schema\Constraint\ForeignKey as SchemaForeignKey;
 use PhpMiniDatabase\Schema\Constraint\PrimaryKey;
 use PhpMiniDatabase\Schema\Constraint\UniqueConstraint;
+use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Schema\Type\TypeFactory;
 use PhpMiniDatabase\Sql\Ast\ColumnDefinition;
@@ -68,7 +69,45 @@ final readonly class TableBuilder
             $constraints[] = $this->tableConstraint($statement->table, $definition);
         }
 
-        return new Table($statement->table, $this->withPrimaryKeyColumnsNotNull($columns, $constraints), $constraints);
+        return new Table(
+            $statement->table,
+            $this->withPrimaryKeyColumnsNotNull($columns, $constraints),
+            $constraints,
+            $this->backingIndexes($constraints),
+        );
+    }
+
+    /**
+     * A single-column `PRIMARY KEY` or `UNIQUE` constraint gets a matching
+     * `IndexDefinition`, so it has a `BTreeIndex` backing it (Phase 6) the
+     * same way an explicit `CREATE INDEX` does — `Executor` builds that
+     * file once this `Table` is stored, and every insert checks and
+     * maintains it uniformly, whether the constraint that asked for
+     * uniqueness was written as `PRIMARY KEY`, `UNIQUE`, or `CREATE INDEX
+     * ... UNIQUE`.
+     *
+     * A *composite* PRIMARY KEY or UNIQUE constraint gets none: `BTreeIndex`
+     * only indexes one column (see its own docblock), so a multi-column
+     * uniqueness rule is recorded in the schema but not yet backed or
+     * enforced by an index — a known, narrow gap, not a silent one.
+     *
+     * @param list<Constraint> $constraints
+     *
+     * @return list<IndexDefinition>
+     */
+    private function backingIndexes(array $constraints): array
+    {
+        $indexes = [];
+
+        foreach ($constraints as $constraint) {
+            $isUniqueness = $constraint instanceof PrimaryKey || $constraint instanceof UniqueConstraint;
+
+            if ($isUniqueness && count($constraint->columns()) === 1) {
+                $indexes[] = new IndexDefinition($constraint->name(), $constraint->columns(), unique: true);
+            }
+        }
+
+        return $indexes;
     }
 
     /**

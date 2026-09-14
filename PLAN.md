@@ -901,11 +901,11 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 3. Schema and Catalog
 
-- [ ] `Database`, `Table`, `Column`, `Schema`.
-- [ ] `Catalog`: reading/writing metadata.
-- [ ] Constraints: `PrimaryKey`, `Unique`, `NotNull`, `ForeignKey`, `Check`, `Default`.
-- [ ] Schema validation.
-- [ ] Schema and catalog tests.
+- [x] `Database`, `Table`, `Column`, `Schema`.
+- [x] `Catalog`: reading/writing metadata.
+- [x] Constraints: `PrimaryKey`, `Unique`, `NotNull`, `ForeignKey`, `Check`, `Default`.
+- [x] Schema validation.
+- [x] Schema and catalog tests.
 
 **Estimate:** 4–5 days.
 
@@ -1470,7 +1470,7 @@ Client                          Server
 - [x] Milestone 0. Project Setup.
 - [x] Milestone 1. Data Types and Serialization.
 - [x] Milestone 2. Storage Engine.
-- [ ] Milestone 3. Schema and Catalog.
+- [x] Milestone 3. Schema and Catalog.
 - [ ] Milestone 4. SQL Lexer and Parser.
 - [ ] Milestone 5. Execution Engine (Basic).
 - [ ] Milestone 6. B-Tree Indexes.

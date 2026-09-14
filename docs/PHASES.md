@@ -85,3 +85,48 @@ across pages, the update that moves a record, vacuum;
 `AtomicWriterTest::testAFailedWriteLeavesTheDirectoryUntouched` and
 `FileLockTest::testASecondExclusiveLockTimesOut` are the two that matter
 most.
+
+## Phase 3 — Schema and catalog ✅
+
+What a table *is*, above the bytes. `Schema\Column` pairs a name with a
+`Type`, whether NULL is allowed, and an optional default — kept exactly as
+given, cast lazily through the column's own type, so a JSON-native default
+round-trips without the schema ever needing to serialize a canonical
+`DateTimeImmutable` back into text. `Schema\Constraint\*` is `PrimaryKey`,
+`UniqueConstraint`, `ForeignKey` (with `ON DELETE`/`ON UPDATE` actions) and
+`CheckConstraint` (expression kept as text — there is no parser yet to hold a
+tree). `Schema\IndexDefinition` is kept separate from `UniqueConstraint`:
+one says a rule about the data, the other says a structure exists to enforce
+it.
+
+`Schema\Table` validates everything decidable from a table alone (no
+duplicate or unknown columns, at most one `PRIMARY KEY` and its columns
+NOT NULL, every constraint and index naming real columns) and owns the
+translation between a `Row` — values by column name — and the positional
+bytes `RecordSerializer` deals in, enforcing NOT NULL along the way since
+that is the one constraint that needs nothing beyond the row itself.
+UNIQUE, FOREIGN KEY and CHECK are left for the executor (Phase 10), which
+has the index, the other table and the expression evaluator this layer does
+not.
+
+`Storage\TableSchemaCodec` is `Table` in the JSON shape PLAN.md §6.3
+describes; `Storage\Catalog` keeps one `schema.json` per table under
+`tables/<name>/` and is the layer that checks what a lone `Table` cannot — a
+foreign key's other table and columns exist and are actually unique, and a
+table is not dropped while another still points at it. `Schema\Database`
+is `Catalog` under the public-facing name, waiting for `execute()`/`query()`
+to land once the parser and executor exist.
+
+One simplification against PLAN.md's layout is recorded in
+[DECISIONS.md](DECISIONS.md): there is no `catalog.json` index file — the
+`tables/` directory listing is the catalog, so there is only ever one
+place a table's existence is recorded.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Schema/{Column,Row,IndexDefinition,Table}Test.php` and
+`Constraint/*Test.php` for the model and its self-validation;
+`tests/Unit/Storage/TableSchemaCodecTest.php` for the JSON shape, including
+the DATE-default-as-string case; `tests/Unit/Storage/CatalogTest.php` for
+cross-table foreign key validation and the drop-with-dependents refusal;
+`tests/Unit/Schema/DatabaseTest.php` for the façade.

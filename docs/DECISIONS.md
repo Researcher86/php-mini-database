@@ -23,6 +23,10 @@ project is built from is [PLAN.md](../PLAN.md).
 | No buffer pool: every read decodes a fresh page | current, [why](#no-buffer-pool-yet) |
 | An insert goes into the last page; freed space comes back only at VACUUM | current, [why](#inserts-go-to-the-last-page) |
 | The write lock is held on a `.lock` file, not on the data file | current, [why](#the-lock-is-on-its-own-file) |
+| `NOT NULL` and `DEFAULT` are column properties, not `Constraint\` classes | current, [why](#not-null-and-default-live-on-the-column) |
+| A default is stored exactly as given and cast lazily, never as its canonical form | current, [why](#a-default-is-stored-as-given-not-in-canonical-form) |
+| There is no `catalog.json`; the `tables/` directory listing is the catalog | current, [why](#no-catalogjson) |
+| `Table` validates itself alone; `Catalog` validates across tables | current, [why](#table-validates-alone-catalog-validates-across-tables) |
 
 ## One byte format for disk and wire
 
@@ -180,3 +184,77 @@ Waiting is a poll of non-blocking `flock()` rather than a blocking one,
 because a blocking `flock()` cannot be given a timeout, and a server that
 hangs forever on a lock held by a crashed process is worse than one that
 reports it could not get the lock.
+
+## `NOT NULL` and `DEFAULT` live on the column
+
+PLAN.md §4's file list puts `NotNull` and `DefaultValue` under
+`Constraint\`, alongside `PrimaryKey` and `ForeignKey`. `Schema\Column`
+carries them instead, as a `notNull` flag and an optional default.
+
+The catalog's own on-disk format (PLAN.md §6.3) already settled this the
+other way: a column in `schema.json` is `{"name": "age", "type": "INT",
+"default": null}` — properties of the column, not entries in a separate
+constraint list. Two representations of the same fact — a `Constraint\NotNull`
+object and a `"not_null"` key on the column that has to be built from it —
+would only give a codec bug the chance to make them disagree. Housing it in
+one place removes the disagreement rather than resolving it.
+
+It also fits how each is checked. `PrimaryKey`, `UniqueConstraint` and
+`ForeignKey` all need something the row does not carry alone (an index or
+another table); `NOT NULL` needs nothing but the row itself, at exactly the
+place `Table::valuesFromRow()` already fills in defaults, and is enforced
+there.
+
+## A default is stored as given, not in canonical form
+
+`Column::rawDefault()` returns whatever `withDefault()` was given — the
+literal from a `CREATE TABLE`, or whatever JSON `TableSchemaCodec` decoded —
+and `defaultValue()` casts it through the column's `Type` on every call
+rather than once, up front.
+
+The alternative — cast once at construction and keep the canonical value —
+runs straight into `TableSchemaCodec`: a `DATE` column's canonical default
+is a `DateTimeImmutable`, and JSON has no native way to hold one. The codec
+would have to turn it back into a string to write `schema.json`, and nothing
+in `Type` produces that string — `encode()` makes bytes, not text. Keeping
+the raw form sidesteps the question entirely: whatever came out of the JSON
+file goes back into it unchanged, and casting on demand is cheap enough
+that memoizing it would be optimizing a path nothing calls often.
+
+## No `catalog.json`
+
+PLAN.md §6.1 shows a `catalog.json` at the top of a data directory,
+alongside `tables/`. This implementation has no such file: `Storage\Catalog`
+lists tables by reading the `tables/` directory itself.
+
+A second file naming the same tables the directory already names is a
+second source of truth, and the two have to be kept in step by hand — a
+table created but not yet listed, or listed but its directory not yet
+removed, is exactly the kind of half-applied state `AtomicWriter` and
+`FileLock` exist to prevent elsewhere in this codebase. `scandir()` answers
+"what tables exist" correctly by construction; a separate index earns its
+existence only by answering something else, like table order or metadata
+`schema.json` does not hold, and nothing today needs either.
+
+## `Table` validates alone; `Catalog` validates across tables
+
+`Table`'s constructor checks everything decidable from that one table: no
+duplicate or unknown columns, one `PRIMARY KEY` at most and its columns
+`NOT NULL`, every constraint and index naming a real column. It does not
+check that a `ForeignKey`'s `referencedTable` exists, or that the columns it
+points at are actually unique — `Storage\Catalog::createTable()` does, since
+only the catalog has every other table loaded to check against.
+
+The split has a sharp edge worth naming: a self-referencing foreign key (a
+table whose `ForeignKey` names its own table) has to be validated against
+the table object being constructed, not against a stored copy — the table
+being created cannot yet be found in a catalog it is not yet part of.
+`Catalog::validateForeignKeys()` special-cases exactly this: a reference to
+`$table->name` is checked against `$table` itself, everything else against
+`$this->table($constraint->referencedTable)`.
+
+The alternative, giving `Table` a reference to the catalog it will live in
+so it can validate everything at once, was rejected because it would make
+every `Table` depend on where it is stored, which working code that only
+constructs one to describe a shape — a test, a migration preview — has no
+reason to have.

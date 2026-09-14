@@ -21,10 +21,10 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 2 — storage engine**. Column types and
-their byte encoding, slotted pages, a heap file with VACUUM, and the
-filesystem primitives underneath them are in place; the schema and catalog
-are next.
+Latest finished phase: **Phase 3 — schema and catalog**. Tables, columns,
+constraints and indexes are modelled and self-validating, persisted one
+`schema.json` per table under a `Catalog`; the SQL lexer and parser are
+next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

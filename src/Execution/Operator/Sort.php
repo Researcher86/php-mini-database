@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Execution\Operator;
 
+use Closure;
 use Generator;
+use PhpMiniDatabase\Execution\Expression\EvaluationContext;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
-use PhpMiniDatabase\Execution\Expression\RowContext;
+use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Sql\Ast\OrderByItem;
 use PhpMiniDatabase\Sql\Ast\OrderDirection;
 
@@ -25,20 +27,22 @@ use PhpMiniDatabase\Sql\Ast\OrderDirection;
  *
  * `usort()` is stable since PHP 8.0, so rows that compare equal on every
  * `ORDER BY` key keep the order they arrived in rather than being shuffled.
+ *
+ * `$contextFor` builds the `EvaluationContext` an `ORDER BY` expression is
+ * evaluated against — see `Filter`'s docblock for why this is a closure
+ * rather than a fixed table/alias pair.
  */
 final readonly class Sort implements Operator
 {
     /**
-     * @param list<OrderByItem> $orderBy
-     * @param list<mixed>       $parameters
+     * @param list<OrderByItem>              $orderBy
+     * @param Closure(Row): EvaluationContext $contextFor
      */
     public function __construct(
         private Operator $source,
         private array $orderBy,
         private Evaluator $evaluator,
-        private ?string $tableName,
-        private ?string $tableAlias = null,
-        private array $parameters = [],
+        private Closure $contextFor,
     ) {
     }
 
@@ -47,7 +51,7 @@ final readonly class Sort implements Operator
         $entries = [];
 
         foreach ($this->source as $id => $row) {
-            $context = new RowContext($row, $this->tableName, $this->tableAlias, $this->parameters);
+            $context = ($this->contextFor)($row);
             $keys = array_map(
                 fn (OrderByItem $item): mixed => $this->evaluator->evaluate($item->expression, $context),
                 $this->orderBy,

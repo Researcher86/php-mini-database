@@ -951,11 +951,11 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 7. JOIN, GROUP BY, Aggregates
 
-- [ ] `NestedLoopJoin`, `HashJoin`.
-- [ ] `LEFT JOIN`, `RIGHT JOIN`, `INNER JOIN`.
-- [ ] `Sort`, `Aggregate`.
-- [ ] `GROUP BY`, `HAVING`, `DISTINCT`.
-- [ ] JOIN and aggregate tests.
+- [x] `NestedLoopJoin`, `HashJoin`.
+- [x] `LEFT JOIN`, `RIGHT JOIN`, `INNER JOIN`.
+- [x] `Sort`, `Aggregate`.
+- [x] `GROUP BY`, `HAVING`, `DISTINCT`.
+- [x] JOIN and aggregate tests.
 
 **Estimate:** 8–10 days.
 
@@ -1148,18 +1148,6 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ---
 
-### Milestone 21. Release v1.0.0
-
-- [ ] CHANGELOG.
-- [ ] Tag `v1.0.0`.
-- [ ] Publish on Packagist.
-- [ ] Optional: PHAR build for server.
-- [ ] Announcement.
-
-**Estimate:** 2–3 days.
-
----
-
 ## 12. Testing
 
 ### 12.1. Unit Tests
@@ -1256,13 +1244,6 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
     - `composer validate`
 - Separate job: start server + client tests.
 
-### 14.2. Release
-
-- Tag `vX.Y.Z`.
-- Generate CHANGELOG.
-- Publish on Packagist.
-- Optional: build PHAR for server and client.
-
 ---
 
 ## 15. Risks and Solutions
@@ -1288,27 +1269,7 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ---
 
-## 16. Roadmap
-
-- `v0.1.0` — Types + Storage Engine.
-- `v0.2.0` — Schema + Catalog.
-- `v0.3.0` — Lexer + Parser.
-- `v0.4.0` — Execution Engine (basic).
-- `v0.5.0` — B-Tree indexes.
-- `v0.6.0` — JOIN, GROUP BY, aggregates.
-- `v0.7.0` — Transactions + WAL.
-- `v0.8.0` — Planner and Optimizer.
-- `v0.9.0` — TCP Protocol + Server (core).
-- `v0.9.5` — Authentication.
-- `v0.9.7` — Prepared statements + transactions over the network.
-- `v0.9.9` — Client Library + CLI client.
-- `v0.9.10` — Backups + administration.
-- `v0.9.15` — Tests, optimization, documentation.
-- `v1.0.0` — Stable release.
-
----
-
-## 17. Definition of Done for v1.0.0
+## 16. Definition of Done
 
 - [ ] All functional requirements are met.
 - [ ] Test coverage ≥ 85%.
@@ -1316,15 +1277,14 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 - [ ] PHP-CS-Fixer with no violations.
 - [ ] Documentation: SQL, protocol, architecture, security, CLI.
 - [ ] Usage examples (embedded + client-server).
-- [ ] CI passes on all supported PHP versions.
-- [ ] Package is available on Packagist.
+- [ ] CI passes.
 - [ ] Benchmarks are published.
 - [ ] Server sustains 100 simultaneous clients.
 - [ ] No critical bugs.
 
 ---
 
-## 18. Example: Embedded
+## 17. Example: Embedded
 
 ```php
 <?php
@@ -1352,7 +1312,7 @@ foreach ($db->query('SELECT * FROM users') as $row) {
 
 ---
 
-## 19. Example: Client-Server
+## 18. Example: Client-Server
 
 ### 19.1. Start the Server
 
@@ -1393,7 +1353,7 @@ $conn->close();
 
 ---
 
-## 20. Appendix: Protocol Error Format
+## 19. Appendix: Protocol Error Format
 
 ```json
 {
@@ -1419,7 +1379,7 @@ Error codes:
 
 ---
 
-## 21. Appendix: Transaction Isolation
+## 20. Appendix: Transaction Isolation
 
 | Level | Dirty Read | Non-Repeatable Read | Phantom Reads |
 |-------|------------|---------------------|---------------|
@@ -1435,7 +1395,7 @@ Implementation:
 
 ---
 
-## 22. Appendix: Connection Lifecycle
+## 21. Appendix: Connection Lifecycle
 
 ```text
 Client                          Server
@@ -1465,7 +1425,7 @@ Client                          Server
 
 ---
 
-## 23. Appendix: Implementation Order (Checklist)
+## 22. Appendix: Implementation Order (Checklist)
 
 - [x] Milestone 0. Project Setup.
 - [x] Milestone 1. Data Types and Serialization.
@@ -1474,7 +1434,7 @@ Client                          Server
 - [x] Milestone 4. SQL Lexer and Parser.
 - [x] Milestone 5. Execution Engine (Basic).
 - [x] Milestone 6. B-Tree Indexes.
-- [ ] Milestone 7. JOIN, GROUP BY, Aggregates.
+- [x] Milestone 7. JOIN, GROUP BY, Aggregates.
 - [ ] Milestone 8. Transactions and WAL.
 - [ ] Milestone 9. Planner and Optimizer.
 - [ ] Milestone 10. Integrity Constraints.
@@ -1488,8 +1448,7 @@ Client                          Server
 - [ ] Milestone 18. Server Administration.
 - [ ] Milestone 19. Backup, Dump, Restore.
 - [ ] Milestone 20. Testing, Optimization, Documentation.
-- [ ] Milestone 21. Release v1.0.0.
 
 ---
 
-**Summary:** The plan covers architecture, TCP protocol, authentication, client library, implementation stages, testing, security, CI/CD, risks, and definition of done for a PHP relational mini-DBMS with client-server mode. It can be used as a roadmap from an empty repository to a stable `v1.0.0` release.
+**Summary:** The plan covers architecture, TCP protocol, authentication, client library, implementation stages, testing, security, CI/CD, risks, and definition of done for a PHP relational mini-DBMS with client-server mode. It is a learning project, not a package meant to ship — the plan is a roadmap from an empty repository to a feature-complete, well-tested implementation, not a release train.

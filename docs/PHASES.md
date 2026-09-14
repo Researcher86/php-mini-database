@@ -287,3 +287,56 @@ than stale, and `SELECT` actually returning the right rows whether or not
 an index was available. `benchmarks/index_vs_seqscan.php` measures the
 same point lookup through an indexed column against a column with no
 index.
+
+## Phase 7 — JOIN, GROUP BY, aggregates ✅
+
+Two-table queries and grouped ones. A joined row is a `Schema\Row` whose
+keys are already `"ref.column"` for every column of every table involved —
+`Execution\Operator\Qualify` re-keys a plain table scan this way, so
+`NestedLoopJoin`/`HashJoin` only ever merge already-qualified rows,
+whether a side is a real table or the output of a join one level down.
+`Execution\Expression\QualifiedRowContext` is the matching evaluation
+context: a qualified lookup is a direct key read, a bare one has to be
+unambiguous across every table in scope. `HashJoin` handles the common
+`INNER JOIN ... ON a.x = b.y` shape in one pass over each side;
+`NestedLoopJoin` is the general fallback — any `ON` expression, and `LEFT`
+(with `RIGHT` built by swapping which side is asked for first and
+requesting `LEFT`, since the join condition does not care which physical
+side a value came from). `Executor` detects which shape applies with the
+same small, rule-based approach `IndexScan` selection already established
+in Phase 6 — not a planner, just enough to not be always the slow path.
+
+`Execution\Operator\Aggregate` is `GROUP BY` and its functions — `COUNT`,
+`SUM`, `AVG`, `MIN`, `MAX` — as one mechanism: every source row is bucketed
+by its `GROUP BY` key tuple, then each select-list expression (and
+`HAVING`) is evaluated once per bucket by *substituting* every aggregate
+call it contains with a `Literal` of that aggregate's value over the
+bucket's rows, and running the rewritten, aggregate-free expression through
+the ordinary `Evaluator`. That is what lets `HAVING COUNT(*) > 1` — an
+aggregate wrapped in a comparison, not a bare aggregate call — work with no
+special-casing beyond the substitution itself. `SELECT COUNT(*) FROM t
+WHERE false` is one row with `COUNT(*) = 0`; an explicit `GROUP BY` with no
+matching rows is zero rows — the same "aggregate over nothing" distinction
+real SQL makes. `Execution\Operator\Distinct` runs after projection and
+drops a row whose full output tuple already came through once.
+
+`Filter`, `Sort` and `Project` no longer take a fixed table/alias/parameter
+triple — they take a `Closure(Row): EvaluationContext`, so the same three
+operators serve a plain single-table query (a `RowContext` closure) and a
+joined one (a `QualifiedRowContext` closure) without knowing which they are
+in. `ORDER BY` runs *before* projection for a plain query, so it can
+reference a column that was never selected, and *after* aggregation for a
+grouped one, so it can reference an output alias that only exists once
+computed — the same operator, two different places in the pipeline,
+depending on what it needs to see.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** one file per new operator (`QualifyTest`, `NestedLoopJoinTest`,
+`HashJoinTest`, `DistinctTest`, `AggregateTest` — including the
+nested-aggregate substitution and the empty-source-vs-empty-group
+distinction) against fixed in-memory sources; `ExecutorJoinTest.php` for
+the end-to-end path — inner/left/right, a three-table chain, a non-equi
+join still working via `NestedLoopJoin`, and the ambiguous-unqualified-
+column error; `ExecutorGroupByTest.php` for `GROUP BY`/`HAVING`/`DISTINCT`
+and `ORDER BY` against an aggregate's alias.

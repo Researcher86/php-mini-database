@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Tests\Unit\Execution\Operator;
 
+use Closure;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
+use PhpMiniDatabase\Execution\Expression\RowContext;
 use PhpMiniDatabase\Execution\Operator\Filter;
 use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Sql\Ast\Expression;
@@ -23,10 +25,15 @@ final class FilterTest extends TestCase
         return $statement->where;
     }
 
+    private function context(): Closure
+    {
+        return static fn (Row $row): RowContext => new RowContext($row, 't');
+    }
+
     public function testYieldsOnlyMatchingRows(): void
     {
         $source = new ListOperator([new Row(['age' => 10]), new Row(['age' => 20]), new Row(['age' => 30])]);
-        $filter = new Filter($source, $this->whereExpression('age >= 20'), new Evaluator(), 't');
+        $filter = new Filter($source, $this->whereExpression('age >= 20'), new Evaluator(), $this->context());
 
         $ages = array_map(static fn (Row $r) => $r->get('age'), iterator_to_array($filter, false));
 
@@ -40,14 +47,14 @@ final class FilterTest extends TestCase
     public function testANullPredicateExcludesTheRow(): void
     {
         $source = new ListOperator([new Row(['age' => null]), new Row(['age' => 20])]);
-        $filter = new Filter($source, $this->whereExpression('age > 10'), new Evaluator(), 't');
+        $filter = new Filter($source, $this->whereExpression('age > 10'), new Evaluator(), $this->context());
 
         self::assertCount(1, iterator_to_array($filter, false));
     }
 
     public function testAnEmptySourceYieldsNothing(): void
     {
-        $filter = new Filter(new ListOperator([]), $this->whereExpression('age > 10'), new Evaluator(), 't');
+        $filter = new Filter(new ListOperator([]), $this->whereExpression('age > 10'), new Evaluator(), $this->context());
 
         self::assertSame([], iterator_to_array($filter, false));
     }

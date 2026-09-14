@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Execution\Operator;
 
+use Closure;
 use Generator;
+use PhpMiniDatabase\Execution\Expression\EvaluationContext;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
-use PhpMiniDatabase\Execution\Expression\RowContext;
 use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Sql\Ast\Expression\ColumnRef;
 use PhpMiniDatabase\Sql\Ast\Expression\FunctionCall;
@@ -19,30 +20,31 @@ use PhpMiniDatabase\Sql\Ast\SelectItem;
  * `SELECT *` is not this class's problem — by the time an `Operator` chain
  * reaches `Project`, `Executor` has already expanded a `Star` into one
  * `ColumnRef` per column of the table, so every `SelectItem` here names an
- * ordinary value-producing expression.
+ * ordinary value-producing expression. `$contextFor` builds the
+ * `EvaluationContext` each item's expression is evaluated against — see
+ * `Filter`'s docblock for why this is a closure rather than a fixed
+ * table/alias pair.
  */
 final readonly class Project implements Operator
 {
     /**
-     * @param list<SelectItem> $items
-     * @param list<string>     $labels  one per item, from self::label()
-     * @param list<mixed>      $parameters
+     * @param list<SelectItem>               $items
+     * @param list<string>                   $labels  one per item, from self::label()
+     * @param Closure(Row): EvaluationContext $contextFor
      */
     public function __construct(
         private Operator $source,
         private array $items,
         private array $labels,
         private Evaluator $evaluator,
-        private ?string $tableName,
-        private ?string $tableAlias = null,
-        private array $parameters = [],
+        private Closure $contextFor,
     ) {
     }
 
     public function getIterator(): Generator
     {
         foreach ($this->source as $id => $row) {
-            $context = new RowContext($row, $this->tableName, $this->tableAlias, $this->parameters);
+            $context = ($this->contextFor)($row);
             $values = [];
 
             foreach ($this->items as $i => $item) {

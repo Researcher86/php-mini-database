@@ -677,3 +677,127 @@ old tree — wrong entries, or a `unique` flag from before that no longer
 matches what was just declared — rather than building a new one. Deleting
 the file is what makes "dropped" and "never existed" the same starting
 state for whatever comes next.
+
+## A joined row is qualified before anything else touches it
+
+`Execution\Operator\Qualify` re-keys every column of a table scan as
+`"ref.column"` — `id` becomes `"u.id"` — before a join ever sees it, and a
+join's own output is already in that same shape, so a chain of joins never
+needs to distinguish "a real table's row" from "a nested join's row."
+Every downstream piece — `NestedLoopJoin`/`HashJoin` merging two sides,
+`QualifiedRowContext` resolving a `ColumnRef` — only ever deals with
+already-qualified `Row`s.
+
+The alternative was for a join to carry two rows plus their table names as
+a distinct, join-specific value type, and for every operator downstream
+(`Filter`, `Sort`, `Project`, `Aggregate`) to learn a second shape of "the
+current row" alongside the plain single-table one. Folding the qualifier
+into the `Row`'s own keys keeps the *type* every operator already deals in
+— a plain `Schema\Row` — the only one that exists anywhere in the
+pipeline, joined or not; only the `EvaluationContext` that interprets a
+`Row`'s keys differs between the two cases (see the next decision).
+
+## Operators take a context closure, not a fixed table/alias
+
+`Filter`, `Sort` and `Project` construct their `EvaluationContext` by
+calling a `Closure(Row): EvaluationContext` the caller supplies, rather
+than taking a `$tableName`/`$tableAlias`/`$parameters` triple and building
+a `RowContext` internally the way they did through Phase 6.
+
+Phase 7 needed these three operators to work identically over a plain
+table's rows (evaluated against `RowContext`) and a joined query's rows
+(evaluated against `QualifiedRowContext`) without knowing which kind of
+query built them. A closure is the smallest change that gets there: the
+three operators stay completely ignorant of which context type exists,
+`Executor` decides once per query shape, and adding a third context kind
+later — if one is ever needed — touches `Executor`, not any operator.
+
+## `RIGHT JOIN` is a `LEFT JOIN` with its sides swapped
+
+`Executor::buildJoinPipeline()` builds a `RIGHT JOIN a b ON x` by
+constructing `NestedLoopJoin($right, $left, isLeftJoin: true, $on, ...)` —
+passing the *right* `FromItem` as the operator's first (i.e., "left" in the
+operator's own terms) input. `NestedLoopJoin` itself has no `RIGHT` case at
+all.
+
+An `ON` expression's truth does not depend on which physical side of the
+join a value was read from, only on the values themselves — `u.id =
+o.user_id` means the same thing whichever operand position each column
+occupies in the evaluated expression. `RIGHT JOIN a b` and `LEFT JOIN b a`
+over the same `ON` therefore produce the same *set* of qualified rows (in a
+different merge order, which nothing downstream depends on, since every
+lookup is by qualified key name, never by position). Writing a third
+matching-and-padding branch to distinguish them would be net new code
+duplicating the `LEFT` branch's logic with the two inputs' roles reversed;
+swapping which `Operator` is passed first costs nothing further.
+
+## `HashJoin` is chosen by a rule, the same as `IndexScan`'s
+
+`Executor::equiJoinKeys()` recognizes exactly one shape: an `INNER JOIN`
+whose `ON` is a single top-level equality between one qualified column
+from each side. When that check passes, a `HashJoin` replaces the
+`NestedLoopJoin` that would otherwise run; nothing else about the query
+changes, `Filter` still runs against the complete original `WHERE` and
+`ON` had already been fully consumed either way.
+
+This is deliberately the same shape of decision `selectSource()` makes for
+`IndexScan` in Phase 6, applied to joins instead of scans: a small, fixed
+rule standing in for the cost-based choice Milestone 9's planner will
+eventually make, safe to leave narrow because getting it wrong only costs
+a slower `NestedLoopJoin`, never a wrong answer — an equi-join condition
+`HashJoin` cannot handle (a non-equality, an `OR`, a comparison against a
+constant instead of the other side) is refused by `equiJoinKeys()`
+returning `null`, not attempted incorrectly.
+
+## Aggregates are substituted, then evaluated normally
+
+`Execution\Operator\Aggregate::substituteAggregates()` walks a select-list
+or `HAVING` expression and replaces every aggregate function call it finds
+— wherever it is nested, not only at the top — with a `Literal` holding
+that aggregate computed over the current group's rows. The *rewritten*
+expression, which now contains no aggregate calls at all, is handed to the
+ordinary `Evaluator` exactly as any other expression would be.
+
+The alternative was to give `Evaluator` itself the concept of "the current
+group of rows" and teach it to recognize `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`
+as needing many rows instead of one. That would have made `Evaluator`
+usable only where a group happens to be in scope, and every one of its
+other callers (a `WHERE` clause, a column default, an `INSERT` value) would
+have to either supply a meaningless single-row "group" or be special-cased
+around. Substitution keeps `Evaluator` knowing nothing about aggregation at
+all — the one thing it evaluates is a plain expression tree, always — and
+confines everything aggregate-specific to the one operator whose entire
+purpose is aggregation. It is also what makes `HAVING COUNT(*) > 1` work
+for free: `substituteAggregates()` recurses through the comparison and
+only the `COUNT(*)` inside it is replaced, so the comparison itself is
+just an ordinary `BinaryOp` by the time `Evaluator` sees it.
+
+## `ORDER BY` moves depending on what it needs to see
+
+For a plain (non-aggregate) query, `Sort` runs *before* `Project`, against
+the same row `Filter` already saw — so `SELECT name FROM users ORDER BY
+age` can sort by a column the select list never mentions. For a grouped
+query, `Sort` runs *after* `Aggregate`, against the aggregate's own output
+row — so `ORDER BY total DESC` can reference a `SUM(...) AS total` alias
+that only exists once every group has been collapsed to one row.
+
+Both placements are necessary, not a stylistic choice: swapping them would
+break one case to fix the other. A plain query's `ORDER BY` column is
+routinely absent from the select list, so it has to be evaluated against
+the *source* row, before projection has discarded anything. A grouped
+query's `ORDER BY` expression, by contrast, is typically the aggregate
+result itself or its alias — something that exists nowhere in the source
+rows individually and is only computable per group, so it has to run
+*after* `Aggregate` has produced it. `finishSelect()` picks the placement
+per query, based on whether the query is aggregating at all — the one
+piece of information that decides which row shape `ORDER BY` actually has
+in front of it.
+
+The consequence, left as a named simplification rather than solved: a
+grouped query's `ORDER BY` can reference a `GROUP BY` key or a select-list
+alias (both present on the output row `Sort` sees), but not repeat a bare
+aggregate expression the select list already re-derives under a different
+name (`ORDER BY COUNT(*)` without an alias) — `Evaluator` has no
+aggregate-substitution step of its own outside `Aggregate`, and this
+`Sort` runs after `Aggregate`, not through it. Writing `ORDER BY` against
+an aliased column, the normal way to do this, is unaffected.

@@ -282,21 +282,18 @@ final class ExecutorTest extends TestCase
         self::assertFalse($this->database->hasTable('never_existed'));
     }
 
-    public function testJoinsAreNotSupportedYet(): void
+    /**
+     * JOINs are supported (see ExecutorJoinTest.php); SELECT * over one is
+     * not, since expanding a star needs to enumerate every table in the
+     * join and expandStars() only knows one table.
+     */
+    public function testSelectStarIsNotSupportedForAJoin(): void
     {
         $this->createUsers();
         $this->executor->run('CREATE TABLE orders (user_id INT)');
 
         $this->expectException(ExecutionException::class);
         $this->query('SELECT * FROM users JOIN orders ON orders.user_id = users.id');
-    }
-
-    public function testGroupByIsNotSupportedYet(): void
-    {
-        $this->createUsers();
-
-        $this->expectException(ExecutionException::class);
-        $this->query('SELECT COUNT(*) FROM users GROUP BY active');
     }
 
     public function testFullWorkflowEndToEnd(): void

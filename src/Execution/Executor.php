@@ -4,14 +4,22 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Execution;
 
+use Closure;
 use PhpMiniDatabase\Exception\ExecutionException;
+use PhpMiniDatabase\Execution\Expression\EvaluationContext;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
+use PhpMiniDatabase\Execution\Expression\QualifiedRowContext;
 use PhpMiniDatabase\Execution\Expression\RowContext;
+use PhpMiniDatabase\Execution\Operator\Aggregate;
+use PhpMiniDatabase\Execution\Operator\Distinct;
 use PhpMiniDatabase\Execution\Operator\Filter;
+use PhpMiniDatabase\Execution\Operator\HashJoin;
 use PhpMiniDatabase\Execution\Operator\IndexScan;
 use PhpMiniDatabase\Execution\Operator\Limit;
+use PhpMiniDatabase\Execution\Operator\NestedLoopJoin;
 use PhpMiniDatabase\Execution\Operator\Operator;
 use PhpMiniDatabase\Execution\Operator\Project;
+use PhpMiniDatabase\Execution\Operator\Qualify;
 use PhpMiniDatabase\Execution\Operator\SeqScan;
 use PhpMiniDatabase\Execution\Operator\Sort;
 use PhpMiniDatabase\Schema\Database;
@@ -28,10 +36,14 @@ use PhpMiniDatabase\Sql\Ast\Expression;
 use PhpMiniDatabase\Sql\Ast\Expression\BinaryOp;
 use PhpMiniDatabase\Sql\Ast\Expression\BinaryOperator;
 use PhpMiniDatabase\Sql\Ast\Expression\ColumnRef;
+use PhpMiniDatabase\Sql\Ast\Expression\FunctionCall;
 use PhpMiniDatabase\Sql\Ast\Expression\Literal;
 use PhpMiniDatabase\Sql\Ast\Expression\Placeholder;
 use PhpMiniDatabase\Sql\Ast\Expression\Star;
+use PhpMiniDatabase\Sql\Ast\Expression\UnaryOp;
 use PhpMiniDatabase\Sql\Ast\From\FromItem;
+use PhpMiniDatabase\Sql\Ast\From\Join;
+use PhpMiniDatabase\Sql\Ast\From\JoinType;
 use PhpMiniDatabase\Sql\Ast\From\TableReference;
 use PhpMiniDatabase\Sql\Ast\InsertStatement;
 use PhpMiniDatabase\Sql\Ast\SelectItem;
@@ -56,17 +68,25 @@ use PhpMiniDatabase\Storage\RecordId;
  * after (see its own docblock). `SELECT` reaches for an `IndexScan` instead
  * of a `SeqScan` when the `WHERE` clause (or the first conjunct of an `AND`
  * chain) is a plain `column <op> constant` comparison against a column with
- * a single-column index — see `selectSource()` and DECISIONS.md for why
- * this stands in for a real planner rather than becoming one.
+ * a single-column index; a `JOIN` becomes a `HashJoin` when it is a plain
+ * equality between one column from each side, and a `NestedLoopJoin`
+ * otherwise. Both are small, fixed rules standing in for Milestone 9's
+ * planner — see `selectSource()`/`equiJoinKeys()` and DECISIONS.md.
+ *
+ * A query against a `JOIN` evaluates `WHERE`/`ON`/the select list against
+ * `QualifiedRowContext` (columns named `"ref.column"`) rather than the
+ * plain `RowContext` a single table uses — and, for that reason, does not
+ * support a bare `SELECT *`/`t.*` yet: expanding a star needs to enumerate
+ * every table in the join, which `expandStars()` does not do. List columns
+ * explicitly instead.
  *
  * What this phase does *not* do, deliberately, and reports clearly rather
- * than silently mishandling: `JOIN`, derived tables and subqueries (need
- * the planner and a second scan mechanism — Phases 7 and 9); `GROUP BY`,
- * `HAVING`, `DISTINCT` and aggregate functions (Phase 7); `ALTER TABLE`
- * (Phase 10); enforcing `FOREIGN KEY` and `CHECK` on a write (Phase 10 —
- * `NOT NULL` is enforced by `Schema\Table` itself, and `UNIQUE`/`PRIMARY
- * KEY` by `IndexMaintainer`, since neither needs anything this layer does
- * not already have). See DECISIONS.md for the reasoning behind each.
+ * than silently mishandling: derived tables and subqueries (need the
+ * planner — Phase 9); `ALTER TABLE` (Phase 10); enforcing `FOREIGN KEY`
+ * and `CHECK` on a write (Phase 10 — `NOT NULL` is enforced by
+ * `Schema\Table` itself, and `UNIQUE`/`PRIMARY KEY` by `IndexMaintainer`,
+ * since neither needs anything this layer does not already have). See
+ * DECISIONS.md for the reasoning behind each.
  */
 final readonly class Executor
 {
@@ -112,31 +132,93 @@ final readonly class Executor
     /** @param list<mixed> $parameters */
     private function executeSelect(SelectStatement $statement, array $parameters): QueryResult
     {
-        if ($statement->groupBy !== [] || $statement->having !== null || $statement->distinct) {
-            throw new ExecutionException('GROUP BY, HAVING and DISTINCT are not supported yet.');
-        }
-
         if ($statement->from === null) {
+            if ($statement->groupBy !== [] || $statement->having !== null) {
+                throw new ExecutionException('GROUP BY and HAVING require a FROM clause.');
+            }
+
             return $this->executeSelectWithoutFrom($statement, $parameters);
         }
 
-        $table = $this->soleTable($statement->from);
-        $reference = $this->tableReference($statement->from);
+        if ($statement->from instanceof TableReference) {
+            return $this->executeSelectFromTable($statement, $statement->from, $parameters);
+        }
 
+        if ($statement->from instanceof Join) {
+            return $this->executeSelectFromJoin($statement, $statement->from, $parameters);
+        }
+
+        throw new ExecutionException('Derived tables are not supported yet.');
+    }
+
+    /** @param list<mixed> $parameters */
+    private function executeSelectFromTable(SelectStatement $statement, TableReference $reference, array $parameters): QueryResult
+    {
+        $table = $this->database->table($reference->table);
         $items = $this->expandStars($statement->columns, $table, $reference->referenceName());
         $labels = $this->labelsFor($items);
 
         $pipeline = $this->selectSource($table, $statement->where, $parameters);
+        $contextFor = static fn (Row $row): EvaluationContext => new RowContext($row, $table->name, $reference->alias, $parameters);
 
+        return $this->finishSelect($pipeline, $contextFor, $statement, $items, $labels);
+    }
+
+    /** @param list<mixed> $parameters */
+    private function executeSelectFromJoin(SelectStatement $statement, Join $from, array $parameters): QueryResult
+    {
+        foreach ($statement->columns as $item) {
+            if ($item->expression instanceof Star) {
+                throw new ExecutionException('SELECT * is not supported for JOIN queries yet; list the columns explicitly.');
+            }
+        }
+
+        $pipeline = $this->buildJoinPipeline($from, $parameters);
+        $contextFor = static fn (Row $row): EvaluationContext => new QualifiedRowContext($row, $parameters);
+        $labels = $this->labelsFor($statement->columns);
+
+        return $this->finishSelect($pipeline, $contextFor, $statement, $statement->columns, $labels);
+    }
+
+    /**
+     * The shared tail of both FROM shapes above, once each has built its
+     * own source pipeline and the right kind of evaluation context: apply
+     * WHERE, then either GROUP BY/HAVING/aggregates (via `Aggregate`, which
+     * already produces the final labelled rows) or a plain `Project`, then
+     * DISTINCT, then LIMIT/OFFSET. `ORDER BY` runs *before* projection for
+     * a plain query (so it can reference a column that was never
+     * selected), and *after* aggregation for a grouped one (so it can
+     * reference an aggregate's alias, which exists only once computed).
+     *
+     * @param Closure(Row): EvaluationContext $contextFor
+     * @param list<SelectItem>                $items
+     * @param list<string>                    $labels
+     */
+    private function finishSelect(Operator $pipeline, Closure $contextFor, SelectStatement $statement, array $items, array $labels): QueryResult
+    {
         if ($statement->where !== null) {
-            $pipeline = new Filter($pipeline, $statement->where, $this->evaluator, $table->name, $reference->alias, $parameters);
+            $pipeline = new Filter($pipeline, $statement->where, $this->evaluator, $contextFor);
         }
 
-        if ($statement->orderBy !== []) {
-            $pipeline = new Sort($pipeline, $statement->orderBy, $this->evaluator, $table->name, $reference->alias, $parameters);
+        if ($statement->groupBy !== [] || $statement->having !== null || $this->containsAggregate($items)) {
+            $pipeline = new Aggregate($pipeline, $statement->groupBy, $items, $labels, $statement->having, $this->evaluator, $contextFor);
+
+            if ($statement->orderBy !== []) {
+                $outputContext = static fn (Row $row): EvaluationContext => new RowContext($row);
+                $pipeline = new Sort($pipeline, $statement->orderBy, $this->evaluator, $outputContext);
+            }
+        } else {
+            if ($statement->orderBy !== []) {
+                $pipeline = new Sort($pipeline, $statement->orderBy, $this->evaluator, $contextFor);
+            }
+
+            $pipeline = new Project($pipeline, $items, $labels, $this->evaluator, $contextFor);
         }
 
-        $pipeline = new Project($pipeline, $items, $labels, $this->evaluator, $table->name, $reference->alias, $parameters);
+        if ($statement->distinct) {
+            $pipeline = new Distinct($pipeline);
+        }
+
         $pipeline = new Limit($pipeline, $statement->limit, $statement->offset ?? 0);
 
         return new QueryResult($labels, $this->stripKeys($pipeline));
@@ -219,6 +301,142 @@ final readonly class Executor
         return null;
     }
 
+    // -----------------------------------------------------------------
+    // JOIN
+    // -----------------------------------------------------------------
+
+    /** @param list<mixed> $parameters */
+    private function buildJoinPipeline(FromItem $from, array $parameters): Operator
+    {
+        if ($from instanceof TableReference) {
+            $table = $this->database->table($from->table);
+            $heap = $this->database->heapFile($from->table);
+
+            return new Qualify(new SeqScan($table, $heap), $from->referenceName());
+        }
+
+        if (!$from instanceof Join) {
+            throw new ExecutionException('Derived tables are not supported yet.');
+        }
+
+        $left = $this->buildJoinPipeline($from->left, $parameters);
+        $right = $this->buildJoinPipeline($from->right, $parameters);
+
+        if ($from->type === JoinType::INNER) {
+            $equiJoin = $this->equiJoinKeys($from);
+
+            return $equiJoin !== null
+                ? new HashJoin($left, $right, $equiJoin[0], $equiJoin[1])
+                : new NestedLoopJoin($left, $right, false, $from->on, $this->evaluator, $parameters, []);
+        }
+
+        if ($from->type === JoinType::LEFT) {
+            return new NestedLoopJoin($left, $right, true, $from->on, $this->evaluator, $parameters, $this->qualifiedColumnKeys($from->right));
+        }
+
+        // RIGHT JOIN a b ON x == LEFT JOIN b a ON x: the ON expression does
+        // not care which physical side a value came from, so swapping
+        // which input is "left" reuses NestedLoopJoin's LEFT handling
+        // without a third case in that class.
+        return new NestedLoopJoin($right, $left, true, $from->on, $this->evaluator, $parameters, $this->qualifiedColumnKeys($from->left));
+    }
+
+    /** @return array{0: string, 1: string}|null qualified left key, then qualified right key */
+    private function equiJoinKeys(Join $from): ?array
+    {
+        if (!$from->on instanceof BinaryOp
+            || $from->on->operator !== BinaryOperator::EQUAL
+            || !$from->on->left instanceof ColumnRef
+            || !$from->on->right instanceof ColumnRef
+            || $from->on->left->qualifier === null
+            || $from->on->right->qualifier === null
+        ) {
+            return null;
+        }
+
+        $leftRefs = $this->tableRefs($from->left);
+        $rightRefs = $this->tableRefs($from->right);
+        $a = $from->on->left;
+        $b = $from->on->right;
+
+        if (in_array($a->qualifier, $leftRefs, true) && in_array($b->qualifier, $rightRefs, true)) {
+            return ["{$a->qualifier}.{$a->column}", "{$b->qualifier}.{$b->column}"];
+        }
+
+        if (in_array($b->qualifier, $leftRefs, true) && in_array($a->qualifier, $rightRefs, true)) {
+            return ["{$b->qualifier}.{$b->column}", "{$a->qualifier}.{$a->column}"];
+        }
+
+        return null;
+    }
+
+    /** @return list<string> */
+    private function qualifiedColumnKeys(FromItem $from): array
+    {
+        if ($from instanceof TableReference) {
+            $table = $this->database->table($from->table);
+
+            return array_map(static fn (string $column): string => $from->referenceName() . '.' . $column, $table->columnNames());
+        }
+
+        if ($from instanceof Join) {
+            return [...$this->qualifiedColumnKeys($from->left), ...$this->qualifiedColumnKeys($from->right)];
+        }
+
+        throw new ExecutionException('Derived tables are not supported yet.');
+    }
+
+    /** @return list<string> */
+    private function tableRefs(FromItem $from): array
+    {
+        if ($from instanceof TableReference) {
+            return [$from->referenceName()];
+        }
+
+        if ($from instanceof Join) {
+            return [...$this->tableRefs($from->left), ...$this->tableRefs($from->right)];
+        }
+
+        throw new ExecutionException('Derived tables are not supported yet.');
+    }
+
+    // -----------------------------------------------------------------
+    // GROUP BY / aggregate detection
+    // -----------------------------------------------------------------
+
+    /** @param list<SelectItem> $items */
+    private function containsAggregate(array $items): bool
+    {
+        foreach ($items as $item) {
+            if ($this->expressionContainsAggregate($item->expression)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function expressionContainsAggregate(Expression $expression): bool
+    {
+        if ($expression instanceof FunctionCall) {
+            return in_array(strtoupper($expression->name), Aggregate::AGGREGATE_FUNCTIONS, true);
+        }
+
+        if ($expression instanceof BinaryOp) {
+            return $this->expressionContainsAggregate($expression->left) || $this->expressionContainsAggregate($expression->right);
+        }
+
+        if ($expression instanceof UnaryOp) {
+            return $this->expressionContainsAggregate($expression->operand);
+        }
+
+        return false;
+    }
+
+    // -----------------------------------------------------------------
+    // Helpers shared by every FROM shape
+    // -----------------------------------------------------------------
+
     /** @param list<mixed> $parameters */
     private function executeSelectWithoutFrom(SelectStatement $statement, array $parameters): QueryResult
     {
@@ -239,26 +457,12 @@ final readonly class Executor
         return new QueryResult($labels, [new Row($values)]);
     }
 
-    private function soleTable(FromItem $from): Table
-    {
-        if (!$from instanceof TableReference) {
-            throw new ExecutionException('JOINs and derived tables are not supported yet.');
-        }
-
-        return $this->database->table($from->table);
-    }
-
-    private function tableReference(FromItem $from): TableReference
-    {
-        // soleTable() already refused anything else; this exists only so
-        // callers do not repeat the instanceof check it already did.
-        return $from instanceof TableReference ? $from : throw new ExecutionException('JOINs and derived tables are not supported yet.');
-    }
-
     /**
      * Replaces a bare `*`/`t.*` with one `SelectItem` per column of the
      * table, in table order — the only expansion `Project` needs to
-     * remain ignorant of any schema.
+     * remain ignorant of any schema. Only used for a single-table `FROM`;
+     * see `executeSelectFromJoin()` for why a joined query disallows `*`
+     * instead of expanding it.
      *
      * @param list<SelectItem> $items
      *

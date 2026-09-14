@@ -21,11 +21,11 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 6 — B-Tree indexes**. `CREATE`/`DROP INDEX`
-work, a single-column `PRIMARY KEY`/`UNIQUE` is backed and enforced by one
-automatically, and `SELECT` reaches for an index instead of scanning the
-whole table when the `WHERE` clause allows it. JOINs, `GROUP BY` and
-aggregates are next.
+Latest finished phase: **Phase 7 — JOIN, GROUP BY, aggregates**. `INNER`/
+`LEFT`/`RIGHT JOIN` (an equi-join runs through a `HashJoin`, anything else
+through `NestedLoopJoin`), `GROUP BY`/`HAVING` with `COUNT`/`SUM`/`AVG`/
+`MIN`/`MAX`, and `DISTINCT` all work end to end. Transactions and a WAL
+are next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

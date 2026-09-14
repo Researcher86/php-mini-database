@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Tests\Unit\Execution\Operator;
 
 use PhpMiniDatabase\Execution\Expression\Evaluator;
+use PhpMiniDatabase\Execution\Expression\RowContext;
 use PhpMiniDatabase\Execution\Operator\Project;
 use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Sql\Ast\SelectItem;
@@ -29,7 +30,13 @@ final class ProjectTest extends TestCase
         $items = $this->selectItems($sql);
         $labels = array_map(static fn (SelectItem $item, int $i): string => Project::label($item, $i), $items, array_keys($items));
 
-        $project = new Project(new ListOperator([$row]), $items, $labels, new Evaluator(), 't');
+        $project = new Project(
+            new ListOperator([$row]),
+            $items,
+            $labels,
+            new Evaluator(),
+            static fn (Row $row): RowContext => new RowContext($row, 't'),
+        );
 
         return iterator_to_array($project, false)[0];
     }

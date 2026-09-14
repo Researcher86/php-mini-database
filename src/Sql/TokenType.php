@@ -96,6 +96,23 @@ enum TokenType
     case BETWEEN;
     case IS;
 
+    // Transactions
+    case BEGIN;
+    case START;
+    case TRANSACTION;
+    case COMMIT;
+    case ROLLBACK;
+    case WORK;
+    case SAVEPOINT;
+    case RELEASE;
+    case TO;
+    case ISOLATION;
+    case LEVEL;
+    case READ;
+    case COMMITTED;
+    case REPEATABLE;
+    case SERIALIZABLE;
+
     // Punctuation and operators
     case LPAREN;
     case RPAREN;
@@ -186,6 +203,21 @@ enum TokenType
             'LIKE' => self::LIKE,
             'BETWEEN' => self::BETWEEN,
             'IS' => self::IS,
+            'BEGIN' => self::BEGIN,
+            'START' => self::START,
+            'TRANSACTION' => self::TRANSACTION,
+            'COMMIT' => self::COMMIT,
+            'ROLLBACK' => self::ROLLBACK,
+            'WORK' => self::WORK,
+            'SAVEPOINT' => self::SAVEPOINT,
+            'RELEASE' => self::RELEASE,
+            'TO' => self::TO,
+            'ISOLATION' => self::ISOLATION,
+            'LEVEL' => self::LEVEL,
+            'READ' => self::READ,
+            'COMMITTED' => self::COMMITTED,
+            'REPEATABLE' => self::REPEATABLE,
+            'SERIALIZABLE' => self::SERIALIZABLE,
         ];
     }
 }

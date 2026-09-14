@@ -963,14 +963,14 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 8. Transactions and WAL
 
-- [ ] `Wal`, `WalRecord`.
-- [ ] `TransactionManager`, `Transaction`.
-- [ ] `BEGIN`, `COMMIT`, `ROLLBACK`.
-- [ ] `SAVEPOINT`.
-- [ ] `LockManager` (row/table locks).
-- [ ] Isolation levels.
-- [ ] Recovery after crash.
-- [ ] Transaction tests.
+- [x] `Wal`, `WalRecord`.
+- [x] `TransactionManager`, `Transaction`.
+- [x] `BEGIN`, `COMMIT`, `ROLLBACK`.
+- [x] `SAVEPOINT`.
+- [x] `LockManager` (row/table locks).
+- [x] Isolation levels.
+- [x] Recovery after crash.
+- [x] Transaction tests.
 
 **Estimate:** 10–14 days.
 
@@ -1435,7 +1435,7 @@ Client                          Server
 - [x] Milestone 5. Execution Engine (Basic).
 - [x] Milestone 6. B-Tree Indexes.
 - [x] Milestone 7. JOIN, GROUP BY, Aggregates.
-- [ ] Milestone 8. Transactions and WAL.
+- [x] Milestone 8. Transactions and WAL.
 - [ ] Milestone 9. Planner and Optimizer.
 - [ ] Milestone 10. Integrity Constraints.
 - [ ] Milestone 11. TCP Protocol.

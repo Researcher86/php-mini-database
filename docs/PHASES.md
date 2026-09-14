@@ -340,3 +340,98 @@ the end-to-end path — inner/left/right, a three-table chain, a non-equi
 join still working via `NestedLoopJoin`, and the ambiguous-unqualified-
 column error; `ExecutorGroupByTest.php` for `GROUP BY`/`HAVING`/`DISTINCT`
 and `ORDER BY` against an aggregate's alias.
+
+## Phase 8 — Transactions and WAL ✅
+
+`BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`, a write-ahead log, row/table
+locking, and crash recovery — the first phase where a statement's effect
+can be undone after it already ran.
+
+`Transaction\Wal` is a *logical* log, not a physical one: one growing file
+of JSON-lines records (`{"lsn":1,"tx":1,"op":"BEGIN"}`, per PLAN.md §6.5),
+each `append()` `fsync()`'d before it returns. There is no rotation —
+space comes back only when `TransactionManager` confirms nothing still
+needs the log and calls `checkpoint()` to truncate it outright, the same
+"reclaimed only by an explicit action" trade `HeapFile::vacuum()` and
+`BTreeIndex`'s lack of rebalancing already made. `Transaction\WalRecord`'s
+constructor is private, built only through named factories
+(`insert()`/`update()`/`delete()`/`begin()`/…), plus one general
+`reconstruct()` `Wal::decodeRecord()` uses to rebuild whatever shape a log
+line actually held. A row value that is not natively JSON-safe — a
+`DateTimeImmutable`, or a `BLOB` byte string that is not valid UTF-8 — is
+wrapped in a small tagged object (`{"__datetime__": "..."}`,
+`{"__base64__": "..."}`) on the way out and unwrapped on the way in.
+
+`Transaction\LockManager` is deliberately simple: purely in-memory,
+grant-or-throw with no waiting. A refused lock in this engine is always
+held by another `Transaction` in the *same* synchronous call stack, which
+cannot release it while blocked — real waiting is Phase 12's problem, once
+a server gives concurrent sessions something to wait *across*. Isolation
+levels are 2-phase locking, not MVCC (there is no buffer pool or row
+versioning to base one on): `READ_COMMITTED` holds no read locks at all;
+`REPEATABLE_READ` holds a shared lock on every row a `SELECT` visits,
+released only at commit/rollback; `SERIALIZABLE` additionally takes a
+shared table lock on a full scan, and `INSERT` takes the matching
+exclusive table lock before writing — the pair that actually excludes a
+phantom row from being inserted while a `SERIALIZABLE` scan is still
+using its answer. Read-locking only ever matters once a transaction has a
+*later* statement to keep consistent with itself, so it is wired in only
+for an explicit, still-open transaction — a bare autocommit `SELECT` never
+takes one. All of this is scoped to single-table statements: a `JOIN`'s
+rows lose their per-table `RecordId` once `Qualify`/`NestedLoopJoin`/
+`HashJoin` merge them, so there is nothing left to attach a row lock to.
+
+Undoing a change is *logical replay* through the same
+`Schema\Table`/`Storage\HeapFile`/`Execution\IndexMaintainer` machinery a
+fresh `INSERT`/`UPDATE`/`DELETE` uses, not physical page restoration —
+`Execution\Executor::undo()` and its three helpers are the other half of
+`TransactionManager`'s design: `TransactionManager` holds the *log* of
+what happened, but only `Executor` knows how to reverse it against a live
+heap and its indexes. `TransactionManager::setUndoHandler()` wires a
+`Closure` in after both are constructed, which is what resolves the
+circular dependency between them without either depending on the other's
+concrete type. Because an `INSERT`'s new `RecordId` (and a moving
+`UPDATE`'s post-move one) is not knowable before the heap mutation itself
+runs, the WAL entry for a row change is appended — fsync'd — immediately
+*after* the mutation, not strictly before it; what actually matters for
+recovery, that a transaction's complete log is durable before its
+`COMMIT` marker is, still holds. `TransactionManager::recover()` undoes
+any transaction left with a `BEGIN` but no matching `COMMIT`/`ROLLBACK`,
+in reverse order, and assumes a single point of failure — it does not
+defend against a second crash during its own undo pass. Every
+`INSERT`/`UPDATE`/`DELETE` now runs inside a transaction either way: the
+caller's own, if `BEGIN` opened one, or — via `Executor::withTransaction()`
+— one opened and closed around that single statement, which is what gives
+a multi-row `INSERT` statement-level atomicity for the first time.
+
+`Wal`, `LockManager` and `TransactionManager` are owned by `Schema\Database`
+now, not by `Execution\Executor` — a transaction, and the locks it holds,
+are properties of a connection to the database, not of one particular
+`Executor` object built to talk to it. Two `Executor`s wrapping the same
+`Database` correctly see the same active transaction (and the same
+`TransactionException` a second `BEGIN` throws while it is open) instead
+of each tracking its own. `TransactionManager::recover()` is a no-op after
+its first call for exactly this reason: without that guard, building a
+second `Executor` against a `Database` with a transaction already open
+would see that transaction's own `BEGIN`-with-no-`COMMIT`-yet on the WAL
+and incorrectly undo work that was never abandoned in the first place.
+
+`CREATE`/`DROP TABLE` and `CREATE`/`DROP INDEX` stay outside the WAL and
+transaction system entirely, applied immediately regardless of an open
+`BEGIN` — the same way many real databases keep DDL non-transactional.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Transaction/LockManagerTest.php`, `WalTest.php`,
+`TransactionTest.php`, `TransactionManagerTest.php` for each piece in
+isolation, the last including recovery against a fake undo handler;
+`tests/Unit/Sql/ParserTransactionTest.php` for the new grammar; and
+`tests/Unit/Execution/ExecutorTransactionTest.php` for the end-to-end
+path — commit and rollback of an `INSERT`/`UPDATE`/`DELETE`, a savepoint
+partial rollback and a savepoint reused after rolling back to it, a
+multi-row `INSERT`'s new atomicity, recovering an incomplete transaction
+after reopening the database, DDL running regardless of an open
+transaction, and — since two genuinely overlapping transactions cannot
+exist through `Executor::run()` alone in this single-session engine yet —
+the read/write locking rules exercised directly against the shared
+`LockManager` `Database::locks()` now exposes.

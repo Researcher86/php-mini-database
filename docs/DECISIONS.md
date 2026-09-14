@@ -27,6 +27,14 @@ project is built from is [PLAN.md](../PLAN.md).
 | A default is stored exactly as given and cast lazily, never as its canonical form | current, [why](#a-default-is-stored-as-given-not-in-canonical-form) |
 | There is no `catalog.json`; the `tables/` directory listing is the catalog | current, [why](#no-catalogjson) |
 | `Table` validates itself alone; `Catalog` validates across tables | current, [why](#table-validates-alone-catalog-validates-across-tables) |
+| The WAL is logical, and reclaimed only by an explicit checkpoint | current, [why](#the-wal-is-logical-and-reclaimed-only-by-an-explicit-checkpoint) |
+| `LockManager` never waits | current, [why](#lockmanager-never-waits) |
+| Isolation levels are 2-phase locking, not MVCC | current, [why](#isolation-levels-are-2-phase-locking-not-mvcc) |
+| A row is mutated before its WAL record is appended | current, [why](#a-row-is-mutated-before-its-wal-record-is-appended) |
+| Undo is logical replay, wired in through a Closure | current, [why](#undo-is-logical-replay-wired-in-through-a-closure) |
+| Recovery assumes a single crash | current, [why](#recovery-assumes-a-single-crash) |
+| `Database`, not `Executor`, owns transaction and lock state | current, [why](#database-not-executor-owns-transaction-and-lock-state) |
+| DDL is not transactional | current, [why](#ddl-is-not-transactional) |
 
 ## One byte format for disk and wire
 
@@ -801,3 +809,192 @@ name (`ORDER BY COUNT(*)` without an alias) — `Evaluator` has no
 aggregate-substitution step of its own outside `Aggregate`, and this
 `Sort` runs after `Aggregate`, not through it. Writing `ORDER BY` against
 an aliased column, the normal way to do this, is unaffected.
+
+## The WAL is logical, and reclaimed only by an explicit checkpoint
+
+`Transaction\Wal` records "row X in table Y changed from this to that,"
+not which bytes of which page moved. PLAN.md's own layout sketches
+numbered log segments (`wal.0001.log`, `wal.0002.log`); this
+implementation keeps one file instead, and only ever shrinks it by
+truncating it outright, once `TransactionManager` confirms nothing still
+depends on it (`checkpoint()`, called after a commit, a rollback, and
+after recovery).
+
+A physical log — page images or byte ranges — would let recovery replay
+raw writes without touching `Schema\Table` or `Execution\IndexMaintainer`
+at all, and would compose naturally with rotation, since a segment can be
+discarded once every page it touches is known durable on its own. Neither
+of those benefits is worth what it costs here: this engine already has a
+`Table`/`HeapFile`/`IndexMaintainer` path that knows how to apply one
+logical change safely (uniqueness checked first, indexes kept in step),
+and a physical log would have to duplicate that knowledge rather than
+reuse it. Log rotation solves an unbounded-growth problem this project
+does not have yet — a WAL here lives only from one `BEGIN` to the next
+`COMMIT`/`ROLLBACK` (checkpointed immediately after), never accumulating
+across many transactions the way a server handling continuous traffic
+would.
+
+This is the same trade every other piece of on-disk state in this project
+already makes: `HeapFile` reclaims space only at an explicit `VACUUM`,
+`BTreeIndex` never rebalances at all. A named, bounded gap once a real
+workload shows it matters is preferred here over building for a shape of
+growth this project does not yet have.
+
+## `LockManager` never waits
+
+`LockManager::acquire()` either grants a lock immediately or throws
+`TransactionException` — there is no queue, no timeout, no blocking. This
+is a real departure from `Infrastructure\FileLock`'s poll-with-timeout
+model (Phase 2), which exists for exactly the situation `LockManager`
+cannot be in: two genuinely separate OS processes, where waiting a little
+might let the other one finish and release.
+
+`LockManager` instead arbitrates locks between `Transaction`s inside one
+`TransactionManager`, and — since only one transaction can ever be
+current at a time (see below) — a lock conflict here can only happen
+between the current transaction and one that is *only reachable through
+data left behind on the WAL*, or, once Phase 12 gives this engine a real
+server, between two genuinely concurrent sessions in the same process.
+Either way, making the current call block would freeze the only thread
+that could ever release the lock it is waiting on. Refusing outright and
+letting the caller decide what to do (retry the whole statement, surface
+the error) is the only choice that cannot deadlock the process against
+itself.
+
+## Isolation levels are 2-phase locking, not MVCC
+
+`READ_COMMITTED`, `REPEATABLE_READ` and `SERIALIZABLE` are implemented by
+which locks a statement takes and how long it holds them
+(`Executor::lockForRead()`, and the exclusive locks every write already
+takes), not by keeping multiple versions of a row and picking one per
+transaction's snapshot.
+
+MVCC is what most production databases actually use, and it has a real
+advantage this project is giving up: a reader never blocks a writer, or
+vice versa. It also needs machinery this engine does not have and was not
+about to grow just for this — a buffer pool holding several live versions
+of a page, a way to garbage-collect versions no open transaction can still
+see, and a notion of transaction snapshot ordering. Two-phase locking
+needs none of that: it reuses the heap file and indexes exactly as every
+earlier phase already built them, at the cost of a reader and a writer
+sometimes blocking each other under `REPEATABLE_READ`/`SERIALIZABLE` where
+MVCC would not have to.
+
+Read-locking is deliberately narrow in two more ways. First, it only
+triggers for an explicit, still-open transaction — an autocommit `SELECT`
+has no *later* statement in the same transaction for a repeatable read to
+protect, so it takes no lock at all regardless of isolation level.
+Second, it only covers single-table statements: a `JOIN`'s rows lose their
+per-table `RecordId` once `Qualify`/`NestedLoopJoin`/`HashJoin` merge them
+into one qualified row, so there is no address left to attach a lock to.
+Both are named gaps, not silent ones — extending either needs work this
+phase did not need to do to prove the isolation levels' basic mechanics.
+
+## A row is mutated before its WAL record is appended
+
+`Executor::executeInsert()` (and `Update`/`Delete`) writes to the heap
+file and its indexes *first*, and only calls
+`TransactionManager::logInsert()`/`logUpdate()`/`logDelete()` — which
+appends and `fsync()`s — after. Textbook write-ahead logging says the
+opposite: the log record exists before the change it describes.
+
+The reason is `RecordId`: an `INSERT`'s new one, and a moving `UPDATE`'s
+post-move one, are only known once `HeapFile::insert()`/`update()` has
+actually run — there is nothing to put in the WAL record beforehand
+except a placeholder, and a placeholder recovery could not use to find
+the row it needs to undo defeats the log's purpose. What "write-ahead"
+actually has to guarantee — that a transaction's complete log is durable
+before its `COMMIT` marker is — still holds under this ordering, since
+every mutation's record is appended and fsync'd before the statement that
+made it returns, which is always before the `COMMIT` that ends the
+transaction. What is given up is narrower and named: a crash in the exact
+window between the heap mutation and its WAL append is not recoverable —
+a small, acknowledged gap rather than an unexamined one.
+
+## Undo is logical replay, wired in through a Closure
+
+Reversing a `WalRecord` (`Executor::undo()` and its `undoInsert`/
+`undoUpdate`/`undoDelete`) runs it back through the same
+`Schema\Table`/`Storage\HeapFile`/`Execution\IndexMaintainer` path a fresh
+`INSERT`/`UPDATE`/`DELETE` would use — deleting an inserted row, reinserting
+a deleted one, restoring an updated one's old values — rather than
+restoring raw page bytes, which follows directly from the WAL itself being
+logical (see above): there is no physical image to restore from.
+
+This creates a real circular dependency: `TransactionManager` needs to be
+able to undo a change to run `rollback()`/`recover()`, but *how* to undo
+one is knowledge only `Executor` has. Neither class should depend on the
+other's concrete type — `TransactionManager` is meant to be usable by
+whatever future caller does row mutation (this engine only has one today),
+and `Executor` already depends on `TransactionManager` to dispatch `BEGIN`/
+`COMMIT`/etc. `TransactionManager::setUndoHandler(Closure $handler)` is
+the seam: `Executor`'s constructor passes `$this->undo(...)`, a first-class
+callable reference to its own private method, after both objects already
+exist. `TransactionManager` calls the closure without ever knowing what is
+on the other side of it — an interface (`Undoer::undo(WalRecord): void`)
+would express the same contract with a named type instead of a closure's
+implicit one, but would not remove the wiring step this callback already
+does in one line, and this project already reaches for a `Closure` for the
+same reason elsewhere (`Execution\Operator`'s `Closure(Row):
+EvaluationContext` context factories, Phase 7).
+
+## Recovery assumes a single crash
+
+`TransactionManager::recover()` undoes every transaction the WAL shows a
+`BEGIN` for but no matching `COMMIT`/`ROLLBACK`, then checkpoints the log.
+It does not defend against a second crash happening *during* that undo
+pass — if the process dies again partway through, the next `recover()`
+call has no record of which of the first pass's undos already completed.
+
+A fully crash-safe recovery would make each undo step itself
+crash-recoverable — logging its own progress, or making every undo
+operation idempotent so replaying one twice is harmless. That is real
+complexity for a failure mode two full crashes in immediate succession
+that this project's test harness cannot even reliably reproduce, let alone
+one a learning project's own use ever exercises. The single-failure
+assumption is stated here rather than left for a future reader to
+discover by tracing what `recover()` does not check.
+
+## `Database`, not `Executor`, owns transaction and lock state
+
+`Schema\Database::wal()`, `locks()` and `transactions()` construct and
+cache a `Wal`, a `LockManager` and a `TransactionManager`, the same way
+`heapFile()`/`index()` already cache open file handles — and
+`Execution\Executor`'s constructor asks `Database` for all three rather
+than building its own. A transaction, and the locks it holds, are
+properties of a *connection* to the database, not of one particular
+`Executor` object built to talk to it: two `Executor`s wrapping the same
+`Database` need to see the same currently-open transaction (and have a
+second `BEGIN` from either one refused while it is open), the way two
+statements sent down one real database connection would — and, since both
+would otherwise point at the very same on-disk WAL file, two independent
+`TransactionManager`s watching it would each misread the other's
+in-progress transaction as an abandoned one to recover.
+
+That last point is also why `TransactionManager::recover()` is a no-op
+after its first successful call: `Executor`'s constructor calls it
+unconditionally (recovery has to run before any new statement does), so a
+second `Executor` built against a `Database` that already has an
+`Executor`-opened transaction in progress must not have construction
+silently undo it out from under the first. The alternative — some
+caller-visible "has this database already recovered" flag `Executor` has
+to check before deciding whether to call `recover()` at all — pushes the
+same bookkeeping onto every caller instead of the one class that actually
+knows whether it has run.
+
+## DDL is not transactional
+
+`CREATE`/`DROP TABLE` and `CREATE`/`DROP INDEX` apply immediately, whether
+or not a `BEGIN` is currently open, and are never written to the WAL — a
+`ROLLBACK` after `CREATE TABLE posts (...)` leaves `posts` exactly as
+created.
+
+Making DDL transactional would mean the catalog itself — table and index
+definitions, not just row data — needs undo entries and a place in the
+WAL's record shapes, and every schema-reading path (`Database::table()`,
+`heapFile()`, `index()`) would need to account for a table that
+"exists" only inside an open, uncommitted transaction. Several real
+databases (MySQL among them) make the same choice for the same reason:
+DDL's effects are cheap to redo by hand if a mistake is caught immediately
+after, and the machinery to make it fully transactional is disproportionate
+to how often a schema change needs undoing compared to a row's data.

@@ -10,6 +10,9 @@ use PhpMiniDatabase\Infrastructure\Path;
 use PhpMiniDatabase\Storage\BTreeIndex;
 use PhpMiniDatabase\Storage\Catalog;
 use PhpMiniDatabase\Storage\HeapFile;
+use PhpMiniDatabase\Transaction\LockManager;
+use PhpMiniDatabase\Transaction\TransactionManager;
+use PhpMiniDatabase\Transaction\Wal;
 
 /**
  * The database as a caller sees it: a directory on disk, the tables in it,
@@ -21,7 +24,16 @@ use PhpMiniDatabase\Storage\HeapFile;
  * No longer immutable: `heapFile()` opens each table's `heap.dat` once and
  * keeps it open, the same way a real connection keeps its file handles
  * rather than reopening them per statement; `index()` does the same for a
- * table's `.idx` files (Phase 6). `close()` releases them all.
+ * table's `.idx` files (Phase 6), and `wal()` for the write-ahead log
+ * (Phase 8). `close()` releases them all.
+ *
+ * `locks()` and `transactions()` (Phase 8) are owned here rather than by
+ * `Execution\Executor` for the same reason: a "transaction" and a "lock" are
+ * properties of a connection to this database, not of one particular
+ * `Executor` object built to talk to it — two `Executor`s wrapping the same
+ * `Database` need to see the same active transaction and contend for the
+ * same locks, the way two statements sent down one real database connection
+ * would.
  */
 final class Database
 {
@@ -30,6 +42,12 @@ final class Database
 
     /** @var array<string, BTreeIndex> */
     private array $indexes = [];
+
+    private ?Wal $wal = null;
+
+    private ?LockManager $locks = null;
+
+    private ?TransactionManager $transactions = null;
 
     private function __construct(
         private readonly Catalog $catalog,
@@ -66,6 +84,12 @@ final class Database
     public function tableNames(): array
     {
         return $this->catalog->tableNames();
+    }
+
+    /** Where this database's files live — `Transaction\Wal`'s path is built from this. */
+    public function dataDirectory(): string
+    {
+        return $this->catalog->dataDirectory();
     }
 
     /**
@@ -138,6 +162,38 @@ final class Database
         return $this->indexes[$cacheKey];
     }
 
+    /**
+     * The write-ahead log backing `Transaction\TransactionManager`, opened
+     * on first use and reused after — one log per database, shared by
+     * every `Execution\Executor` built against this instance.
+     */
+    public function wal(): Wal
+    {
+        if ($this->wal === null) {
+            $directory = Path::join($this->catalog->dataDirectory(), 'wal');
+            $this->files->ensureDirectory($directory);
+            $this->wal = Wal::open(Path::join($directory, 'wal.log'), $this->files);
+        }
+
+        return $this->wal;
+    }
+
+    /** The lock table every transaction against this database contends for. */
+    public function locks(): LockManager
+    {
+        return $this->locks ??= new LockManager();
+    }
+
+    /**
+     * The one `TransactionManager` for this database, shared by every
+     * `Executor` built against it, so that `BEGIN`ning a transaction
+     * through one is visible to (and blocks a second `BEGIN` from) another.
+     */
+    public function transactions(): TransactionManager
+    {
+        return $this->transactions ??= new TransactionManager($this->wal(), $this->locks());
+    }
+
     public function close(): void
     {
         foreach ($this->heapFiles as $heap) {
@@ -149,6 +205,11 @@ final class Database
             $index->close();
         }
         $this->indexes = [];
+
+        $this->wal?->close();
+        $this->wal = null;
+        $this->transactions = null;
+        $this->locks = null;
     }
 
     private function indexDefinition(string $table, string $indexName): IndexDefinition

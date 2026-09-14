@@ -16,6 +16,7 @@ use PhpMiniDatabase\Execution\Operator\Filter;
 use PhpMiniDatabase\Execution\Operator\HashJoin;
 use PhpMiniDatabase\Execution\Operator\IndexScan;
 use PhpMiniDatabase\Execution\Operator\Limit;
+use PhpMiniDatabase\Execution\Operator\LockRows;
 use PhpMiniDatabase\Execution\Operator\NestedLoopJoin;
 use PhpMiniDatabase\Execution\Operator\Operator;
 use PhpMiniDatabase\Execution\Operator\Project;
@@ -27,6 +28,8 @@ use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Sql\Ast\AlterTableStatement;
+use PhpMiniDatabase\Sql\Ast\BeginStatement;
+use PhpMiniDatabase\Sql\Ast\CommitStatement;
 use PhpMiniDatabase\Sql\Ast\CreateIndexStatement;
 use PhpMiniDatabase\Sql\Ast\CreateTableStatement;
 use PhpMiniDatabase\Sql\Ast\DeleteStatement;
@@ -46,12 +49,23 @@ use PhpMiniDatabase\Sql\Ast\From\Join;
 use PhpMiniDatabase\Sql\Ast\From\JoinType;
 use PhpMiniDatabase\Sql\Ast\From\TableReference;
 use PhpMiniDatabase\Sql\Ast\InsertStatement;
+use PhpMiniDatabase\Sql\Ast\ReleaseSavepointStatement;
+use PhpMiniDatabase\Sql\Ast\RollbackStatement;
+use PhpMiniDatabase\Sql\Ast\RollbackToSavepointStatement;
+use PhpMiniDatabase\Sql\Ast\SavepointStatement;
 use PhpMiniDatabase\Sql\Ast\SelectItem;
 use PhpMiniDatabase\Sql\Ast\SelectStatement;
 use PhpMiniDatabase\Sql\Ast\Statement;
 use PhpMiniDatabase\Sql\Ast\UpdateStatement;
 use PhpMiniDatabase\Sql\Parser;
 use PhpMiniDatabase\Storage\RecordId;
+use PhpMiniDatabase\Transaction\IsolationLevel;
+use PhpMiniDatabase\Transaction\LockManager;
+use PhpMiniDatabase\Transaction\LockMode;
+use PhpMiniDatabase\Transaction\TransactionManager;
+use PhpMiniDatabase\Transaction\WalOperation;
+use PhpMiniDatabase\Transaction\WalRecord;
+use Throwable;
 
 /**
  * Runs one parsed `Statement` against a `Database`.
@@ -87,10 +101,27 @@ use PhpMiniDatabase\Storage\RecordId;
  * `Schema\Table` itself, and `UNIQUE`/`PRIMARY KEY` by `IndexMaintainer`,
  * since neither needs anything this layer does not already have). See
  * DECISIONS.md for the reasoning behind each.
+ *
+ * `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` (Phase 8) dispatch straight to
+ * `TransactionManager`. Every `INSERT`/`UPDATE`/`DELETE` runs inside a
+ * transaction either way: the caller's own, if one is open, or — via
+ * `withTransaction()` — a new one opened and closed around that one
+ * statement alone, which is what gives a multi-row `INSERT` statement-
+ * level atomicity. `undo()` is the other half of that wiring: the
+ * `Closure` `TransactionManager` calls to physically reverse one logged
+ * change, resolving what would otherwise be a circular dependency between
+ * the two classes (see `TransactionManager`'s own docblock). Row/table
+ * locking is scoped to single-table statements only — a `JOIN`'s rows
+ * lose their per-table `RecordId` once merged, so there is nothing to
+ * attach a lock to (see DECISIONS.md).
  */
 final readonly class Executor
 {
     private IndexMaintainer $indexMaintainer;
+
+    private LockManager $locks;
+
+    private TransactionManager $transactions;
 
     public function __construct(
         private Database $database,
@@ -98,6 +129,10 @@ final readonly class Executor
         private TableBuilder $tableBuilder = new TableBuilder(),
     ) {
         $this->indexMaintainer = new IndexMaintainer($database);
+        $this->locks = $database->locks();
+        $this->transactions = $database->transactions();
+        $this->transactions->setUndoHandler($this->undo(...));
+        $this->transactions->recover();
     }
 
     /** @param list<mixed> $parameters */
@@ -118,6 +153,12 @@ final readonly class Executor
             $statement instanceof DropTableStatement => $this->executeDropTable($statement),
             $statement instanceof CreateIndexStatement => $this->executeCreateIndex($statement),
             $statement instanceof DropIndexStatement => $this->executeDropIndex($statement),
+            $statement instanceof BeginStatement => $this->executeBegin($statement),
+            $statement instanceof CommitStatement => $this->executeCommit(),
+            $statement instanceof RollbackStatement => $this->executeRollback(),
+            $statement instanceof SavepointStatement => $this->executeSavepoint($statement),
+            $statement instanceof ReleaseSavepointStatement => $this->executeReleaseSavepoint($statement),
+            $statement instanceof RollbackToSavepointStatement => $this->executeRollbackToSavepoint($statement),
             $statement instanceof AlterTableStatement => throw new ExecutionException(
                 sprintf('%s is not supported yet.', $statement::class),
             ),
@@ -159,6 +200,7 @@ final readonly class Executor
         $labels = $this->labelsFor($items);
 
         $pipeline = $this->selectSource($table, $statement->where, $parameters);
+        $pipeline = $this->lockForRead($pipeline, $table->name, $pipeline instanceof SeqScan);
         $contextFor = static fn (Row $row): EvaluationContext => new RowContext($row, $table->name, $reference->alias, $parameters);
 
         return $this->finishSelect($pipeline, $contextFor, $statement, $items, $labels);
@@ -299,6 +341,32 @@ final readonly class Executor
         }
 
         return null;
+    }
+
+    /**
+     * `REPEATABLE_READ`/`SERIALIZABLE`'s read-locking. A no-op outside an
+     * explicit transaction, or under `READ_COMMITTED` inside one: an
+     * isolation level's guarantee is about what a *later* statement in the
+     * same transaction sees, and an autocommit `SELECT` has no later
+     * statement of its own to protect. `SERIALIZABLE` additionally takes a
+     * shared table lock on a full scan, to block another transaction's
+     * `INSERT` from creating a phantom row this transaction would have
+     * matched on a re-scan; an `IndexScan` never needs it, since a value
+     * outside its range could never have matched anyway.
+     */
+    private function lockForRead(Operator $pipeline, string $table, bool $isFullScan): Operator
+    {
+        $tx = $this->transactions->current();
+
+        if ($tx === null || $tx->isolationLevel === IsolationLevel::READ_COMMITTED) {
+            return $pipeline;
+        }
+
+        if ($tx->isolationLevel === IsolationLevel::SERIALIZABLE && $isFullScan) {
+            $this->locks->acquireTableLock($table, $tx->id, LockMode::SHARED);
+        }
+
+        return new LockRows($pipeline, $this->locks, $table, $tx->id, LockMode::SHARED);
     }
 
     // -----------------------------------------------------------------
@@ -529,33 +597,48 @@ final readonly class Executor
         $columns = $statement->columns ?? $table->columnNames();
         $context = new RowContext(parameters: $parameters);
 
-        foreach ($statement->rows as $values) {
-            if (count($columns) !== count($values)) {
-                throw new ExecutionException(sprintf(
-                    'INSERT into "%s" names %d column(s) but gives %d value(s).',
-                    $statement->table,
-                    count($columns),
-                    count($values),
+        return $this->withTransaction(function () use ($statement, $table, $heap, $columns, $context): int {
+            $txId = $this->currentTransactionId();
+
+            // An exclusive table lock, held until commit/rollback like every
+            // other lock here: the counterpart to the shared one a
+            // SERIALIZABLE full scan takes (see lockForRead()). Neither
+            // conflicts with a plain row lock, so this only ever actually
+            // blocks against another INSERT or a concurrent SERIALIZABLE
+            // scan - the phantom this exists to prevent.
+            $this->locks->acquireTableLock($table->name, $txId, LockMode::EXCLUSIVE);
+
+            foreach ($statement->rows as $values) {
+                if (count($columns) !== count($values)) {
+                    throw new ExecutionException(sprintf(
+                        'INSERT into "%s" names %d column(s) but gives %d value(s).',
+                        $statement->table,
+                        count($columns),
+                        count($values),
+                    ));
+                }
+
+                $row = new Row(array_combine(
+                    $columns,
+                    array_map(fn ($expression) => $this->evaluator->evaluate($expression, $context), $values),
                 ));
+
+                // Resolved to a row with every column present (defaults
+                // applied, NOT NULL checked) before indexes ever see it, so a
+                // unique index enforces the value that actually gets stored,
+                // not just the ones the statement happened to name.
+                $resolved = $table->rowFromValues($table->valuesFromRow($row));
+
+                $this->indexMaintainer->assertUniqueForInsert($table, $resolved);
+                $id = $heap->insert($table->serializeRow($resolved));
+                $this->indexMaintainer->afterInsert($table, $resolved, $id);
+
+                $this->locks->acquireRowLock($table->name, $id, $txId, LockMode::EXCLUSIVE);
+                $this->transactions->logInsert($table->name, $id, $resolved->toArray());
             }
 
-            $row = new Row(array_combine(
-                $columns,
-                array_map(fn ($expression) => $this->evaluator->evaluate($expression, $context), $values),
-            ));
-
-            // Resolved to a row with every column present (defaults
-            // applied, NOT NULL checked) before indexes ever see it, so a
-            // unique index enforces the value that actually gets stored,
-            // not just the ones the statement happened to name.
-            $resolved = $table->rowFromValues($table->valuesFromRow($row));
-
-            $this->indexMaintainer->assertUniqueForInsert($table, $resolved);
-            $id = $heap->insert($table->serializeRow($resolved));
-            $this->indexMaintainer->afterInsert($table, $resolved, $id);
-        }
-
-        return count($statement->rows);
+            return count($statement->rows);
+        });
     }
 
     /** @param list<mixed> $parameters */
@@ -564,47 +647,56 @@ final readonly class Executor
         $table = $this->database->table($statement->table);
         $heap = $this->database->heapFile($statement->table);
 
-        // Collected - and uniqueness-checked - before anything is written:
-        // a row that grows past its page moves, and HeapFile::insert()
-        // places the moved copy at the end of the file - possibly onto a
-        // page this same scan has not reached yet, which would visit and
-        // update it a second time. See DECISIONS.md. Checking every match
-        // up front, before any write, also means a uniqueness violation
-        // anywhere in the statement leaves every row untouched rather than
-        // leaving earlier matches already changed.
-        $writes = [];
+        return $this->withTransaction(function () use ($statement, $table, $heap, $parameters): int {
+            $txId = $this->currentTransactionId();
 
-        foreach ($heap->scan() as $id => $record) {
-            $oldRow = $table->deserializeRow($record);
-            $context = new RowContext($oldRow, $statement->table, parameters: $parameters);
+            // Collected - and uniqueness-checked - before anything is written:
+            // a row that grows past its page moves, and HeapFile::insert()
+            // places the moved copy at the end of the file - possibly onto a
+            // page this same scan has not reached yet, which would visit and
+            // update it a second time. See DECISIONS.md. Checking every match
+            // up front, before any write, also means a uniqueness violation
+            // anywhere in the statement leaves every row untouched rather than
+            // leaving earlier matches already changed. Locks are taken here
+            // too, as each candidate is found, rather than only once it is
+            // written.
+            $writes = [];
 
-            if ($statement->where !== null && !$this->evaluator->isTrue($this->evaluator->evaluate($statement->where, $context))) {
-                continue;
-            }
+            foreach ($heap->scan() as $id => $record) {
+                $oldRow = $table->deserializeRow($record);
+                $context = new RowContext($oldRow, $statement->table, parameters: $parameters);
 
-            $values = $oldRow->toArray();
-
-            foreach ($statement->assignments as $assignment) {
-                if (!$table->hasColumn($assignment->column)) {
-                    throw new ExecutionException(sprintf('Table "%s" has no column "%s".', $statement->table, $assignment->column));
+                if ($statement->where !== null && !$this->evaluator->isTrue($this->evaluator->evaluate($statement->where, $context))) {
+                    continue;
                 }
 
-                $values[$assignment->column] = $this->evaluator->evaluate($assignment->value, $context);
+                $this->locks->acquireRowLock($table->name, $id, $txId, LockMode::EXCLUSIVE);
+
+                $values = $oldRow->toArray();
+
+                foreach ($statement->assignments as $assignment) {
+                    if (!$table->hasColumn($assignment->column)) {
+                        throw new ExecutionException(sprintf('Table "%s" has no column "%s".', $statement->table, $assignment->column));
+                    }
+
+                    $values[$assignment->column] = $this->evaluator->evaluate($assignment->value, $context);
+                }
+
+                $newRow = $table->rowFromValues($table->valuesFromRow(new Row($values)));
+                $this->indexMaintainer->assertUniqueForUpdate($table, $newRow, $id);
+
+                $writes[] = ['id' => $id, 'oldRow' => $oldRow, 'newRow' => $newRow, 'record' => $table->serializeRow($newRow)];
             }
 
-            $newRow = $table->rowFromValues($table->valuesFromRow(new Row($values)));
-            $this->indexMaintainer->assertUniqueForUpdate($table, $newRow, $id);
+            foreach ($writes as $write) {
+                $newId = $heap->update($write['id'], $write['record']);
+                $this->indexMaintainer->afterDelete($table, $write['oldRow'], $write['id']);
+                $this->indexMaintainer->afterInsert($table, $write['newRow'], $newId);
+                $this->transactions->logUpdate($table->name, $newId, $write['oldRow']->toArray(), $write['newRow']->toArray());
+            }
 
-            $writes[] = ['id' => $id, 'oldRow' => $oldRow, 'newRow' => $newRow, 'record' => $table->serializeRow($newRow)];
-        }
-
-        foreach ($writes as $write) {
-            $newId = $heap->update($write['id'], $write['record']);
-            $this->indexMaintainer->afterDelete($table, $write['oldRow'], $write['id']);
-            $this->indexMaintainer->afterInsert($table, $write['newRow'], $newId);
-        }
-
-        return count($writes);
+            return count($writes);
+        });
     }
 
     /** @param list<mixed> $parameters */
@@ -613,29 +705,80 @@ final readonly class Executor
         $table = $this->database->table($statement->table);
         $heap = $this->database->heapFile($statement->table);
 
-        /** @var list<array{id: RecordId, row: Row}> $matches */
-        $matches = [];
+        return $this->withTransaction(function () use ($statement, $table, $heap, $parameters): int {
+            $txId = $this->currentTransactionId();
 
-        foreach ($heap->scan() as $id => $record) {
-            $row = $table->deserializeRow($record);
+            /** @var list<array{id: RecordId, row: Row}> $matches */
+            $matches = [];
 
-            if ($statement->where !== null) {
-                $context = new RowContext($row, $statement->table, parameters: $parameters);
+            foreach ($heap->scan() as $id => $record) {
+                $row = $table->deserializeRow($record);
 
-                if (!$this->evaluator->isTrue($this->evaluator->evaluate($statement->where, $context))) {
-                    continue;
+                if ($statement->where !== null) {
+                    $context = new RowContext($row, $statement->table, parameters: $parameters);
+
+                    if (!$this->evaluator->isTrue($this->evaluator->evaluate($statement->where, $context))) {
+                        continue;
+                    }
                 }
+
+                $this->locks->acquireRowLock($table->name, $id, $txId, LockMode::EXCLUSIVE);
+                $matches[] = ['id' => $id, 'row' => $row];
             }
 
-            $matches[] = ['id' => $id, 'row' => $row];
+            foreach ($matches as $match) {
+                $heap->delete($match['id']);
+                $this->indexMaintainer->afterDelete($table, $match['row'], $match['id']);
+                $this->transactions->logDelete($table->name, $match['id'], $match['row']->toArray());
+            }
+
+            return count($matches);
+        });
+    }
+
+    /**
+     * Runs $work inside a transaction: the caller's own, if `BEGIN` already
+     * opened one, or — for a bare statement — one opened and committed (or
+     * rolled back, on failure) around this call alone. This is what gives a
+     * multi-row `INSERT` statement-level atomicity for the first time: every
+     * row it writes now commits together, or none of them survive.
+     *
+     * @template T
+     *
+     * @param Closure(): T $work
+     *
+     * @return T
+     */
+    private function withTransaction(Closure $work): mixed
+    {
+        $autocommit = !$this->transactions->inTransaction();
+
+        if ($autocommit) {
+            $this->transactions->begin();
         }
 
-        foreach ($matches as $match) {
-            $heap->delete($match['id']);
-            $this->indexMaintainer->afterDelete($table, $match['row'], $match['id']);
+        try {
+            $result = $work();
+        } catch (Throwable $e) {
+            if ($autocommit) {
+                $this->transactions->rollback();
+            }
+
+            throw $e;
         }
 
-        return count($matches);
+        if ($autocommit) {
+            $this->transactions->commit();
+        }
+
+        return $result;
+    }
+
+    private function currentTransactionId(): int
+    {
+        $tx = $this->transactions->current() ?? throw new ExecutionException('No transaction is active.');
+
+        return $tx->id;
     }
 
     // -----------------------------------------------------------------
@@ -691,5 +834,107 @@ final readonly class Executor
         $this->database->dropIndex($statement->table, $statement->name);
 
         return null;
+    }
+
+    // -----------------------------------------------------------------
+    // Transactions
+    // -----------------------------------------------------------------
+
+    private function executeBegin(BeginStatement $statement): null
+    {
+        $this->transactions->begin($statement->isolationLevel ?? IsolationLevel::READ_COMMITTED);
+
+        return null;
+    }
+
+    private function executeCommit(): null
+    {
+        $this->transactions->commit();
+
+        return null;
+    }
+
+    private function executeRollback(): null
+    {
+        $this->transactions->rollback();
+
+        return null;
+    }
+
+    private function executeSavepoint(SavepointStatement $statement): null
+    {
+        $this->transactions->savepoint($statement->name);
+
+        return null;
+    }
+
+    private function executeReleaseSavepoint(ReleaseSavepointStatement $statement): null
+    {
+        $this->transactions->releaseSavepoint($statement->name);
+
+        return null;
+    }
+
+    private function executeRollbackToSavepoint(RollbackToSavepointStatement $statement): null
+    {
+        $this->transactions->rollbackToSavepoint($statement->name);
+
+        return null;
+    }
+
+    /**
+     * `TransactionManager`'s undo handler: physically reverses one logged
+     * change through the same `Table`/`HeapFile`/`IndexMaintainer`
+     * machinery a fresh `INSERT`/`UPDATE`/`DELETE` uses, rather than
+     * restoring raw page bytes. Only ever called by `TransactionManager`
+     * (`rollback()`, `rollbackToSavepoint()`, `recover()`), and only ever
+     * with an `INSERT`/`UPDATE`/`DELETE` record — see its own docblock for
+     * why nothing else it might log ever reaches here.
+     */
+    private function undo(WalRecord $record): void
+    {
+        match ($record->operation) {
+            WalOperation::INSERT => $this->undoInsert($record),
+            WalOperation::UPDATE => $this->undoUpdate($record),
+            WalOperation::DELETE => $this->undoDelete($record),
+            default => throw new ExecutionException(sprintf('Cannot undo a %s record.', $record->operation->value)),
+        };
+    }
+
+    private function undoInsert(WalRecord $record): void
+    {
+        $table = $this->database->table($record->table);
+        $heap = $this->database->heapFile($record->table);
+        $row = new Row($record->after);
+
+        $heap->delete($record->recordId);
+        $this->indexMaintainer->afterDelete($table, $row, $record->recordId);
+    }
+
+    private function undoDelete(WalRecord $record): void
+    {
+        $table = $this->database->table($record->table);
+        $heap = $this->database->heapFile($record->table);
+        $row = new Row($record->before);
+
+        // The row's slot was freed by the delete this reverses, so it
+        // comes back at whatever slot HeapFile hands out next - not
+        // necessarily the one it left. RecordId is an address, not the
+        // row's identity, so this loses nothing the row's own columns
+        // did not already carry.
+        $newId = $heap->insert($table->serializeRow($row));
+        $this->indexMaintainer->afterInsert($table, $row, $newId);
+    }
+
+    private function undoUpdate(WalRecord $record): void
+    {
+        $table = $this->database->table($record->table);
+        $heap = $this->database->heapFile($record->table);
+        $before = new Row($record->before);
+        $after = new Row($record->after);
+
+        $newId = $heap->update($record->recordId, $table->serializeRow($before));
+        $this->indexMaintainer->afterDelete($table, $after, $record->recordId);
+        $this->indexMaintainer->afterInsert($table, $before, $newId);
     }
 }

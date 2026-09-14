@@ -10,7 +10,9 @@ use PhpMiniDatabase\Sql\Ast\AlterAction\AddColumn;
 use PhpMiniDatabase\Sql\Ast\AlterAction\DropColumn;
 use PhpMiniDatabase\Sql\Ast\AlterTableStatement;
 use PhpMiniDatabase\Sql\Ast\Assignment;
+use PhpMiniDatabase\Sql\Ast\BeginStatement;
 use PhpMiniDatabase\Sql\Ast\ColumnDefinition;
+use PhpMiniDatabase\Sql\Ast\CommitStatement;
 use PhpMiniDatabase\Sql\Ast\CreateIndexStatement;
 use PhpMiniDatabase\Sql\Ast\CreateTableStatement;
 use PhpMiniDatabase\Sql\Ast\DeleteStatement;
@@ -40,6 +42,10 @@ use PhpMiniDatabase\Sql\Ast\From\TableReference;
 use PhpMiniDatabase\Sql\Ast\InsertStatement;
 use PhpMiniDatabase\Sql\Ast\OrderByItem;
 use PhpMiniDatabase\Sql\Ast\OrderDirection;
+use PhpMiniDatabase\Sql\Ast\ReleaseSavepointStatement;
+use PhpMiniDatabase\Sql\Ast\RollbackStatement;
+use PhpMiniDatabase\Sql\Ast\RollbackToSavepointStatement;
+use PhpMiniDatabase\Sql\Ast\SavepointStatement;
 use PhpMiniDatabase\Sql\Ast\SelectItem;
 use PhpMiniDatabase\Sql\Ast\SelectStatement;
 use PhpMiniDatabase\Sql\Ast\Statement;
@@ -49,6 +55,7 @@ use PhpMiniDatabase\Sql\Ast\TableConstraint\PrimaryKeyDefinition;
 use PhpMiniDatabase\Sql\Ast\TableConstraint\TableConstraintDefinition;
 use PhpMiniDatabase\Sql\Ast\TableConstraint\UniqueDefinition;
 use PhpMiniDatabase\Sql\Ast\UpdateStatement;
+use PhpMiniDatabase\Transaction\IsolationLevel;
 
 /**
  * A recursive-descent parser over `Lexer`'s tokens, producing the AST in
@@ -133,6 +140,11 @@ final class Parser
             TokenType::CREATE => $this->createStatement(),
             TokenType::DROP => $this->dropStatement(),
             TokenType::ALTER => $this->alterTableStatement(),
+            TokenType::BEGIN, TokenType::START => $this->beginStatement(),
+            TokenType::COMMIT => $this->commitStatement(),
+            TokenType::ROLLBACK => $this->rollbackStatement(),
+            TokenType::SAVEPOINT => $this->savepointStatement(),
+            TokenType::RELEASE => $this->releaseSavepointStatement(),
             default => throw $this->error('Expected a statement.'),
         };
     }
@@ -653,6 +665,95 @@ final class Parser
         $this->expect(TokenType::ON);
 
         return new DropIndexStatement($name, $this->identifier());
+    }
+
+    // -----------------------------------------------------------------
+    // Transactions
+    // -----------------------------------------------------------------
+
+    private function beginStatement(): BeginStatement
+    {
+        if (!$this->match(TokenType::BEGIN)) {
+            $this->expect(TokenType::START);
+            $this->expect(TokenType::TRANSACTION);
+        }
+
+        $this->match(TokenType::TRANSACTION);
+
+        $level = null;
+        if ($this->match(TokenType::ISOLATION)) {
+            $this->expect(TokenType::LEVEL);
+            $level = $this->isolationLevel();
+        }
+
+        return new BeginStatement($level);
+    }
+
+    private function isolationLevel(): IsolationLevel
+    {
+        if ($this->match(TokenType::READ)) {
+            $this->expect(TokenType::COMMITTED);
+
+            return IsolationLevel::READ_COMMITTED;
+        }
+
+        if ($this->match(TokenType::REPEATABLE)) {
+            $this->expect(TokenType::READ);
+
+            return IsolationLevel::REPEATABLE_READ;
+        }
+
+        if ($this->match(TokenType::SERIALIZABLE)) {
+            return IsolationLevel::SERIALIZABLE;
+        }
+
+        throw $this->error('Expected READ COMMITTED, REPEATABLE READ or SERIALIZABLE.');
+    }
+
+    private function commitStatement(): CommitStatement
+    {
+        $this->expect(TokenType::COMMIT);
+        $this->endOfTransactionKeyword();
+
+        return new CommitStatement();
+    }
+
+    private function rollbackStatement(): Statement
+    {
+        $this->expect(TokenType::ROLLBACK);
+
+        if ($this->match(TokenType::TO)) {
+            $this->match(TokenType::SAVEPOINT);
+
+            return new RollbackToSavepointStatement($this->identifier());
+        }
+
+        $this->endOfTransactionKeyword();
+
+        return new RollbackStatement();
+    }
+
+    /** The optional, meaningless `WORK`/`TRANSACTION` some dialects allow after COMMIT/ROLLBACK. */
+    private function endOfTransactionKeyword(): void
+    {
+        if (!$this->match(TokenType::WORK)) {
+            $this->match(TokenType::TRANSACTION);
+        }
+    }
+
+    private function savepointStatement(): SavepointStatement
+    {
+        $this->expect(TokenType::SAVEPOINT);
+
+        return new SavepointStatement($this->identifier());
+    }
+
+    private function releaseSavepointStatement(): ReleaseSavepointStatement
+    {
+        $this->expect(TokenType::RELEASE);
+        $this->match(TokenType::SAVEPOINT);
+
+        return new ReleaseSavepointStatement($this->identifier());
     }
 
     // -----------------------------------------------------------------

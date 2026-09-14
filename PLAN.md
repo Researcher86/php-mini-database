@@ -926,11 +926,11 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 5. Execution Engine (Basic)
 
-- [ ] `Executor`.
-- [ ] Operators: `SeqScan`, `Filter`, `Project`, `Limit`.
-- [ ] Expression `Evaluator`.
-- [ ] `INSERT`, `UPDATE`, `DELETE`, `SELECT` (without JOIN).
-- [ ] End-to-end tests.
+- [x] `Executor`.
+- [x] Operators: `SeqScan`, `Filter`, `Project`, `Limit`.
+- [x] Expression `Evaluator`.
+- [x] `INSERT`, `UPDATE`, `DELETE`, `SELECT` (without JOIN).
+- [x] End-to-end tests.
 
 **Estimate:** 6–8 days.
 
@@ -1472,7 +1472,7 @@ Client                          Server
 - [x] Milestone 2. Storage Engine.
 - [x] Milestone 3. Schema and Catalog.
 - [x] Milestone 4. SQL Lexer and Parser.
-- [ ] Milestone 5. Execution Engine (Basic).
+- [x] Milestone 5. Execution Engine (Basic).
 - [ ] Milestone 6. B-Tree Indexes.
 - [ ] Milestone 7. JOIN, GROUP BY, Aggregates.
 - [ ] Milestone 8. Transactions and WAL.

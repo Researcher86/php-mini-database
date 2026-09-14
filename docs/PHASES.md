@@ -172,3 +172,57 @@ statement kind each, including the plan's own example `CREATE TABLE`;
 over addition, `AND` over `OR`, comparisons over `AND`, left-associative
 subtraction) and every predicate form; `ParserErrorTest.php` for malformed
 statements and the line/column an error reports.
+
+## Phase 5 — Execution engine (basic) ✅
+
+SQL text becomes rows on disk and rows back out again. `Execution\Expression\Evaluator`
+walks an AST expression against an `EvaluationContext` — `RowContext` is the
+one implementation this phase needs, at most one row and a list of bound
+parameters — and implements SQL's three-valued logic properly rather than
+approximating it: a `NULL` operand makes arithmetic, comparisons and
+`AND`/`OR`/`NOT` evaluate to `null` ("unknown"), following the standard
+truth tables, with `IS [NOT] NULL` as the one predicate that always answers
+a definite `bool`. A small function registry (`UPPER`, `LOWER`, `LENGTH`,
+`ABS`, `CONCAT`, `COALESCE`, `CURRENT_TIMESTAMP`/`CURRENT_DATE`) runs
+through an injected `Support\Clock`, so a test can freeze "now".
+
+`Execution\Operator\*` is the read pipeline `SELECT` is built from —
+`SeqScan`, `Filter`, `Project`, `Limit`, and `Sort` — each an
+`IteratorAggregate` a plain generator satisfies. `Sort` is one operator
+beyond Milestone 5's own list, brought forward from Milestone 7 because
+`ORDER BY` needs nothing group-by or join related and is central to the
+plan's own canonical `SELECT` example (§10.3); `DISTINCT` stayed deferred,
+since the plan bundles it with `GROUP BY`/`HAVING` for good reason (it is
+group-by-everything-with-no-aggregate). `INSERT`/`UPDATE`/`DELETE`
+deliberately do not flow through the operator pipeline — see
+[DECISIONS.md](DECISIONS.md) for the Halloween-problem hazard that ruled
+that out.
+
+`Execution\TableBuilder` turns a parsed `CREATE TABLE` into a `Schema\Table`
+— the first place a column's type name is resolved through `TypeFactory`,
+and where `Sql\ExpressionPrinter` (parser's dual, turning an `Expression`
+back into reparseable SQL text) supplies `CHECK`'s stored string. A literal
+`DEFAULT` is evaluated once; `DEFAULT CURRENT_TIMESTAMP` is refused rather
+than silently frozen — recomputing a default per row needs more than
+`Schema\Column` can hold yet.
+
+`Execution\Executor` ties it together: `run(sql, parameters)` parses and
+executes in one call, `execute()` takes an AST directly. `JOIN`, derived
+tables, subqueries, `GROUP BY`/`HAVING`/`DISTINCT`/aggregates, and enforcing
+`UNIQUE`/`FOREIGN KEY`/`CHECK` on a write are all refused with a clear
+`ExecutionException` rather than mishandled — each is a later phase's job,
+named in DECISIONS.md.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Execution/Expression/EvaluatorTest.php` for the
+three-valued truth tables and the function registry;
+`tests/Unit/Execution/Operator/*Test.php`, one file per operator, against a
+fixed in-memory source so each is tested in isolation;
+`tests/Unit/Sql/ExpressionPrinterTest.php` proves the round trip
+`print(parse(x))` reparses to an equal tree; `TableBuilderTest.php` for the
+AST-to-Schema conversion, including the plan's own example DDL; and
+`ExecutorTest.php`, the end-to-end suite — `CREATE TABLE` through a real
+`Database`, `INSERT`/`UPDATE`/`DELETE`/`SELECT` against it, and a dedicated
+test that an `UPDATE` growing a row past its page does not revisit and
+re-apply itself to the moved copy.

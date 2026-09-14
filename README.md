@@ -21,9 +21,10 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 4 — SQL lexer and parser**. DDL, DML and
-`SELECT` (joins, subqueries, `GROUP BY`, aggregates, the full expression
-grammar) all parse to one AST; the execution engine that walks it is
+Latest finished phase: **Phase 5 — execution engine (basic)**. SQL text
+runs end to end against a real on-disk database: `CREATE`/`DROP TABLE`,
+`INSERT`, `UPDATE`, `DELETE`, and `SELECT` with `WHERE`, `ORDER BY` and
+`LIMIT`/`OFFSET`, three-valued `NULL` logic included. B-Tree indexes are
 next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
@@ -57,3 +58,25 @@ make shell      # drop into the container
 ├── tests/       Unit, Integration, Stress
 └── var/data/    on-disk data files (gitignored content, kept as a dir)
 ```
+## Related projects
+
+Part of [**php-systems-lab**](https://github.com/Researcher86/php-systems-lab),
+a collection of educational PHP backend and systems programming projects. None
+of them depends on another as a package - what travels between them is the
+mechanism, read in one and reimplemented in the next.
+
+* [**php-memory-lab**](https://github.com/Researcher86/php-memory-lab) — what
+  the layer underneath this one costs: `mmap` and page faults, `MAP_SHARED`
+  against `MAP_PRIVATE`, `msync` and what it does and does not buy, and why a
+  mapped file pays only for the pages it touches where `file_get_contents()`
+  pays for all of them. That is the page cache this storage engine sits on.
+* [**php-concurrency**](https://github.com/Researcher86/php-concurrency) —
+  processes, IPC, coordination patterns, event loops and Fibers. The
+  groundwork for the locking and concurrency phases.
+* [**php-mini-cache**](https://github.com/Researcher86/php-mini-cache) — the
+  opposite question, in the same shape. A cache asks how to keep data fast; a
+  database asks how to keep it safe.
+* [**php-worker-pool**](https://github.com/Researcher86/php-worker-pool) ·
+  [**php-job-queue**](https://github.com/Researcher86/php-job-queue) ·
+  [**php-mini-http-server**](https://github.com/Researcher86/php-mini-http-server)
+  — process runtime, background work, and the HTTP front door.

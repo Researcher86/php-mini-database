@@ -345,3 +345,139 @@ fix is also the semantically right scope: stop the grammar one level short
 of where the ambiguity starts. A parenthesized default, `DEFAULT (1 + 2)`,
 still reaches full `expression()` inside the parens, where the closing
 `)` removes any ambiguity.
+
+## Three-valued logic is implemented properly
+
+`Evaluator` treats a `NULL` operand as "unknown," not as `false`: `age > 18`
+against a `NULL` age evaluates to PHP `null`, and that `null` then
+propagates through further `AND`/`OR`/`NOT` by the standard SQL truth
+tables — `FALSE AND NULL` is `FALSE` (the left side alone already settles
+it), but `NULL AND NULL` and `TRUE AND NULL` are both `NULL`. Only
+`IS [NOT] NULL` is exempt, because answering "is this unknown" is the one
+question three-valued logic cannot itself answer with "unknown."
+
+This was not the simpler path — treating `NULL` as `false` throughout would
+have been far less code — but it is the *correct* one, and it was worth
+getting right from the first phase that evaluates a `WHERE` clause at all.
+Approximating it now would mean every test written against the
+approximation has to be revisited later, and worse, some genuine bugs
+(a `NOT` that silently turns unknown into a wrong `true`) would ship
+looking like they work. `Evaluator::isTrue()` is the one place the
+three-valued result collapses back to a plain accept/reject decision, for
+`WHERE`/`HAVING`.
+
+## `INSERT`/`UPDATE`/`DELETE` stay out of the `Operator` pipeline
+
+`Execution\Operator\*` — `SeqScan`, `Filter`, `Project`, `Sort`, `Limit` —
+is `SELECT`'s execution model only. `Executor::executeUpdate()` and
+`executeDelete()` call `HeapFile::scan()` directly instead of composing a
+`Filter` over a `SeqScan`.
+
+The `Operator` interface is deliberately read-only — every implementation
+just yields rows, none of them writes anything back. Mutation does not fit
+that shape: `UPDATE` needs the row's `RecordId` to write to, which
+`SELECT`'s pipeline has no reason to expose once `Project` has reshaped a
+row into the result's own columns, and `UPDATE`/`DELETE` never run through
+`Project` at all — WHERE-matching against the *stored* row is what
+they need, not a client-facing projection. A shared abstraction here would
+have to grow write awareness into every operator to serve two callers that
+want different things from it; two direct, honest loops in `Executor` are
+plainer than one pipeline pretending to be general enough for both.
+
+## `UPDATE` and `DELETE` collect before they write
+
+Both scan the heap file to find every matching row *before* changing
+anything, in a separate pass from applying the change.
+
+The reason is the classic hazard a naive scan-and-mutate loop invites: a
+`HeapFile::update()` that grows a row past its page moves it, and
+`HeapFile::insert()` — which is what actually places the moved copy — always
+appends onto the last page of the file. If that write happened while
+`HeapFile::scan()` was still walking pages in order, the moved row could
+land on a page the scan had not reached yet and be visited, and updated,
+a second time. This is the "Halloween problem," named for the query that
+gave every employee a raise until their salary crossed a threshold and,
+because the raise moved the row forward in a salary-ordered scan, kept
+giving some of them further raises in the same statement.
+
+Reading every match first and writing only after fixes it outright: the
+heap file is never mutated while `scan()` is still in progress, so a moved
+row cannot reappear in a scan that has already finished. The cost is
+holding the matched rows' new bytes in memory for the length of the
+statement — bounded by how many rows match, not by the size of the table.
+`tests/Unit/Execution/ExecutorTest.php::testGrowingARowDuringUpdateDoesNotVisitItTwice`
+is the regression test for exactly this. A more elaborate answer — a
+consistent snapshot via MVCC or the WAL, so a scan simply cannot see writes
+made after it started — is where Phase 8's transaction work is expected to
+eventually subsume this, once there is a WAL to give one.
+
+## `Sort` comes early, `DISTINCT` does not
+
+PLAN.md's Milestone 5 lists `SeqScan`, `Filter`, `Project`, `Limit` as this
+phase's operators, with `Sort` and `Aggregate` arriving in Milestone 7
+alongside `JOIN` and `GROUP BY`. `Sort` is implemented now anyway;
+`DISTINCT`, also named in Milestone 7's checklist, is not.
+
+The two are not equally separable from what Milestone 7 actually adds.
+Sorting a materialized set of rows by an expression's value has nothing to
+do with joining two tables or computing an aggregate — it is a self-
+contained operation this phase already has every piece needed for, and
+PLAN.md's own canonical `SELECT` example (§10.3) leads with
+`ORDER BY email ASC LIMIT 10`, with no join or aggregate in sight. Leaving
+it unexecutable would make "basic SELECT" not actually cover the plan's own
+basic example. `DISTINCT`, by contrast, is exactly "group by every selected
+column with no aggregate" — the same collapsing-duplicate-rows machinery
+`GROUP BY` needs, which is why the plan lists them in the same breath. It
+is left refused (`ExecutionException`) until that machinery exists, rather
+than special-cased into something that resembles it but is not built on it.
+
+## A dynamic `DEFAULT` is refused, not frozen
+
+`CREATE TABLE t (created_at DATETIME DEFAULT CURRENT_TIMESTAMP)` — the
+plan's own example — raises `ExecutionException` in this phase, rather
+than succeeding with a default that silently gives every future row without
+an explicit value the same timestamp: the moment the table was created.
+
+That would be a genuine correctness bug, not a missing feature: a `DEFAULT`
+is supposed to mean "compute this fresh for each row," and
+`TableBuilder::defaultValue()` has only one moment — table creation — at
+which to evaluate anything at all, since `Schema\Column::withDefault()`
+(Phase 3) keeps a single frozen value, not an expression to re-run.
+Recomputing it correctly means either `Column` learning to hold an
+unevaluated expression alongside (or instead of) a literal, or the executor
+keeping a side map from column to its default expression that survives a
+catalog reload — either way, a change to how defaults are stored and
+reloaded, not a small addition to this phase. Literal defaults (the
+overwhelming common case) work fully now; function-call defaults are a
+named, tested gap (`TableBuilderTest::testDynamicDefaultIsRejected`)
+rather than a silent one, to be picked up when `DEFAULT` handling is
+revisited.
+
+## What "basic" execution deliberately does not do
+
+Four things `Executor` refuses outright, each because it needs a piece of
+the architecture a later, named milestone builds:
+
+- **`JOIN` and derived tables** (`Sql\Ast\From\Join`, `DerivedTable`) —
+  `executeSelect()` accepts only a bare `TableReference` in `FROM`.
+  Milestone 7 owns join algorithms; nothing here should grow an ad hoc one.
+- **Subqueries** (`ScalarSubquery`, `InSubquery`) — running one means the
+  evaluator can run a nested `SELECT`, which means it needs a reference back
+  to something that executes statements. That circular shape (`Evaluator`
+  calling `Executor` calling `Evaluator`) deserves a deliberate design once
+  it is needed, not one improvised to unblock this phase.
+- **`GROUP BY`, `HAVING`, `DISTINCT`, and aggregate functions in a select
+  list** — Milestone 7's `Aggregate` operator, uniformly, per the reasoning
+  above for `DISTINCT`.
+- **Enforcing `UNIQUE`, `FOREIGN KEY` and `CHECK` on a write** — `Schema\Table`
+  already enforces `NOT NULL`, because it needs nothing beyond the row
+  itself; the other three need an index, another table, or an expression
+  evaluator running against a stored row, which is Milestone 10's job
+  (Integrity Constraints), by design a separate concern from *building* a
+  `Schema\Table` that carries these constraints, which `TableBuilder`
+  already does today.
+
+Every one of these raises `ExecutionException` with a specific message
+rather than executing partially or silently ignoring part of a statement —
+a caller finds out immediately that a query needs a later phase, not from a
+wrong answer it has to notice on its own.

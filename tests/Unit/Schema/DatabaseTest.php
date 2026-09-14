@@ -8,6 +8,7 @@ use PhpMiniDatabase\Exception\SchemaException;
 use PhpMiniDatabase\Schema\Column;
 use PhpMiniDatabase\Schema\Constraint\PrimaryKey;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Schema\Type\IntType;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
@@ -69,5 +70,34 @@ final class DatabaseTest extends TestCase
     {
         $this->expectException(SchemaException::class);
         Database::open($this->path('mydb'))->table('missing');
+    }
+
+    public function testHeapFileIsOpenedOnFirstUseAndReusedAfter(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+
+        self::assertSame($db->heapFile('users'), $db->heapFile('users'));
+
+        $db->close();
+    }
+
+    public function testHeapFileForAnUnknownTableThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        Database::open($this->path('mydb'))->heapFile('missing');
+    }
+
+    public function testDataWrittenThroughHeapFileSurvivesReopening(): void
+    {
+        $db = Database::open($this->path('mydb'));
+        $db->createTable(new Table('users', [new Column('id', new IntType())]));
+        $table = $db->table('users');
+        $id = $db->heapFile('users')->insert($table->serializeRow(new Row(['id' => 1])));
+        $db->close();
+
+        $reopened = Database::open($this->path('mydb'));
+
+        self::assertSame(['id' => 1], $reopened->table('users')->deserializeRow($reopened->heapFile('users')->read($id))->toArray());
     }
 }

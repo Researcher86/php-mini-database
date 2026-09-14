@@ -21,9 +21,9 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 3 — schema and catalog**. Tables, columns,
-constraints and indexes are modelled and self-validating, persisted one
-`schema.json` per table under a `Catalog`; the SQL lexer and parser are
+Latest finished phase: **Phase 4 — SQL lexer and parser**. DDL, DML and
+`SELECT` (joins, subqueries, `GROUP BY`, aggregates, the full expression
+grammar) all parse to one AST; the execution engine that walks it is
 next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),

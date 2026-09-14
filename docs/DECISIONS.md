@@ -258,3 +258,90 @@ so it can validate everything at once, was rejected because it would make
 every `Table` depend on where it is stored, which working code that only
 constructs one to describe a shape — a test, a migration preview — has no
 reason to have.
+
+## One expression tree, not two
+
+PLAN.md's file tree lists `BinaryOp`, `ColumnRef`, `Literal` and
+`FunctionCall` under `Execution\Expression\`, as if the executor built its
+own expression nodes separately from whatever the parser produces. This
+implementation has exactly one expression tree: the parser builds
+`Sql\Ast\Expression\*` nodes, and `Execution\Expression\Evaluator`
+(Phase 5) will walk those same nodes rather than re-deriving a parallel set
+from them.
+
+A second tree would mean a translation step between parsing and execution
+— and something to keep in sync as the grammar grows, for no benefit this
+project needs: nothing here plans to run the same parsed statement through
+more than one back end that would want its own node shapes. PLAN.md §3.4
+already commits to "immutable AST and plans"; one tree is what that
+principle asks for. If a genuinely execution-only annotation is ever needed
+on a node (a resolved column index, a cached type), it is added as a
+side-table keyed by node identity, not by forking the tree.
+
+## The parser reuses `ReferentialAction`
+
+`Sql\Ast\TableConstraint\ForeignKeyDefinition::$onDelete` /
+`$onUpdate` are typed `Schema\Constraint\ReferentialAction` — the same
+enum `Schema\Constraint\ForeignKey` uses — rather than a second enum with
+the same four cases (`NO ACTION`, `RESTRICT`, `CASCADE`, `SET NULL`) that
+the parser would own.
+
+This is deliberate reuse across what PLAN.md's own layering diagram (§3.2)
+already allows: the SQL Interface sits above the Relational Model in the
+stack, so it may depend on it. `ReferentialAction` is pure, parameterless
+data — there is no parsing or validation step to duplicate the way there
+would be for turning `"VARCHAR(255)"` into a `Type` — so a second copy would
+be strictly more code expressing the same four words, with a translation
+step between the two enums added for nothing.
+
+## A type name is just a string until the executor needs it
+
+`Sql\Ast\ColumnDefinition::$type` holds `"VARCHAR(255)"` exactly as
+written. The parser never calls `TypeFactory::fromName()`.
+
+The parser's job ends at "this is syntactically a type name, parenthesized
+parameters and all" — it has no way to know yet whether an unparenthesized
+`VARCHAR` should be rejected or defaulted, or what an executor building a
+`Schema\Table` wants to do with a type name it does not recognise. Resolving
+the string is squarely `TypeFactory`'s job (see
+["Names rebuild a type, codes only classify"](#names-rebuild-a-type-codes-only-classify)),
+called from whatever executes `CREATE TABLE` once that exists (Phase 5).
+Keeping the AST inert here means a parser test can assert the exact string
+a type was written as without constructing a `Schema\Type` to compare
+against.
+
+## Aliases work with or without `AS`
+
+`table u` and `table AS u` parse identically; so do `expr total` and
+`expr AS total`. `Parser::optionalAlias()` is the one place this is decided:
+`AS` is consumed if present, and otherwise a bare `IDENTIFIER` token is
+taken as the alias if one is there.
+
+There is no ambiguity to resolve to make this safe: every keyword that
+could start the next clause — `FROM`, `WHERE`, `GROUP`, `JOIN`, a following
+`,` — is its own `TokenType`, never `IDENTIFIER`. "The next token is a bare
+identifier" already means "it can only be an alias here," with no lookahead
+trick required. Given that, requiring `AS` would only be following a
+convention some SQL dialects enforce and others don't, for no benefit to a
+parser that already disambiguates for free — so both spellings are
+accepted uniformly, matching how most real SQL is actually written.
+
+## `DEFAULT` stops before the next modifier keyword
+
+A column's default is parsed with `additiveExpression()` — literals,
+arithmetic, unary minus, function calls, parenthesized expressions of any
+complexity — not the full `expression()` grammar that also covers
+comparisons, `AND`/`OR`, and `NOT`.
+
+The full grammar was tried first and breaks on exactly the case PLAN.md's
+own example DDL contains: `age INT DEFAULT 0 CHECK (age >= 0)`. Nothing
+separates `0` from the `CHECK` that follows it but whitespace, so a
+`DEFAULT` parsed as a full expression walks straight into `comparisonExpression()`'s
+"is the next token `NOT`, expecting `IN`/`LIKE`/`BETWEEN`" check — except
+here it is a *different* clause's `NOT NULL`, not one of those, and the
+parse fails. Since a default was never going to be a comparison or a
+boolean combination anyway — that is not what a `DEFAULT` means in SQL — the
+fix is also the semantically right scope: stop the grammar one level short
+of where the ambiguity starts. A parenthesized default, `DEFAULT (1 + 2)`,
+still reaches full `expression()` inside the parens, where the closing
+`)` removes any ambiguity.

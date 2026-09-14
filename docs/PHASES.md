@@ -130,3 +130,45 @@ place a table's existence is recorded.
 the DATE-default-as-string case; `tests/Unit/Storage/CatalogTest.php` for
 cross-table foreign key validation and the drop-with-dependents refusal;
 `tests/Unit/Schema/DatabaseTest.php` for the façade.
+
+## Phase 4 — SQL lexer and parser ✅
+
+Text becomes a tree. `Sql\Lexer` turns SQL source into a flat list of
+tokens ending in one `EOF` — the whole list up front, not pulled lazily,
+since a statement is at most a few hundred tokens and the parser gets to
+look arbitrarily far ahead or backtrack with plain array indexing in
+return. `Sql\Parser` is a recursive-descent parser over that list,
+producing the tree in `Sql\Ast\`: every DDL statement (`CREATE`/`DROP
+TABLE`, `ALTER TABLE ADD/DROP COLUMN`, `CREATE`/`DROP INDEX`, inline and
+table-level `PRIMARY KEY`/`UNIQUE`/`FOREIGN KEY`/`CHECK`), every DML
+statement (`INSERT` with multiple rows, `UPDATE`, `DELETE`), and `SELECT`
+with `JOIN` (inner/left/right, chained and parenthesized), derived tables,
+scalar and `IN` subqueries, `GROUP BY`/`HAVING`, `ORDER BY`,
+`LIMIT`/`OFFSET`, `DISTINCT`, and the full expression grammar — arithmetic,
+comparison, `AND`/`OR`/`NOT`, `LIKE`, `BETWEEN`, `IN`, `IS [NOT] NULL`,
+function calls including `COUNT(*)`/`COUNT(DISTINCT x)`, and `?`
+placeholders for Phase 14's prepared statements.
+
+The AST is intentionally the one tree everything downstream walks — see
+[DECISIONS.md](DECISIONS.md) for why expression nodes live under
+`Sql\Ast\Expression\` rather than being re-modelled as separate execution
+nodes later, and why `ReferentialAction` is reused directly from
+`Schema\Constraint\` instead of the parser inventing its own copy. A type
+name (`VARCHAR(255)`) is kept as the string it was written as; turning it
+into a `Schema\Type` is deferred to whatever executes a `CREATE TABLE`
+(Phase 5), not the parser's job.
+
+Every error — from the lexer or the parser — is a `ParserException`
+carrying a 1-based line and column computed from the byte position where it
+was raised, the form useful to a human reading the original SQL text.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Sql/LexerTest.php` for tokenizing, comments,
+quoting and escape handling, and four kinds of malformed input;
+`ParserSelectTest.php`, `ParserDmlTest.php` and `ParserDdlTest.php` for one
+statement kind each, including the plan's own example `CREATE TABLE`;
+`ParserExpressionTest.php` for precedence and associativity (multiplication
+over addition, `AND` over `OR`, comparisons over `AND`, left-associative
+subtraction) and every predicate form; `ParserErrorTest.php` for malformed
+statements and the line/column an error reports.

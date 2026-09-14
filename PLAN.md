@@ -913,12 +913,12 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 4. SQL Lexer and Parser
 
-- [ ] `Lexer`, `Token`, `TokenType`.
-- [ ] `Parser` (recursive descent).
-- [ ] AST nodes for all constructs.
-- [ ] Expressions and functions.
-- [ ] `ParserException` with position.
-- [ ] Parser tests.
+- [x] `Lexer`, `Token`, `TokenType`.
+- [x] `Parser` (recursive descent).
+- [x] AST nodes for all constructs.
+- [x] Expressions and functions.
+- [x] `ParserException` with position.
+- [x] Parser tests.
 
 **Estimate:** 7–10 days.
 
@@ -1471,7 +1471,7 @@ Client                          Server
 - [x] Milestone 1. Data Types and Serialization.
 - [x] Milestone 2. Storage Engine.
 - [x] Milestone 3. Schema and Catalog.
-- [ ] Milestone 4. SQL Lexer and Parser.
+- [x] Milestone 4. SQL Lexer and Parser.
 - [ ] Milestone 5. Execution Engine (Basic).
 - [ ] Milestone 6. B-Tree Indexes.
 - [ ] Milestone 7. JOIN, GROUP BY, Aggregates.

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Execution;
 
 use Closure;
+use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Exception\ExecutionException;
 use PhpMiniDatabase\Execution\Expression\EvaluationContext;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
@@ -23,9 +24,12 @@ use PhpMiniDatabase\Execution\Operator\Project;
 use PhpMiniDatabase\Execution\Operator\Qualify;
 use PhpMiniDatabase\Execution\Operator\SeqScan;
 use PhpMiniDatabase\Execution\Operator\Sort;
+use PhpMiniDatabase\Schema\Constraint\ForeignKey;
+use PhpMiniDatabase\Schema\Constraint\ReferentialAction;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Row;
+use PhpMiniDatabase\Schema\Table;
 use PhpMiniDatabase\Sql\Ast\AlterTableStatement;
 use PhpMiniDatabase\Sql\Ast\BeginStatement;
 use PhpMiniDatabase\Sql\Ast\CommitStatement;
@@ -83,7 +87,13 @@ use Throwable;
  *
  * `INSERT`/`UPDATE`/`DELETE` keep every single-column index in step via
  * `IndexMaintainer` — uniqueness is checked before anything is written, not
- * after (see its own docblock).
+ * after (see its own docblock). `ConstraintEnforcer` checks `CHECK` and the
+ * *referencing* side of a `FOREIGN KEY` the same way, before the write; the
+ * *referenced* side — what happens to a child row when the parent it
+ * points at is deleted or its key changes — is `cascadeBeforeDelete()`/
+ * `cascadeBeforeUpdate()` here instead, since acting on `ON DELETE
+ * CASCADE`/`SET NULL` needs the heap/index/WAL machinery only this class
+ * has (Phase 10).
  *
  * A `SELECT` with a `FROM` clause runs through `Sql\Planner\Planner` and
  * `Sql\Optimizer\Optimizer` (Phase 9): `plan()` builds the `LogicalPlan`
@@ -102,11 +112,9 @@ use Throwable;
  *
  * What this phase does *not* do, deliberately, and reports clearly rather
  * than silently mishandling: derived tables and subqueries (still need a
- * planner that can run a nested `SELECT`); `ALTER TABLE` (Phase 10);
- * enforcing `FOREIGN KEY` and `CHECK` on a write (Phase 10 — `NOT NULL` is
- * enforced by `Schema\Table` itself, and `UNIQUE`/`PRIMARY KEY` by
- * `IndexMaintainer`, since neither needs anything this layer does not
- * already have). See DECISIONS.md for the reasoning behind each.
+ * planner that can run a nested `SELECT`); `ALTER TABLE`; a cascade cycle,
+ * which recurses until the call stack gives out rather than being detected.
+ * See DECISIONS.md for the reasoning behind each.
  *
  * `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` (Phase 8) dispatch straight to
  * `TransactionManager`. Every `INSERT`/`UPDATE`/`DELETE` runs inside a
@@ -125,6 +133,8 @@ final readonly class Executor
 {
     private IndexMaintainer $indexMaintainer;
 
+    private ConstraintEnforcer $constraints;
+
     private LockManager $locks;
 
     private TransactionManager $transactions;
@@ -139,6 +149,7 @@ final readonly class Executor
         private TableBuilder $tableBuilder = new TableBuilder(),
     ) {
         $this->indexMaintainer = new IndexMaintainer($database);
+        $this->constraints = new ConstraintEnforcer($database, $evaluator);
         $this->locks = $database->locks();
         $this->transactions = $database->transactions();
         $this->transactions->setUndoHandler($this->undo(...));
@@ -496,6 +507,8 @@ final readonly class Executor
                 // not just the ones the statement happened to name.
                 $resolved = $table->rowFromValues($table->valuesFromRow($row));
 
+                $this->constraints->assertCheckConstraints($table, $resolved);
+                $this->constraints->assertForeignKeysOnWrite($table, $resolved);
                 $this->indexMaintainer->assertUniqueForInsert($table, $resolved);
                 $id = $heap->insert($table->serializeRow($resolved));
                 $this->indexMaintainer->afterInsert($table, $resolved, $id);
@@ -550,16 +563,19 @@ final readonly class Executor
                 }
 
                 $newRow = $table->rowFromValues($table->valuesFromRow(new Row($values)));
+                $this->constraints->assertCheckConstraints($table, $newRow);
+                $this->constraints->assertForeignKeysOnWrite($table, $newRow);
                 $this->indexMaintainer->assertUniqueForUpdate($table, $newRow, $id);
 
-                $writes[] = ['id' => $id, 'oldRow' => $oldRow, 'newRow' => $newRow, 'record' => $table->serializeRow($newRow)];
+                $writes[] = ['id' => $id, 'oldRow' => $oldRow, 'newRow' => $newRow];
             }
 
             foreach ($writes as $write) {
-                $newId = $heap->update($write['id'], $write['record']);
-                $this->indexMaintainer->afterDelete($table, $write['oldRow'], $write['id']);
-                $this->indexMaintainer->afterInsert($table, $write['newRow'], $newId);
-                $this->transactions->logUpdate($table->name, $newId, $write['oldRow']->toArray(), $write['newRow']->toArray());
+                // Checked (and, for CASCADE/SET NULL, acted on) before this
+                // row's own update is applied - see cascadeBeforeUpdate()'s
+                // docblock for why the order matters.
+                $this->cascadeBeforeUpdate($table, $write['oldRow'], $write['newRow'], $txId);
+                $this->physicallyUpdateRow($table, $write['id'], $write['oldRow'], $write['newRow'], $txId);
             }
 
             return count($writes);
@@ -594,13 +610,208 @@ final readonly class Executor
             }
 
             foreach ($matches as $match) {
-                $heap->delete($match['id']);
-                $this->indexMaintainer->afterDelete($table, $match['row'], $match['id']);
-                $this->transactions->logDelete($table->name, $match['id'], $match['row']->toArray());
+                // Checked (and, for CASCADE/SET NULL, acted on) before this
+                // row itself is deleted - see cascadeBeforeDelete()'s
+                // docblock for why the order matters.
+                $this->cascadeBeforeDelete($table, $match['row'], $txId);
+                $this->physicallyDeleteRow($table, $match['id'], $match['row'], $txId);
             }
 
             return count($matches);
         });
+    }
+
+    /**
+     * The physical half of deleting one row: heap, indexes, WAL — exactly
+     * what the pre-Phase-10 `executeDelete()` did inline. Split out so
+     * `cascadeBeforeDelete()` can call it for a `CASCADE`d child row too,
+     * without duplicating it.
+     */
+    private function physicallyDeleteRow(Table $table, RecordId $id, Row $row, int $txId): void
+    {
+        $this->database->heapFile($table->name)->delete($id);
+        $this->indexMaintainer->afterDelete($table, $row, $id);
+        $this->transactions->logDelete($table->name, $id, $row->toArray());
+    }
+
+    /**
+     * The physical half of updating one row: heap, indexes, WAL — exactly
+     * what the pre-Phase-10 `executeUpdate()` did inline. Split out for the
+     * same reason as `physicallyDeleteRow()`.
+     */
+    private function physicallyUpdateRow(Table $table, RecordId $id, Row $oldRow, Row $newRow, int $txId): RecordId
+    {
+        $newId = $this->database->heapFile($table->name)->update($id, $table->serializeRow($newRow));
+        $this->indexMaintainer->afterDelete($table, $oldRow, $id);
+        $this->indexMaintainer->afterInsert($table, $newRow, $newId);
+        $this->transactions->logUpdate($table->name, $newId, $oldRow->toArray(), $newRow->toArray());
+
+        return $newId;
+    }
+
+    /**
+     * `FOREIGN KEY ... ON DELETE`'s enforcement: every other table with a
+     * foreign key pointing at $table is searched for a row matching
+     * $row — a full scan unless the key is single-column and indexed, the
+     * same trade-off `ConstraintEnforcer::referencedRowExists()` makes in
+     * the other direction. `RESTRICT`/`NO_ACTION` both refuse the delete
+     * outright; `CASCADE` deletes the matching child rows (recursively —
+     * a child can itself have children); `SET NULL` nulls the child's
+     * foreign key columns instead, which fails on its own if those columns
+     * are `NOT NULL` (`Table::valuesFromRow()` already checks that, for
+     * free).
+     *
+     * Runs *before* $row is actually removed: a `RESTRICT` that throws
+     * must leave $row untouched, and a `CASCADE` that goes on to hit a
+     * `RESTRICT` further down the chain must leave every row involved —
+     * $row included — untouched too, not partially deleted.
+     *
+     * A cascade cycle (two tables `CASCADE`-referencing each other, or a
+     * table `CASCADE`-referencing itself) is not detected and will recurse
+     * until the call stack gives out — a named, narrow gap; see
+     * DECISIONS.md.
+     */
+    private function cascadeBeforeDelete(Table $table, Row $row, int $txId): void
+    {
+        foreach ($this->referencingForeignKeys($table->name) as [$childTable, $foreignKey]) {
+            $keyValues = array_map(static fn (string $column): mixed => $row->get($column), $foreignKey->referencedColumns());
+
+            foreach ($this->matchingChildRows($childTable, $foreignKey, $keyValues) as $child) {
+                match ($foreignKey->onDelete) {
+                    ReferentialAction::CASCADE => $this->cascadeDeleteChild($childTable, $child['id'], $child['row'], $txId),
+                    ReferentialAction::SET_NULL => $this->cascadeNullifyChild($childTable, $child['id'], $child['row'], $foreignKey, $txId),
+                    ReferentialAction::RESTRICT, ReferentialAction::NO_ACTION => throw new ConstraintViolationException(sprintf(
+                        'Cannot delete from "%s": still referenced by "%s" via "%s".',
+                        $table->name,
+                        $childTable->name,
+                        $foreignKey->name(),
+                    )),
+                };
+            }
+        }
+    }
+
+    /**
+     * `FOREIGN KEY ... ON UPDATE`'s enforcement — the same rules as
+     * `cascadeBeforeDelete()`, applied only when $newRow actually changes a
+     * value some other table's foreign key references at all; an update to
+     * an unrelated column never has to search another table.
+     */
+    private function cascadeBeforeUpdate(Table $table, Row $oldRow, Row $newRow, int $txId): void
+    {
+        foreach ($this->referencingForeignKeys($table->name) as [$childTable, $foreignKey]) {
+            $oldKeyValues = array_map(static fn (string $column): mixed => $oldRow->get($column), $foreignKey->referencedColumns());
+            $newKeyValues = array_map(static fn (string $column): mixed => $newRow->get($column), $foreignKey->referencedColumns());
+
+            if ($oldKeyValues === $newKeyValues) {
+                continue;
+            }
+
+            foreach ($this->matchingChildRows($childTable, $foreignKey, $oldKeyValues) as $child) {
+                match ($foreignKey->onUpdate) {
+                    ReferentialAction::CASCADE => $this->cascadeUpdateChildKey($childTable, $child['id'], $child['row'], $foreignKey, $newKeyValues, $txId),
+                    ReferentialAction::SET_NULL => $this->cascadeNullifyChild($childTable, $child['id'], $child['row'], $foreignKey, $txId),
+                    ReferentialAction::RESTRICT, ReferentialAction::NO_ACTION => throw new ConstraintViolationException(sprintf(
+                        'Cannot update "%s": still referenced by "%s" via "%s".',
+                        $table->name,
+                        $childTable->name,
+                        $foreignKey->name(),
+                    )),
+                };
+            }
+        }
+    }
+
+    private function cascadeDeleteChild(Table $childTable, RecordId $id, Row $row, int $txId): void
+    {
+        $this->locks->acquireRowLock($childTable->name, $id, $txId, LockMode::EXCLUSIVE);
+        $this->cascadeBeforeDelete($childTable, $row, $txId);
+        $this->physicallyDeleteRow($childTable, $id, $row, $txId);
+    }
+
+    /** @param list<mixed> $newKeyValues in the same order as $foreignKey->columns() */
+    private function cascadeUpdateChildKey(Table $childTable, RecordId $id, Row $row, ForeignKey $foreignKey, array $newKeyValues, int $txId): void
+    {
+        $this->locks->acquireRowLock($childTable->name, $id, $txId, LockMode::EXCLUSIVE);
+
+        $values = $row->toArray();
+        foreach ($foreignKey->columns() as $i => $column) {
+            $values[$column] = $newKeyValues[$i];
+        }
+
+        $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
+        $this->indexMaintainer->assertUniqueForUpdate($childTable, $newRow, $id);
+        $this->physicallyUpdateRow($childTable, $id, $row, $newRow, $txId);
+    }
+
+    private function cascadeNullifyChild(Table $childTable, RecordId $id, Row $row, ForeignKey $foreignKey, int $txId): void
+    {
+        $this->locks->acquireRowLock($childTable->name, $id, $txId, LockMode::EXCLUSIVE);
+
+        $values = $row->toArray();
+        foreach ($foreignKey->columns() as $column) {
+            $values[$column] = null;
+        }
+
+        $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
+        $this->indexMaintainer->assertUniqueForUpdate($childTable, $newRow, $id);
+        $this->physicallyUpdateRow($childTable, $id, $row, $newRow, $txId);
+    }
+
+    /**
+     * Every other table with a `FOREIGN KEY` naming $tableName as its
+     * `REFERENCES` target, paired with that constraint — what
+     * `cascadeBeforeDelete()`/`cascadeBeforeUpdate()` walk to find rows
+     * that might dangle. A table can reference itself, which this does not
+     * special-case: it shows up in `$this->database->tableNames()` like
+     * any other and is searched the same way.
+     *
+     * @return list<array{0: Table, 1: ForeignKey}>
+     */
+    private function referencingForeignKeys(string $tableName): array
+    {
+        $found = [];
+
+        foreach ($this->database->tableNames() as $name) {
+            $candidate = $this->database->table($name);
+
+            foreach ($candidate->constraints() as $constraint) {
+                if ($constraint instanceof ForeignKey && $constraint->referencedTable === $tableName) {
+                    $found[] = [$candidate, $constraint];
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Every row of $childTable whose $foreignKey columns match $keyValues —
+     * a full scan, collected into an array before the caller acts on any
+     * of them, for the same reason `executeUpdate()`'s own scan is: a
+     * physical move triggered by acting on one match must not disturb this
+     * scan's view of the rest of the file. A row with a `NULL` in any of
+     * the foreign key's own columns never matches anything (MATCH SIMPLE,
+     * same as `ConstraintEnforcer::assertForeignKeysOnWrite()`).
+     *
+     * @param list<mixed> $keyValues in the same order as $foreignKey->columns()
+     *
+     * @return list<array{id: RecordId, row: Row}>
+     */
+    private function matchingChildRows(Table $childTable, ForeignKey $foreignKey, array $keyValues): array
+    {
+        $matches = [];
+
+        foreach ($this->database->heapFile($childTable->name)->scan() as $id => $record) {
+            $row = $childTable->deserializeRow($record);
+            $values = array_map(static fn (string $column): mixed => $row->get($column), $foreignKey->columns());
+
+            if (!in_array(null, $values, true) && $values === $keyValues) {
+                $matches[] = ['id' => $id, 'row' => $row];
+            }
+        }
+
+        return $matches;
     }
 
     /**

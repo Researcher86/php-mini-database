@@ -496,3 +496,60 @@ including the outer-join-nullable-side refusal — `IndexSelectionTest.php`,
 outer join never being reordered); `tests/Unit/Sql/ParserExplainTest.php`
 for the grammar; and `tests/Unit/Execution/ExecutorExplainTest.php` for
 the end-to-end path, including that `EXPLAIN` never mutates anything.
+
+## Phase 10 — Integrity Constraints ✅
+
+`FOREIGN KEY` and `CHECK` are enforced on a write for the first time —
+`NOT NULL`, `UNIQUE` and `PRIMARY KEY` already were, from Phase 3 (`Schema\Table`)
+and Phase 6 (`Execution\IndexMaintainer`) onward, and the DDL-time cross-
+table validation a `FOREIGN KEY` needs (its referenced table and columns
+exist, and are covered by a `PRIMARY KEY`/`UNIQUE` constraint) has been
+`Storage\Catalog`'s job since Phase 3 too. What was still missing was
+checking either constraint against an actual row at `INSERT`/`UPDATE`
+time, and — for `FOREIGN KEY` specifically — deciding what happens to a
+child row when the parent it points at is deleted or its key changes.
+
+`Execution\ConstraintEnforcer` is the first half: `assertCheckConstraints()`
+parses a `CheckConstraint`'s stored text back into an `Expression` (via
+the new `Sql\Parser::parseExpression()`, the reverse of the round trip
+`Sql\ExpressionPrinter` already made for storing it) and evaluates it —
+rejecting a row only when the result is a definite `false`
+(`Execution\Expression\Evaluator::isFalse()`, the CHECK-shaped counterpart
+to the WHERE-shaped `isTrue()`; a `NULL` result, e.g. a comparison against
+a `NULL` column, passes, matching standard SQL). `assertForeignKeysOnWrite()`
+checks the *referencing* side of a `FOREIGN KEY`: any row with a `NULL` in
+one of its foreign key columns is exempt (MATCH SIMPLE), and everything
+else must match a row in the referenced table — via that table's
+`BTreeIndex` when the key is single-column, or a full scan when it is not
+(composite keys still have no index to look them up in — the same gap
+Phase 6 already named).
+
+The *referenced* side is `Execution\Executor`'s own job instead:
+`cascadeBeforeDelete()`/`cascadeBeforeUpdate()` search every other table
+for a `FOREIGN KEY` pointing at the one about to be written to, and, for
+each row that would dangle, either refuse the write (`RESTRICT`/
+`NO_ACTION`), physically delete or update the child row to match
+(`CASCADE`), or null its foreign key columns (`SET NULL` — which fails on
+its own, for free, if those columns are `NOT NULL`, since it goes through
+the same `Table::valuesFromRow()` every other write does). Both run
+*before* the parent row's own write is applied, and `CASCADE` recurses
+through `cascadeBeforeDelete()` again for each child, so a grandchild
+table cascades too. `physicallyDeleteRow()`/`physicallyUpdateRow()` are
+the heap/index/WAL steps `executeDelete()`/`executeUpdate()` used to do
+inline, extracted so a cascaded child row goes through exactly the same
+write path a top-level one does — logged, locked, and undoable by
+`TransactionManager` identically.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Execution/ConstraintEnforcerTest.php` for `CHECK`
+(true/false/null) and `FOREIGN KEY` (matched/unmatched/null-exempt, and
+the composite-key full-scan fallback) in isolation; and
+`tests/Unit/Execution/ExecutorConstraintTest.php` for the end-to-end
+path — `INSERT`/`UPDATE` rejected by either constraint (including a
+multi-row `INSERT` left entirely untouched by a failure partway through),
+`RESTRICT` refusing a delete or a key change with a referencing child,
+an unrelated column update never even checking for children, `CASCADE`
+recursing through a grandchild table, `SET NULL` (and its own failure
+against a `NOT NULL` column), and a self-referencing foreign key
+cascading within one table.

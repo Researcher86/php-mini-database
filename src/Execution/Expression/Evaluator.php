@@ -82,6 +82,19 @@ final readonly class Evaluator
         return $this->toBoolean($value) === true;
     }
 
+    /**
+     * Whether an evaluated value violates a `CHECK` constraint: only a
+     * definite `false` does. `NULL` passes a `CHECK` — the opposite of what
+     * it does in a `WHERE`/`HAVING` position — because standard SQL only
+     * ever rejects a row a `CHECK` expression can *prove* wrong; a
+     * constraint it cannot evaluate at all (a comparison against a `NULL`
+     * column, say) is not grounds to refuse the row.
+     */
+    public function isFalse(mixed $value): bool
+    {
+        return $this->toBoolean($value) === false;
+    }
+
     private function toBoolean(mixed $value): ?bool
     {
         return match (true) {

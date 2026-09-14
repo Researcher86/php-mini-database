@@ -38,6 +38,9 @@ project is built from is [PLAN.md](../PLAN.md).
 | A `LogicalPlan` node carries its own physical decision; there is no separate physical plan | current, [why](#a-logicalplan-node-carries-its-own-physical-decision) |
 | A predicate never pushes past an outer join's nullable side | current, [why](#a-predicate-never-pushes-past-an-outer-joins-nullable-side) |
 | Join reordering is a two-table swap by page count, not a search | current, [why](#join-reordering-is-a-two-table-swap-by-page-count-not-a-search) |
+| A CHECK constraint's text is reparsed on every write, not cached | current, [why](#a-check-constraints-text-is-reparsed-on-every-write-not-cached) |
+| `ConstraintEnforcer` answers; `Executor` acts | current, [why](#constraintenforcer-answers-executor-acts) |
+| A cascade cycle is not detected | current, [why](#a-cascade-cycle-is-not-detected) |
 
 ## One byte format for disk and wire
 
@@ -1072,3 +1075,70 @@ in memory, not a fresh statistic gathered for this purpose — can improve a
 plan a rule-based, non-cost-based optimizer would otherwise leave alone.
 Extending it to a real join-order search is future work, named here rather
 than attempted narrowly and incorrectly.
+
+## A CHECK constraint's text is reparsed on every write, not cached
+
+`ConstraintEnforcer::assertCheckConstraints()` calls
+`Sql\Parser::parseExpression()` on a `CheckConstraint`'s stored text every
+time it runs — once per `INSERT`/`UPDATE` statement, not once per
+constraint ever. Caching the parsed `Expression` (keyed by constraint
+name, say, invalidated whenever the table's schema changes) would save
+that parse on every subsequent write.
+
+The parse this avoids is small — a `CHECK` expression is typically one
+comparison or a short boolean combination of a few, the same size of
+expression `Sql\ExpressionPrinter` already round-trips through text for
+storage — and it happens once per *statement*, alongside everything else
+a single `INSERT`/`UPDATE` already does once per statement: resolving
+column defaults, checking `UNIQUE` against an index, evaluating the
+`SET`/`VALUES` expressions themselves. A cache would be one more thing to
+invalidate correctly whenever a table's constraints change (`ALTER TABLE`,
+once it exists) for a cost this project has not measured as worth avoiding.
+If a profiled workload ever shows otherwise, the seam is exactly this one
+call — nothing else would need to change to add a cache behind it.
+
+## `ConstraintEnforcer` answers; `Executor` acts
+
+`Execution\ConstraintEnforcer` only ever answers a yes/no question about
+one row as given — is this `CHECK` satisfied, does this `FOREIGN KEY`
+value exist in the referenced table — and never mutates anything. Deciding
+*what to do* when a `FOREIGN KEY`'s referenced row is deleted or its key
+changes (refuse, cascade, or null the child out) stays in
+`Execution\Executor` instead, as `cascadeBeforeDelete()`/
+`cascadeBeforeUpdate()`.
+
+This mirrors the split Phase 6 already made between `Storage\BTreeIndex`
+(a data structure) and `Execution\IndexMaintainer` (what keeps it in step
+with a write) — and the reason is the same one that split gave: acting on
+a cascade needs the heap file, the index maintainer, the WAL, and the lock
+manager, all of which already belong to `Executor` and none of which
+`ConstraintEnforcer` has any other reason to hold. Giving `ConstraintEnforcer`
+all of that just so it could physically carry out a `CASCADE` would turn it
+into a second `Executor` under a different name, duplicating machinery
+that already exists once. Keeping it to pure answers also makes it usable
+anywhere a plain "is this allowed" check is all that is needed — its own
+unit tests, above all — without a `Database` standing in for a live
+transaction it would otherwise have to fake.
+
+## A cascade cycle is not detected
+
+Two tables `CASCADE`-referencing each other, or a table `CASCADE`-
+referencing itself in a way that never terminates, will recurse through
+`Executor::cascadeDeleteChild()`/`cascadeBeforeDelete()` until the call
+stack gives out, not a clean `ConstraintViolationException`.
+
+A real database detects this by tracking which row a cascade is currently
+processing (or by bounding recursion depth) and reporting a cycle
+explicitly. This project's own self-referencing-`CASCADE` test
+(`ExecutorConstraintTest::testASelfReferencingForeignKeyCascadesWithinTheSameTable`)
+is the *acyclic* shape — a tree, walked correctly by the same recursion —
+and that is the shape a self-reference realistically takes in most schemas
+(a category tree, an org chart). A genuine cycle needs two rows to already
+each point at a row that (transitively) points back at the first, which
+`FOREIGN KEY` alone does not encourage anyone to build by accident the way
+an unbounded recursive data structure might. Given that, detecting it
+outright was judged not worth the added bookkeeping for this phase — a
+named, narrow gap rather than a silent one, alongside `TransactionManager::recover()`'s
+single-crash assumption (Phase 8) as another case where this project
+accepted a bounded, documented blind spot over the complexity of covering
+every pathological input.

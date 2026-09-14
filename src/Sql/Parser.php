@@ -131,6 +131,24 @@ final class Parser
         return $statements[0];
     }
 
+    /**
+     * Parses a bare expression, not a whole statement — what
+     * `Execution\ConstraintEnforcer` needs to turn a `CHECK` constraint's
+     * stored text back into a tree it can evaluate, the same round trip
+     * `Sql\ExpressionPrinter` promises in the other direction.
+     */
+    public static function parseExpression(string $sql): Expression
+    {
+        $parser = new self($sql);
+        $expression = $parser->expression();
+
+        if (!$parser->check(TokenType::EOF)) {
+            throw $parser->error('Expected end of expression.');
+        }
+
+        return $expression;
+    }
+
     private function statement(): Statement
     {
         return match ($this->current()->type) {

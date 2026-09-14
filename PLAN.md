@@ -989,10 +989,10 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 10. Integrity Constraints
 
-- [ ] `NOT NULL`, `UNIQUE`, `PRIMARY KEY`.
-- [ ] `FOREIGN KEY` with `ON DELETE`/`ON UPDATE`.
-- [ ] `CHECK`, `DEFAULT`.
-- [ ] Constraint tests.
+- [x] `NOT NULL`, `UNIQUE`, `PRIMARY KEY`.
+- [x] `FOREIGN KEY` with `ON DELETE`/`ON UPDATE`.
+- [x] `CHECK`, `DEFAULT`.
+- [x] Constraint tests.
 
 **Estimate:** 5–7 days.
 
@@ -1437,7 +1437,7 @@ Client                          Server
 - [x] Milestone 7. JOIN, GROUP BY, Aggregates.
 - [x] Milestone 8. Transactions and WAL.
 - [x] Milestone 9. Planner and Optimizer.
-- [ ] Milestone 10. Integrity Constraints.
+- [x] Milestone 10. Integrity Constraints.
 - [ ] Milestone 11. TCP Protocol.
 - [ ] Milestone 12. TCP Server (Core).
 - [ ] Milestone 13. Authentication.

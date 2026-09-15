@@ -45,6 +45,9 @@ project is built from is [PLAN.md](../PLAN.md).
 | Wire values are self-describing, not typed by column | current, [why](#wire-values-are-self-describing-not-typed-by-column) |
 | `QUERY_RESULT` drops the null bitmap and per-column type | current, [why](#query_result-drops-the-null-bitmap-and-per-column-type) |
 | `Frame` and `FrameReader` exist with no socket behind them yet | current, [why](#frame-and-framereader-exist-with-no-socket-behind-them-yet) |
+| One process, one event loop — not a fork per connection | current, [why](#one-process-one-event-loop-not-a-fork-per-connection) |
+| `Server` tests drive `tick()` by hand over a real socket | current, [why](#server-tests-drive-tick-by-hand-over-a-real-socket) |
+| An unhandled message type closes the connection | current, [why](#an-unhandled-message-type-closes-the-connection) |
 
 ## One byte format for disk and wire
 
@@ -1247,3 +1250,92 @@ already relies on everywhere else that talks about files or the network
 only through an interface (`Infrastructure\FileSystem`, `ValueCodec`) —
 proving the logic before anything that could make a test flaky or slow is
 attached to it.
+
+## One process, one event loop — not a fork per connection
+
+`Network\Server` serves every connection from a single PHP process, via
+`Network\EventLoop`'s `stream_select()`-based reactor. PLAN.md §2.2 allows
+either this or "fork/process pool" for multi-client mode; this
+implementation only ever builds the event loop.
+
+Forking has a real, named weakness in this project's own non-functional
+requirements: "Windows with fork limitations" (§2.2) — `pcntl_fork()`
+does not exist on Windows at all, so a forking server would need an
+entirely separate code path there, or would simply not run. An event loop
+built on `stream_select()` has no such gap: it is portable everywhere PHP
+itself is. The other reason is `Schema\Database`'s own design: Phase 8
+made `Wal`, `LockManager` and `TransactionManager` live on `Database`
+specifically so that multiple `Execution\Executor`s talking to it share
+one transaction slot and one lock table *in the same process*. A forked
+worker per connection would put that shared state in *different*
+processes, which then need it synchronized across a process boundary —
+shared memory, or a lock service, neither of which this project has any
+other reason to build. One process serving every session keeps every
+connection's `Executor` pointed at the exact same in-memory `Database`
+object Phase 8/9 already assumed, with nothing new required to make
+`testASecondSessionSeesTheFirstsOpenTransactionAsTheSingleWriter`
+(`ServerTest`) true.
+
+The cost is real and accepted rather than ignored: one slow query blocks
+every other session's socket from being serviced until it returns, since
+nothing here is truly concurrent, only interleaved between I/O waits.
+`Execution\Executor::run()` runs synchronously to completion inside
+`Session::handleQuery()` — there is no `Fiber`, no cooperative yield mid-
+query. For the workload this project targets (PLAN.md's own "up to
+1,000,000 rows per table", not a high-concurrency OLTP service), that
+trade is judged acceptable; revisiting it would mean either accepting
+fork's platform gap or building real cooperative scheduling around
+`Executor`, both bigger projects than this phase's goal ("server executes
+SQL from a client") called for.
+
+## `Server` tests drive `tick()` by hand over a real socket
+
+`ServerTest` never calls `Server::run()`. It calls `Server::start()` (bind
+and listen), connects a real client with `stream_socket_client()`, and
+then calls `Server::tick()` in a small polling loop — reading from the
+client socket after each call — until the expected response frame has
+fully arrived.
+
+The alternative that actually tests `run()` itself needs a second process
+or thread the test can start the server in while the main test process
+acts as the client — `pcntl_fork()`, most likely, forking the test process
+itself to run the blocking loop in the child. That works, but trades a
+plain, synchronous PHPUnit test for one that has to synchronize across a
+process boundary (the parent must somehow know the child has bound its
+socket before connecting, and must reliably clean up the child afterward
+even when an assertion fails) to prove a fact — "the event loop correctly
+serves a request" — that `tick()` alone already proves without any of
+that machinery. `run()` itself is left to add almost nothing on top:
+`while (!stopped) tick()` plus the two `pcntl_signal()` registrations,
+neither of which needs a second process to verify were it ever tested
+directly. Every real socket-level behavior this phase claims — a
+handshake, a query answered, `PING`/`PONG`, a disconnect noticed, a
+second connection refused over the limit — is proven exactly as it would
+happen against a real, independently-running server, just paced by the
+test instead of by `stream_select()`'s own timeout. `bin/minidb-server`'s
+own manual smoke test (run once, by hand, against the actual compiled
+entrypoint) is what closes the remaining gap — proving `run()` and the
+signal handlers work as a real standalone process — without needing that
+proof repeated, and slowed down, on every test run.
+
+## An unhandled message type closes the connection
+
+`Network\Session::handleFrame()` matches exactly four message types
+(`Hello`, `Query`, `Ping`, `Goodbye`); anything else — `Auth`, `Prepare`,
+`Execute`, the typed `Begin`/`Commit`/`Rollback`/`Savepoint` — closes the
+connection outright, logged as a warning, rather than being answered with
+some error message or quietly dropped.
+
+Silently dropping it would leave the client waiting for a reply that will
+never come, indistinguishable from a hung server. Answering it with a
+`QueryError` was considered and rejected: that message's whole meaning is
+"the query you sent failed," and none of these are a failed query — a
+`Prepare` half-implemented into an error reply would tell a client
+"prepare this statement" and "your statement was rejected" through the
+same shape, which is actively misleading about what the server can and
+cannot do. Closing the connection is the honest signal: nothing this
+phase does is a substitute for the milestone that actually implements
+each of these (`Auth`/authentication is Milestone 13; `Prepare`/`Execute`
+is Milestone 14; the typed transaction messages are Milestone 15), and a
+client that sent one is talking to a server it should not assume supports
+it yet.

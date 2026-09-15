@@ -604,3 +604,68 @@ buffers); `CodecTest.php` (every message type round-tripping through
 `Codec`, including `BEGIN` with each isolation level and a `QUERY_ERROR`
 carrying context); and `ResultEncoderTest.php` (all three `Executor::execute()`
 result shapes, and each mapped exception type).
+
+## Phase 12 — TCP Server (Core) ✅
+
+The protocol Phase 11 defined now has a real server behind it — the
+plainest one PLAN.md §2.2 allows: a single-process, single-threaded event
+loop (`Network\EventLoop`) rather than forking, chosen precisely because
+forking is the weaker of the two options that same line names ("Windows
+with fork limitations"), and because one process serving every connection
+keeps `Schema\Database`'s single-writer state in one place with no shared
+memory needed between workers. `EventLoop::tick()` — one `stream_select()`
+call plus whatever callbacks it makes ready — is the primitive everything
+else is built from: `run()` is `while (!stopped) tick()`, and every test
+in `tests/Unit/Network/ServerTest.php` drives that exact same method by
+hand, over a real TCP socket bound to an OS-assigned port, with no second
+process or thread anywhere.
+
+`Network\Acceptor` owns the listening socket; `Network\Session` owns one
+client connection — decoding frames via `Network\Protocol\Codec`, running
+`Query` messages through its own `Execution\Executor`, and answering with
+whatever `Network\Protocol\ResultEncoder` turns the result or the
+exception into. `Network\Server` wires them together with a
+`Network\SessionManager` (which enforces `ServerConfig::$maxConnections`)
+around one shared `Schema\Database` — so two sessions really do share the
+single-writer transaction state Phase 8 designed for, provable for the
+first time with two real sockets instead of two `Executor`s in one test
+method (see DECISIONS.md).
+
+Authentication does not exist yet — `HELLO` is answered with `HelloAck`
+immediately, "dev mode" exactly as PLAN.md §11 names it — so `Session`
+accepts a `Query` right after the handshake with no `Auth` exchange in
+between. Every other message type Phase 11 already defined but this phase
+has no handler for (`Auth`, `Prepare`/`Execute`, the typed `Begin`/`Commit`/
+`Rollback`/`Savepoint`) closes the connection rather than being silently
+ignored — `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` already work today
+regardless, as plain SQL text through `Query`, since `Execution\Executor`
+has parsed and run them since Phase 8.
+
+Graceful shutdown is `pcntl_signal()` on `SIGTERM`/`SIGINT`, installed
+only by `Server::run()` — never by `start()` alone — so a test that only
+ever calls `tick()` by hand never touches process-wide signal state.
+`Server::shutdown()` (closing every session, the listening socket, and
+the `Database`) is exposed directly for exactly that case: a test's
+`tearDown()` calls it without ever having called `run()`.
+`Infrastructure\Logger` is one concrete class, not an interface with
+implementations — `$path === null` discards everything, which is what
+every test that needs a `Server` but not its log output constructs,
+without a second `NullLogger` file that would only ever do nothing.
+`bin/minidb-server` is the minimal real entrypoint PLAN.md §7.2's
+environment variables drive — checked by hand against an actually
+running, separate process, not only against PHPUnit driving ticks in the
+same one.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Network/EventLoopTest.php` (a callback firing on
+readability, `removeReadable()`, a callback safely removing another
+stream's watch within the same batch, `run()` stopping once `stop()` is
+called); `tests/Unit/Infrastructure/LoggerTest.php`; and
+`ServerTest.php` for the end-to-end path — connect and handshake, a
+`SELECT`/DDL/DML/bound-parameter round trip, a failing query answered
+with `QueryError`, `PING`/`PONG`, `GOODBYE` and an abrupt disconnect both
+noticed server-side, a connection over `max_connections` refused, a
+`QUERY` before the handshake closing the connection, and two real
+sessions where the second's `BEGIN` is refused while the first's
+transaction is still open.

@@ -1,0 +1,34 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Starts the TCP server — PLAN.md §7.2's environment variables, with no
+ * flag parsing or `config/server.php` file support yet (Milestone 17's
+ * job): this is the minimal entrypoint Milestone 12 needs to make the
+ * server something a real process can run, not only something tests drive
+ * by calling methods directly.
+ */
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use PhpMiniDatabase\Infrastructure\LogLevel;
+use PhpMiniDatabase\Infrastructure\Logger;
+use PhpMiniDatabase\Network\Server;
+use PhpMiniDatabase\Network\ServerConfig;
+
+$dataDirectory = getenv('MINIDB_DATA') ?: (getcwd() . '/data/mydb');
+$logLevel = LogLevel::tryFrom(strtolower((string) (getenv('MINIDB_LOG_LEVEL') ?: 'info'))) ?? LogLevel::INFO;
+$logFile = getenv('MINIDB_LOG_FILE') ?: 'php://stderr';
+
+$config = new ServerConfig(
+    dataDirectory: $dataDirectory,
+    host: getenv('MINIDB_HOST') ?: '127.0.0.1',
+    port: (int) (getenv('MINIDB_PORT') ?: 5433),
+    maxConnections: (int) (getenv('MINIDB_MAX_CONNECTIONS') ?: 100),
+);
+
+$server = new Server($config, new Logger($logFile, $logLevel));
+$server->start();
+$server->run();

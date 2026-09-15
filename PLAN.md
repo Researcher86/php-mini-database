@@ -59,16 +59,16 @@
 - [ ] ACID via WAL and lock manager.
 
 #### TCP Server
-- [ ] Listen on a TCP port (default 5433).
-- [ ] Multi-client mode (fork/process pool or event loop).
-- [ ] Custom binary protocol.
+- [x] Listen on a TCP port (default 5433).
+- [x] Multi-client mode (fork/process pool or event loop).
+- [x] Custom binary protocol.
 - [ ] Authentication by login/password (challenge-response).
 - [ ] Prepared statements support.
 - [ ] Session-level transaction support.
 - [ ] Idle/query timeouts.
-- [ ] Max connections limit.
-- [ ] Graceful shutdown.
-- [ ] Query and error logging.
+- [x] Max connections limit.
+- [x] Graceful shutdown.
+- [x] Query and error logging.
 - [ ] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
 
 #### Client
@@ -1020,16 +1020,16 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** server accepts connections and executes simple queries.
 
-- [ ] `Server`, `Acceptor`, `EventLoop`.
-- [ ] `ServerConfig`.
-- [ ] `Session`, `SessionManager`.
-- [ ] Handshake (`HELLO`, `HELLO_ACK`).
-- [ ] Handle `QUERY` without authentication (dev mode).
-- [ ] Handle `QUERY_RESULT`, `QUERY_ERROR`.
-- [ ] `PING`/`PONG`.
-- [ ] Graceful shutdown by signal.
-- [ ] Logging.
-- [ ] Tests: connect, query, disconnect.
+- [x] `Server`, `Acceptor`, `EventLoop`.
+- [x] `ServerConfig`.
+- [x] `Session`, `SessionManager`.
+- [x] Handshake (`HELLO`, `HELLO_ACK`).
+- [x] Handle `QUERY` without authentication (dev mode).
+- [x] Handle `QUERY_RESULT`, `QUERY_ERROR`.
+- [x] `PING`/`PONG`.
+- [x] Graceful shutdown by signal.
+- [x] Logging.
+- [x] Tests: connect, query, disconnect.
 
 **Result:** server executes SQL from a client.
 
@@ -1439,7 +1439,7 @@ Client                          Server
 - [x] Milestone 9. Planner and Optimizer.
 - [x] Milestone 10. Integrity Constraints.
 - [x] Milestone 11. TCP Protocol.
-- [ ] Milestone 12. TCP Server (Core).
+- [x] Milestone 12. TCP Server (Core).
 - [ ] Milestone 13. Authentication.
 - [ ] Milestone 14. Prepared Statements.
 - [ ] Milestone 15. Transactions over the Network.

@@ -21,12 +21,14 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 11 — TCP Protocol**. The binary wire
-protocol is fully defined and tested — frames, all 25 message types, a
-`FrameReader` that reassembles them out of a byte stream delivered in
-arbitrary pieces, and self-describing values so a bound parameter or a
-computed `SELECT` column never needs a declared type to travel — with no
-socket anywhere yet. The TCP server itself is next.
+Latest finished phase: **Phase 12 — TCP Server (Core)**. `bin/minidb-server`
+is a real, runnable server: a single-process event loop accepts
+connections, completes the `HELLO`/`HELLO_ACK` handshake, and runs `QUERY`
+messages against a real `Database` — including two genuinely separate
+client sessions correctly sharing the single-writer transaction state
+Phase 8 designed for. No authentication yet (dev mode); graceful shutdown,
+`PING`/`PONG`, and a `max_connections` limit all work. Authentication is
+next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

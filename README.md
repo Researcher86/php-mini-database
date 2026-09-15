@@ -21,13 +21,12 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 10 — Integrity Constraints**. `CHECK` and
-`FOREIGN KEY` are enforced on every `INSERT`/`UPDATE`, alongside the
-`NOT NULL`/`UNIQUE`/`PRIMARY KEY` checks already in place. Deleting or
-re-keying a row other tables reference is refused by default, and
-`ON DELETE`/`ON UPDATE CASCADE`/`SET NULL` are carried out for real —
-including through a self-reference and down a chain of child tables — not
-just recorded in the schema. The TCP protocol is next.
+Latest finished phase: **Phase 11 — TCP Protocol**. The binary wire
+protocol is fully defined and tested — frames, all 25 message types, a
+`FrameReader` that reassembles them out of a byte stream delivered in
+arbitrary pieces, and self-describing values so a bound parameter or a
+computed `SELECT` column never needs a declared type to travel — with no
+socket anywhere yet. The TCP server itself is next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

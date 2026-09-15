@@ -553,3 +553,54 @@ an unrelated column update never even checking for children, `CASCADE`
 recursing through a grandchild table, `SET NULL` (and its own failure
 against a `NOT NULL` column), and a self-referencing foreign key
 cascading within one table.
+
+## Phase 11 — TCP Protocol ✅
+
+The binary wire protocol PLAN.md §5 designs, implemented and tested end to
+end — with no socket anywhere in it yet. `Network\Protocol\Frame` is the
+fixed envelope (magic, version, type, flags, a length-prefixed payload);
+`Network\Protocol\FrameReader` reassembles whole frames out of a byte
+stream that may deliver one in pieces or several at once, which is what
+lets a real socket's `fread()` output feed it directly once Milestone 12
+gives it one. `Network\Protocol\MessageType` is one `int`-backed enum for
+every row of PLAN.md §5.3's table — merged with what that table's own file
+layout calls `Opcode`, since nothing in the protocol needs the two ideas
+kept apart (see DECISIONS.md). Every message type has its own class under
+`Network\Protocol\Message\`, each carrying its own fields and its own
+`payload()`/`fromPayload()`; `Network\Protocol\Codec` is the seam between
+one of those and a `Frame`, dispatching by `MessageType` to decode the
+right one, the same way `Sql\Parser::statement()` dispatches on a
+`TokenType`.
+
+`Network\Protocol\WireValue` is what a `QUERY`'s bound parameters and a
+`QUERY_RESULT`'s row values are both encoded as: a value prefixed with a
+one-byte tag naming its own shape (`NULL`/`BOOL`/`INT`/`FLOAT`/`STRING`/
+`DATETIME`), rather than trusting a declared `Schema\Type` neither one
+reliably has — a bound parameter has no column yet to get a type from, and
+a `SELECT` output column is just as often a computed value as a stored
+one. `DECIMAL` and `BLOB` values need no tag of their own (already plain
+strings by the time anything sees them); `DATE` and `DATETIME` share the
+one `DATETIME` tag. This is also why `Network\Protocol\Message\QueryResultMessage`
+drops PLAN.md §5.6's per-column `type_code`/`flags` and its row-level null
+bitmap: `Execution\QueryResult` never had a `Schema\Type` per column to
+report, and a `WireValue`'s own tag already says `NULL` without a separate
+bitmap. `Network\Protocol\ResultEncoder` turns `Execution\Executor::execute()`'s
+three possible answers — a `QueryResult`, an `int` row count, or `null` —
+into that one message shape, and turns any exception into a
+`Network\Protocol\Message\QueryError` via `Network\Protocol\ErrorCode`
+(PLAN.md §5.7/§19's table, plus one addition, `EXECUTION_ERROR`, for the
+shape of failure `Exception\ExecutionException` covers that none of the
+original twelve codes fit).
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Network/Protocol/FrameTest.php` (round trip, bad
+magic, truncated header/payload, trailing bytes, unknown type, an
+oversized payload refused at construction); `FrameReaderTest.php` (a frame
+split across many feeds, several frames in one feed, a corrupted magic
+mid-stream); `WireValueTest.php` (every tag round-tripping, including
+`PHP_INT_MIN`/`PHP_INT_MAX` and a non-UTF-8 string, plus truncated/unknown-tag
+buffers); `CodecTest.php` (every message type round-tripping through
+`Codec`, including `BEGIN` with each isolation level and a `QUERY_ERROR`
+carrying context); and `ResultEncoderTest.php` (all three `Executor::execute()`
+result shapes, and each mapped exception type).

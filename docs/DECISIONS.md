@@ -41,6 +41,10 @@ project is built from is [PLAN.md](../PLAN.md).
 | A CHECK constraint's text is reparsed on every write, not cached | current, [why](#a-check-constraints-text-is-reparsed-on-every-write-not-cached) |
 | `ConstraintEnforcer` answers; `Executor` acts | current, [why](#constraintenforcer-answers-executor-acts) |
 | A cascade cycle is not detected | current, [why](#a-cascade-cycle-is-not-detected) |
+| `MessageType` and `Opcode` are one enum, not two | current, [why](#messagetype-and-opcode-are-one-enum-not-two) |
+| Wire values are self-describing, not typed by column | current, [why](#wire-values-are-self-describing-not-typed-by-column) |
+| `QUERY_RESULT` drops the null bitmap and per-column type | current, [why](#query_result-drops-the-null-bitmap-and-per-column-type) |
+| `Frame` and `FrameReader` exist with no socket behind them yet | current, [why](#frame-and-framereader-exist-with-no-socket-behind-them-yet) |
 
 ## One byte format for disk and wire
 
@@ -1142,3 +1146,104 @@ named, narrow gap rather than a silent one, alongside `TransactionManager::recov
 single-crash assumption (Phase 8) as another case where this project
 accepted a bounded, documented blind spot over the complexity of covering
 every pathological input.
+
+## `MessageType` and `Opcode` are one enum, not two
+
+PLAN.md's own project layout lists `Network/Protocol/MessageType.php` and
+`Network/Protocol/Opcode.php` as two separate files. This implementation
+has one: `Network\Protocol\MessageType`, an `int`-backed enum covering
+every row of §5.3's message table.
+
+Two names existing in a spec is not, by itself, evidence that two distinct
+concepts exist behind them. Every other section of the protocol that talks
+about "which message" — §5.3's table, §5.4's handshake sequence, the
+`Frame`'s own `type` field — uses exactly one numbering scheme, the one
+`MessageType` already carries. A separate `Opcode` type would need its own
+answer to "what does an opcode name that a message type does not," and
+nothing in PLAN.md gives one. Splitting them anyway would mean either a
+duplicate enum with the same 25 cases under a different name (pure
+repetition, and two places to keep in sync if either grows), or an
+`Opcode`/`MessageType` pair that map to each other one-to-one everywhere
+they are both used (a distinction the code would have to actively
+preserve for a difference nothing depends on). Either way costs upkeep for
+a distinction this project has never been asked to make. If a real reason
+to separate them shows up — a message type that needs several opcodes
+inside its own payload for sub-operations, say — the seam is exactly this
+one enum, easy to split at that point with an actual example driving the
+split.
+
+## Wire values are self-describing, not typed by column
+
+A `Message\Query`'s bound parameters and a `Message\QueryResultMessage`'s
+row values are both encoded through `Network\Protocol\WireValue` — a value
+prefixed with a one-byte tag naming its own PHP shape (`NULL`, `BOOL`,
+`INT`, `FLOAT`, `STRING`, `DATETIME`) — rather than through
+`Network\Protocol\ValueCodec`, the codec that already exists for a value
+with a known `Schema\Type` (Phase 1).
+
+Both of these genuinely lack that type. A bound parameter in `WHERE age >
+?` has no type of its own until the query is planned and `?` is matched
+against the `age` column — the same reason `Sql\Optimizer\Rule\ConstantFolding`
+(Phase 9) refuses to fold a `Placeholder` at all. A `SELECT`'s output
+column is even less likely to have one: `price * qty` and `COUNT(*)` are
+both perfectly normal result columns with no single stored `Schema\Type`
+behind them, computed fresh by `Execution\Expression\Evaluator`/
+`Execution\Operator\Aggregate` from whatever the source rows held.
+`ValueCodec::encodeValue()` requires a `Type` argument precisely because it
+was built for the one case that always has one — a column being read from
+or written to disk — and stretching it to cover these two by inventing a
+type after the fact (inferring one from the runtime PHP value, say) would
+recreate the exact ambiguity `TypeFactory::fromCode()` already refuses for
+the same reason (see "Names rebuild a type, codes only classify"): a
+`DECIMAL`'s scale, a `VARCHAR`'s length, cannot be recovered from a bare
+value. Tagging the value with its own shape instead needs no inference and
+no separate type channel on the wire at all.
+
+## `QUERY_RESULT` drops the null bitmap and per-column type
+
+PLAN.md §5.6 specifies a `type_code`/`flags` byte pair per column and a
+null bitmap per row. `Network\Protocol\Message\QueryResultMessage` has
+neither: each row's values are `WireValue`-tagged (see above), and a
+column is sent as just its name.
+
+The null bitmap is the smaller cut: once every value already carries its
+own tag, `NULL` is one more tag among six, and a bitmap alongside it would
+be encoding the same fact twice — a bitmap only earns its keep as a
+*space* optimization over a per-value tag, which this protocol is not
+tuned for yet (nothing here batches or compresses frames either). The
+per-column `type_code`/`flags` cut follows from the same fact that drove
+the choice above: `Execution\QueryResult` carries column *labels*, never a
+`Schema\Type`, so there is no type to put in that byte for a computed
+column — and forcing every query to resolve one, just to fill in a
+descriptor real client code would then have to ignore for half its
+columns anyway, is exactly the kind of table PLAN.md's own literal spec
+did not anticipate needing. `WireValue`'s per-value tag already gives a
+client everything `type_code` would have told it, on the one column where
+it is actually knowable — every column, all the time — rather than a
+best-effort guess sent alongside data whose real shape is decided row by
+row.
+
+## `Frame` and `FrameReader` exist with no socket behind them yet
+
+Milestone 11 builds `Frame`, `FrameReader`, `Codec`, and every `Message`
+class completely independent of any actual TCP connection — `FrameReader::feed()`
+takes a plain string, not a socket resource, and every test in
+`tests/Unit/Network/Protocol/` proves the whole protocol layer without
+opening a port.
+
+PLAN.md splits "define the wire protocol" (Milestone 11) from "build the
+TCP server" (Milestone 12) into two separate milestones, and this
+implementation takes that split literally: nothing about *what the bytes
+mean* needs a live connection to prove, only *how they arrive* does — and
+`FrameReader`'s whole job is already being agnostic to that, since a
+socket's `fread()` can just as easily hand it one byte at a time as
+everything at once. Building the socket layer first, then discovering the
+frame format needs adjusting once real bytes are involved, would mean
+redoing protocol-level work under server-level pressure; building it
+without one first, and proving it against synthetic byte streams that
+exercise every seam a real one could (a frame arriving in pieces, several
+arriving at once, corrupted magic bytes) is the same testing this project
+already relies on everywhere else that talks about files or the network
+only through an interface (`Infrastructure\FileSystem`, `ValueCodec`) —
+proving the logic before anything that could make a test flaky or slow is
+attached to it.

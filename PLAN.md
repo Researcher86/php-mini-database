@@ -1002,13 +1002,13 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** define and implement the wire protocol.
 
-- [ ] `Frame`, `Message`, `MessageType`, `Opcode`.
-- [ ] `Codec` — frame serialization/deserialization.
-- [ ] `ResultEncoder` — result encoding.
-- [ ] Partial read handling (streaming).
-- [ ] Protocol error handling.
-- [ ] Codec tests: roundtrip, edge cases, corrupted frames.
-- [ ] Documentation `docs/protocol.md`.
+- [x] `Frame`, `Message`, `MessageType`, `Opcode`.
+- [x] `Codec` — frame serialization/deserialization.
+- [x] `ResultEncoder` — result encoding.
+- [x] Partial read handling (streaming).
+- [x] Protocol error handling.
+- [x] Codec tests: roundtrip, edge cases, corrupted frames.
+- [x] Documentation `docs/protocol.md`.
 
 **Result:** protocol fully defined and tested.
 
@@ -1438,7 +1438,7 @@ Client                          Server
 - [x] Milestone 8. Transactions and WAL.
 - [x] Milestone 9. Planner and Optimizer.
 - [x] Milestone 10. Integrity Constraints.
-- [ ] Milestone 11. TCP Protocol.
+- [x] Milestone 11. TCP Protocol.
 - [ ] Milestone 12. TCP Server (Core).
 - [ ] Milestone 13. Authentication.
 - [ ] Milestone 14. Prepared Statements.

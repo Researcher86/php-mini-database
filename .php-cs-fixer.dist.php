@@ -23,11 +23,18 @@ declare(strict_types=1);
  *    everything that is never reassigned.
  */
 
+// PhpCsFixer\Finder hardcodes a `*.php` name filter, and this project's
+// bin/ scripts are deliberately extensionless (run via their shebang line,
+// never `require`d) - `->in(['bin'])` alone would silently check none of
+// them. `append()` bypasses that filter for exactly the files named here.
 $finder = PhpCsFixer\Finder::create()
     ->in([
         __DIR__ . '/src',
         __DIR__ . '/tests',
-        __DIR__ . '/bin',
+    ])
+    ->append([
+        __DIR__ . '/bin/minidb-server',
+        __DIR__ . '/bin/minidb-user',
     ]);
 
 return (new PhpCsFixer\Config())

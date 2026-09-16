@@ -21,14 +21,13 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 12 — TCP Server (Core)**. `bin/minidb-server`
-is a real, runnable server: a single-process event loop accepts
-connections, completes the `HELLO`/`HELLO_ACK` handshake, and runs `QUERY`
-messages against a real `Database` — including two genuinely separate
-client sessions correctly sharing the single-writer transaction state
-Phase 8 designed for. No authentication yet (dev mode); graceful shutdown,
-`PING`/`PONG`, and a `max_connections` limit all work. Authentication is
-next.
+Latest finished phase: **Phase 13 — Authentication**. Real login/password
+authentication now protects the server: Argon2id-derived credentials in
+`users.json`, a challenge-response handshake proving a client knows the
+password without ever sending it, and rate-limited lockout with
+exponential backoff after too many failed attempts. `bin/minidb-user
+add/remove/list` manages accounts locally. Dev mode (no auth) is still the
+default for anything that does not opt in. Prepared statements are next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

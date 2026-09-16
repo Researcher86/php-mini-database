@@ -64,14 +64,14 @@ final class CodecTest extends TestCase
 
     public function testHelloAckRoundTrips(): void
     {
-        $message = new HelloAck('0.1.0', 'challenge_response', "\x01\x02\x03salt", []);
+        $message = new HelloAck('0.1.0', 'challenge_response', "\x01\x02\x03nonce", []);
 
         $decoded = $this->roundTrip($message);
 
         self::assertInstanceOf(HelloAck::class, $decoded);
         self::assertSame('0.1.0', $decoded->serverVersion);
         self::assertSame('challenge_response', $decoded->authMethod);
-        self::assertSame("\x01\x02\x03salt", $decoded->salt);
+        self::assertSame("\x01\x02\x03nonce", $decoded->nonce);
         self::assertSame([], $decoded->capabilities);
     }
 

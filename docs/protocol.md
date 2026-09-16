@@ -56,7 +56,7 @@ see [DECISIONS.md](DECISIONS.md#messagetype-and-opcode-are-one-enum-not-two).
 | Code | Name               | Direction | Class                                | Payload |
 |------|--------------------|-----------|---------------------------------------|---------|
 | 0x01 | HELLO              | C → S     | `Message\Hello`                       | version, client name, client version, capabilities |
-| 0x02 | HELLO_ACK          | S → C     | `Message\HelloAck`                    | server version, auth method, salt, capabilities |
+| 0x02 | HELLO_ACK          | S → C     | `Message\HelloAck`                    | server version, auth method, nonce, capabilities |
 | 0x03 | AUTH               | C → S     | `Message\Auth`                        | username, challenge response |
 | 0x04 | AUTH_OK            | S → C     | `Message\AuthOk`                      | session id, server time |
 | 0x05 | AUTH_FAIL          | S → C     | `Message\AuthFail`                    | reason |
@@ -205,16 +205,53 @@ A `Message\QueryError`'s `$context` is a small string-keyed map of
 `WireValue`-encoded values — PLAN.md §19's example (`table`, `constraint`,
 `value`) made concrete, rather than folded into the message string alone.
 
+## The server and authentication
+
+`src/Network/Protocol/` is only ever the wire format — it opens no socket
+and checks no password. `Network\Server` (Milestone 12) is the real TCP
+server built on top of it: a single-process `Network\EventLoop` reactor,
+`Network\Acceptor` for the listening socket, and one `Network\Session` per
+connection, decoding frames via `Codec` and running `Query` messages
+through a real `Execution\Executor`. See `docs/PHASES.md`'s Phase 12
+entry and its own DECISIONS.md entries for why an event loop rather than
+forking, and why its tests drive `EventLoop::tick()` by hand over a real
+socket instead of needing a second process.
+
+`Network\Auth\*` (Milestone 13) is what actually computes and checks the
+`Auth`/`AuthOk`/`AuthFail` messages Phase 11 only defined the shape of:
+
+- `HELLO_ACK.nonce` is a fresh, random, per-connection value — not a
+  per-user salt (see below for why the field was renamed from PLAN.md's
+  own `salt`).
+- The client computes `hash = Argon2id(password, SHA-256(username))` and
+  sends `Auth { username, response: HMAC-SHA256(nonce, hash) }`.
+- The server looks up the same user's stored `hash` (`Network\Auth\UserStore`,
+  `users.json`) and recomputes the same `HMAC`, comparing in constant time
+  (`Network\Auth\ScramChallenge::verify()`).
+- `AuthFail` does **not** close the connection — a client may send a new
+  `Auth` to retry — but `Network\Auth\LoginThrottle` locks a username out
+  with exponential backoff after enough consecutive failures regardless.
+
+The per-user salt is deliberately not a stored, random value the way
+PLAN.md §6.4's `users.json` example shows one: it is derived from the
+username alone, which is what lets the four-message handshake PLAN.md §5.4
+sketches work at all without an extra round trip to fetch it (at `HELLO_ACK`
+time the server does not yet know which user is connecting). See
+DECISIONS.md for the full reasoning and its cost.
+
+`bin/minidb-user add/remove/list` edits `users.json` directly, without a
+server or a client connection — see DECISIONS.md for why this is not
+`bin/minidb user`, the client subcommand PLAN.md §9.2 shows.
+
 ## What is deliberately not here yet
 
-- **A socket.** Nothing in `src/Network/Protocol/` opens a connection;
-  `FrameReader` is deliberately socket-agnostic so it is exactly as testable
-  as everything else here. Milestone 12 is where a real `Network\Server`
-  drives it against actual bytes from `fread()`.
-- **Authentication logic.** `Hello`/`HelloAck`/`Auth`/`AuthOk`/`AuthFail`
-  carry the fields PLAN.md §5.4–5.5 describe; computing or checking a
-  challenge response is Milestone 13's job.
 - **Chunked result streaming.** See `QUERY_RESULT` above.
 - **`COPY_IN`/`COPY_OUT`'s row format**, and **`SHOW_STATUS`/`SHOW_CONNECTIONS`'s
   response shape** — deferred to the milestones that give them a reason to
   exist.
+- **Prepared statements and typed transaction control.** `Prepare`/`Execute`/
+  `CloseStatement` and the typed `Begin`/`Commit`/`Rollback`/`Savepoint`
+  messages are fully defined (Phase 11) but `Network\Session` (Phase 12)
+  closes a connection that sends one — Milestones 14 and 15's jobs,
+  respectively. `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` already work today
+  regardless, as plain SQL text through `Query`.

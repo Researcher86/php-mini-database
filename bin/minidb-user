@@ -1,0 +1,106 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Manages `users.json` directly on disk — PLAN.md §9.2's `user add/remove/list`,
+ * without the full network client `bin/minidb` is reserved for (Milestone 16
+ * builds the client library it would need). Nothing here connects to a
+ * running server; it edits the same file `Network\Server` reads, the way a
+ * real database's local admin tool typically can before a client exists to
+ * do it over the wire.
+ *
+ * Usage:
+ *   minidb-user --data <dir> add <username> --password <password> [--role <role>]...
+ *   minidb-user --data <dir> remove <username>
+ *   minidb-user --data <dir> list
+ */
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use PhpMiniDatabase\Infrastructure\FileSystem;
+use PhpMiniDatabase\Infrastructure\Path;
+use PhpMiniDatabase\Network\Auth\UserStore;
+
+/**
+ * @param list<string> $argv
+ *
+ * @return array{command: ?string, args: list<string>, options: array<string, list<string>>}
+ */
+function parseArguments(array $argv): array
+{
+    $command = null;
+    $args = [];
+    $options = [];
+    $i = 0;
+
+    while ($i < count($argv)) {
+        $token = $argv[$i];
+
+        if (str_starts_with($token, '--')) {
+            $name = substr($token, 2);
+            $value = $argv[$i + 1] ?? '';
+            $options[$name][] = $value;
+            $i += 2;
+
+            continue;
+        }
+
+        if ($command === null) {
+            $command = $token;
+        } else {
+            $args[] = $token;
+        }
+
+        $i++;
+    }
+
+    return ['command' => $command, 'args' => $args, 'options' => $options];
+}
+
+$argv = array_slice($_SERVER['argv'], 1);
+['command' => $command, 'args' => $args, 'options' => $options] = parseArguments($argv);
+
+$dataDirectory = $options['data'][0] ?? null;
+
+if ($dataDirectory === null) {
+    fwrite(STDERR, "Usage: minidb-user --data <dir> <add|remove|list> ...\n");
+    exit(1);
+}
+
+(new FileSystem())->ensureDirectory($dataDirectory);
+$users = new UserStore(Path::join($dataDirectory, 'users.json'));
+
+try {
+    switch ($command) {
+        case 'add':
+            $username = $args[0] ?? throw new InvalidArgumentException('Usage: add <username> --password <password> [--role <role>]...');
+            $password = $options['password'][0] ?? throw new InvalidArgumentException('add requires --password.');
+            $users->create($username, $password, $options['role'] ?? []);
+            echo "Created user \"{$username}\".\n";
+
+            break;
+
+        case 'remove':
+            $username = $args[0] ?? throw new InvalidArgumentException('Usage: remove <username>');
+            $users->remove($username);
+            echo "Removed user \"{$username}\".\n";
+
+            break;
+
+        case 'list':
+            foreach ($users->usernames() as $username) {
+                echo $username . "\n";
+            }
+
+            break;
+
+        default:
+            fwrite(STDERR, "Usage: minidb-user --data <dir> <add|remove|list> ...\n");
+            exit(1);
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage() . "\n");
+    exit(1);
+}

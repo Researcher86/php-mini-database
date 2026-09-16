@@ -7,6 +7,8 @@ namespace PhpMiniDatabase\Network;
 use LogicException;
 use PhpMiniDatabase\Execution\Executor;
 use PhpMiniDatabase\Infrastructure\Logger;
+use PhpMiniDatabase\Network\Auth\Authenticator;
+use PhpMiniDatabase\Network\Auth\UserStore;
 use PhpMiniDatabase\Schema\Database;
 use Throwable;
 
@@ -26,6 +28,10 @@ use Throwable;
  * received mid-`run()` sets the same stop flag `EventLoop::stop()` would; a
  * test driving `tick()` by hand never touches process-wide signal state at
  * all, since it never calls `run()`.
+ *
+ * `ServerConfig::$authEnabled` decides whether every `Session` gets a real
+ * `Network\Auth\Authenticator` (reading `ServerConfig::resolvedUserStorePath()`)
+ * or `null` — Milestone 12's "dev mode", still the default (Phase 13).
  */
 final class Server
 {
@@ -36,6 +42,8 @@ final class Server
     private readonly SessionManager $sessions;
 
     private readonly EventLoop $loop;
+
+    private readonly ?Authenticator $authenticator;
 
     private ?Acceptor $acceptor = null;
 
@@ -48,6 +56,9 @@ final class Server
         $this->database = Database::open($config->dataDirectory);
         $this->sessions = new SessionManager($config->maxConnections);
         $this->loop = new EventLoop();
+        $this->authenticator = $config->authEnabled
+            ? new Authenticator(new UserStore($config->resolvedUserStorePath()))
+            : null;
     }
 
     /** Binds the listening socket and starts accepting connections. Does not block. */
@@ -122,7 +133,7 @@ final class Server
             return;
         }
 
-        $session = new Session($connection, $this->nextSessionId++, new Executor($this->database), $this->logger);
+        $session = new Session($connection, $this->nextSessionId++, new Executor($this->database), $this->logger, $this->authenticator);
         $this->sessions->add($session);
 
         $this->loop->onReadable($connection, function () use ($session): void {

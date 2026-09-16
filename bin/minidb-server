@@ -8,13 +8,16 @@ declare(strict_types=1);
  * flag parsing or `config/server.php` file support yet (Milestone 17's
  * job): this is the minimal entrypoint Milestone 12 needs to make the
  * server something a real process can run, not only something tests drive
- * by calling methods directly.
+ * by calling methods directly. `MINIDB_AUTH_ENABLED` is not one of §7.2's
+ * named variables — added because Milestone 13 needs some way to turn on
+ * `ServerConfig::$authEnabled` from outside a test, the same reasoning
+ * that already added `MINIDB_LOG_FILE` in Milestone 12.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use PhpMiniDatabase\Infrastructure\LogLevel;
 use PhpMiniDatabase\Infrastructure\Logger;
+use PhpMiniDatabase\Infrastructure\LogLevel;
 use PhpMiniDatabase\Network\Server;
 use PhpMiniDatabase\Network\ServerConfig;
 
@@ -27,6 +30,7 @@ $config = new ServerConfig(
     host: getenv('MINIDB_HOST') ?: '127.0.0.1',
     port: (int) (getenv('MINIDB_PORT') ?: 5433),
     maxConnections: (int) (getenv('MINIDB_MAX_CONNECTIONS') ?: 100),
+    authEnabled: in_array(strtolower((string) (getenv('MINIDB_AUTH_ENABLED') ?: 'false')), ['1', 'true', 'yes'], true),
 );
 
 $server = new Server($config, new Logger($logFile, $logLevel));

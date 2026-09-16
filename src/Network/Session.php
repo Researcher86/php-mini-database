@@ -7,10 +7,14 @@ namespace PhpMiniDatabase\Network;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Execution\Executor;
 use PhpMiniDatabase\Infrastructure\Logger;
+use PhpMiniDatabase\Network\Auth\Authenticator;
 use PhpMiniDatabase\Network\Protocol\Codec;
 use PhpMiniDatabase\Network\Protocol\Frame;
 use PhpMiniDatabase\Network\Protocol\FrameReader;
 use PhpMiniDatabase\Network\Protocol\Message;
+use PhpMiniDatabase\Network\Protocol\Message\Auth;
+use PhpMiniDatabase\Network\Protocol\Message\AuthFail;
+use PhpMiniDatabase\Network\Protocol\Message\AuthOk;
 use PhpMiniDatabase\Network\Protocol\Message\Goodbye;
 use PhpMiniDatabase\Network\Protocol\Message\Hello;
 use PhpMiniDatabase\Network\Protocol\Message\HelloAck;
@@ -27,14 +31,21 @@ use Throwable;
  * is readable); this class owns everything about *what happens* once it
  * does.
  *
- * `Auth`/`Prepare`/`Execute`/`Begin`/`Commit`/`Rollback`/`Savepoint` — every
- * `Message` type this phase does not handle — close the connection rather
- * than being silently ignored: `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`
+ * `$authenticator === null` is Milestone 12's "dev mode" (PLAN.md §11):
+ * `HELLO` is answered immediately and every `Query` runs with no `Auth`
+ * exchange at all. Given one, `HELLO` instead hands back a fresh nonce
+ * (`HelloAck::$nonce`) and a `Query` before a matching `Auth` succeeds is
+ * refused the same way an unsupported message is (see below) — `AUTH_FAIL`
+ * does *not* close the connection, so a client that mistyped a password
+ * can retry with a new `Auth` message on the same connection.
+ *
+ * `Prepare`/`Execute`/`Begin`/`Commit`/`Rollback`/`Savepoint` — every
+ * `Message` type this phase still does not handle — close the connection
+ * rather than being silently ignored: `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`
  * already work today, but only as plain SQL text through `Query` (`Executor`
  * has parsed and run them since Phase 8) — the *typed* wire messages for
  * them are Milestone 15's job, once a session has more reason to prefer
- * them over SQL text. Authentication is "dev mode" (PLAN.md §11): `HELLO`
- * is answered immediately, with no `Auth` exchange at all.
+ * them over SQL text.
  *
  * A response is written in one `fwrite()` call, no write buffering or
  * write-readiness registration — correct for the size of a response this
@@ -49,7 +60,9 @@ final class Session
 
     private readonly ResultEncoder $resultEncoder;
 
-    private bool $readyForQueries = false;
+    private ?string $nonce = null;
+
+    private bool $authenticated = false;
 
     private bool $closed = false;
 
@@ -59,6 +72,7 @@ final class Session
         public readonly int $id,
         private readonly Executor $executor,
         private readonly Logger $logger = new Logger(),
+        private readonly ?Authenticator $authenticator = null,
     ) {
         $this->reader = new FrameReader();
         $this->codec = new Codec();
@@ -108,6 +122,7 @@ final class Session
 
         match (true) {
             $message instanceof Hello => $this->handleHello(),
+            $message instanceof Auth => $this->handleAuth($message),
             $message instanceof Query => $this->handleQuery($message),
             $message instanceof Ping => $this->send(new Pong()),
             $message instanceof Goodbye => $this->close(),
@@ -117,13 +132,43 @@ final class Session
 
     private function handleHello(): void
     {
-        $this->send(new HelloAck(Server::VERSION, 'none', ''));
-        $this->readyForQueries = true;
+        if ($this->authenticator === null) {
+            $this->send(new HelloAck(Server::VERSION, 'none', ''));
+            $this->authenticated = true;
+
+            return;
+        }
+
+        $this->nonce = $this->authenticator->nonce();
+        $this->send(new HelloAck(Server::VERSION, 'challenge_response', $this->nonce));
+    }
+
+    private function handleAuth(Auth $auth): void
+    {
+        if ($this->authenticator === null || $this->nonce === null) {
+            $this->rejectUnsupported($auth);
+
+            return;
+        }
+
+        $failureReason = $this->authenticator->verify($auth->username, $this->nonce, $auth->response);
+
+        if ($failureReason !== null) {
+            // Stays open: a client that sent the wrong password gets to
+            // retry with a fresh AUTH on this same connection, rather than
+            // having to redo HELLO from scratch.
+            $this->send(new AuthFail($failureReason));
+
+            return;
+        }
+
+        $this->authenticated = true;
+        $this->send(new AuthOk((string) $this->id, time()));
     }
 
     private function handleQuery(Query $query): void
     {
-        if (!$this->readyForQueries) {
+        if (!$this->authenticated) {
             $this->rejectUnsupported($query);
 
             return;

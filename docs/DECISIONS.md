@@ -48,6 +48,10 @@ project is built from is [PLAN.md](../PLAN.md).
 | One process, one event loop — not a fork per connection | current, [why](#one-process-one-event-loop-not-a-fork-per-connection) |
 | `Server` tests drive `tick()` by hand over a real socket | current, [why](#server-tests-drive-tick-by-hand-over-a-real-socket) |
 | An unhandled message type closes the connection | current, [why](#an-unhandled-message-type-closes-the-connection) |
+| A user's salt is derived from their username, not stored | current, [why](#a-users-salt-is-derived-from-their-username-not-stored) |
+| Password hashing uses raw `sodium_crypto_pwhash()`, not `password_hash()` | current, [why](#password-hashing-uses-raw-sodium_crypto_pwhash-not-password_hash) |
+| Login throttling is per username, in memory, for the process's life | current, [why](#login-throttling-is-per-username-in-memory-for-the-processs-life) |
+| User management is its own local CLI script, not a network client command | current, [why](#user-management-is-its-own-local-cli-script-not-a-network-client-command) |
 
 ## One byte format for disk and wire
 
@@ -1339,3 +1343,107 @@ each of these (`Auth`/authentication is Milestone 13; `Prepare`/`Execute`
 is Milestone 14; the typed transaction messages are Milestone 15), and a
 client that sent one is talking to a server it should not assume supports
 it yet.
+
+## A user's salt is derived from their username, not stored
+
+`Network\Auth\PasswordHash::saltFor()` computes a user's salt as
+`SHA-256(username)`, truncated to the length `sodium_crypto_pwhash()`
+requires. PLAN.md §6.4's own `users.json` example shows a random `salt`
+field stored alongside `hash`; this project's `users.json` has no such
+field at all.
+
+The reason is the handshake sequence PLAN.md §5.4 itself lays out:
+`HELLO` → `HELLO_ACK` → `AUTH { username, response }` → `AUTH_OK`/`AUTH_FAIL`.
+`HELLO_ACK` is sent before the server has been told which user is
+connecting — `Hello`'s own fields carry no username — so at that point
+there is no per-user salt the server could hand back even if one were
+stored. A real client computing `response = HMAC(hash, nonce)` needs
+`hash = Argon2id(password, salt)` computed with the *same* salt the server
+used when the account was created, and PLAN.md's own message table has no
+message shaped "tell me user X's salt" for a client to ask with before
+sending `AUTH` — real SCRAM (RFC 5802) has an extra round trip for exactly
+this (client-first, server-first carrying the salt, client-final), which
+this project's four-message sequence deliberately does not reproduce
+(PLAN.md §1.1 itself calls this "SCRAM-like", not SCRAM).
+
+Deriving the salt from the username removes the need for that round trip
+entirely: both sides can compute the identical salt from information they
+already have (a username, typed by the person connecting) with no lookup.
+The cost is real and named, not hidden: renaming a user silently
+invalidates their password (their derived salt changes), and an attacker
+who already knows a specific username could precompute a rainbow table
+*for that one account* ahead of time — weaker than a long random salt
+against a targeted attacker, but not weaker than having no salt at all
+(the actual failure mode a salt exists to prevent — the same hash
+appearing for the same password across every account). No password reset
+or user rename exists in this project yet for the first cost to bite, and
+the second is judged acceptable for a learning project's threat model, the
+same way `Storage\Catalog`'s composite-index gap or `TransactionManager`'s
+single-crash assumption are: a real, bounded trade-off, not a rigorous
+production posture.
+
+## Password hashing uses raw `sodium_crypto_pwhash()`, not `password_hash()`
+
+`Network\Auth\PasswordHash::derive()` calls `sodium_crypto_pwhash()`
+directly, asking for raw output bytes, rather than PHP's more usual
+`password_hash()`/`password_verify()` pair (which also supports Argon2id,
+via `PASSWORD_ARGON2ID`).
+
+`password_verify()` only ever answers a yes/no question — it is built
+specifically so the raw hash bytes never have to leave the function that
+checks them. That is exactly the wrong shape for PLAN.md §5.5's challenge-
+response scheme, which needs *both* the client and the server to
+independently arrive at the identical byte string and use it as an
+`HMAC` key (`Network\Auth\ScramChallenge::respond()`) — proving the
+client knows the password without the password, or anything derived
+one-way from it, ever crossing the wire. `password_hash()` also picks its
+own random salt internally and folds it into the returned PHC string,
+which is right for its own use case (verifying a login against a database
+directly) and wrong for this one, where the salt has to be something both
+sides can derive *identically* and independently (see the entry above).
+`sodium_crypto_pwhash()`'s raw-output mode is the primitive that actually
+fits: same algorithm family (Argon2id), same PLAN.md §13.1 requirement,
+but bytes a caller can use as a key instead of bytes only `password_verify()`
+can read.
+
+## Login throttling is per username, in memory, for the process's life
+
+`Network\Auth\LoginThrottle` tracks failed attempts keyed only by
+username, held in a plain array for as long as the server process runs —
+nothing is written to disk, and a restart forgets every lockout.
+
+This is the same scope `Transaction\LockManager` settled for the same
+reason (Phase 8): there is one process, nothing else needs this state,
+and persisting it would mean answering questions (how long does a lockout
+survive a restart? does every session need to see the same throttle
+state, which they already do since they share one `Network\Server`
+process) that a learning project's threat model does not need answered
+today. Keying by username alone, not also by the connection's remote
+address, is a narrower and more consciously incomplete choice: a real
+deployment wants both, since a username-only throttle cannot slow down an
+attacker spraying many *different* guessed usernames from one machine,
+only one who keeps guessing the same account. `Network\Session` does not
+currently read a peer address at all (Milestone 12 never needed one), so
+adding IP-based throttling now would mean building that plumbing for a
+single caller — deferred, named, not silently absent.
+
+## User management is its own local CLI script, not a network client command
+
+`bin/minidb-user add/remove/list` edits `users.json` directly through
+`Network\Auth\UserStore` — it never opens a TCP connection. PLAN.md §9.2
+shows the identical three subcommands as `php bin/minidb user add ...`,
+under the same `bin/minidb` PLAN.md reserves for the full network client
+(`connect`, `query`, `shell`, `import`, `export`).
+
+That client cannot exist yet: it needs `Client\Connection` and the rest of
+the PHP client library, which is Milestone 16's job, several milestones
+after this one. Building a real `bin/minidb user` subcommand now would
+mean either faking a client-side connection just for this one feature, or
+quietly writing straight to `users.json` from inside what is supposed to
+be *the network client* — hiding a local file operation behind a name
+that promises a network one. A separate, honestly-named script that does
+exactly what it says avoids both: it is what a real database's admin
+tooling often provides anyway (editing a credentials store directly,
+before or without a running server), and `bin/minidb user` remains free
+for Milestone 16 to implement for real, as a thin wrapper that actually
+does go over the wire once a client exists to send `AUTH` through.

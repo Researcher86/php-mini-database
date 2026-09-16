@@ -669,3 +669,77 @@ noticed server-side, a connection over `max_connections` refused, a
 `QUERY` before the handshake closing the connection, and two real
 sessions where the second's `BEGIN` is refused while the first's
 transaction is still open.
+
+## Phase 13 — Authentication ✅
+
+`HELLO`/`HELLO_ACK`/`AUTH`/`AUTH_OK`/`AUTH_FAIL` all do real work now —
+Milestone 12's "dev mode" (`HELLO` answered immediately, `Query` accepted
+with no `Auth` exchange) stays available as `ServerConfig::$authEnabled`'s
+default, but a server can now require a real login.
+
+`Network\Auth\PasswordHash` derives a user's stored secret with
+`sodium_crypto_pwhash()` (Argon2id) in its *raw-output* form, not
+`password_hash()`/`password_verify()` — the challenge-response scheme
+PLAN.md §5.5 describes needs both the client and the server to
+independently compute `HMAC(hash, nonce)` and compare, which needs the raw
+hash bytes as a key, not a one-way "yes/no" `password_verify()` can never
+give back. The salt that goes into that derivation is not a random value
+stored alongside the hash, as PLAN.md §6.4's `users.json` example shows,
+but `SHA-256(username)` — deterministic, so nothing has to be sent to (or
+looked up by) a client before it knows which user is authenticating, which
+resolves a real gap in PLAN.md §5.4's own four-message handshake sequence:
+`HELLO_ACK` happens before the server has any idea which user is
+connecting, so it cannot hand back *that* user's salt at that point. See
+DECISIONS.md for the full reasoning and what it costs. `HelloAck::$salt`
+is renamed to `$nonce` to match what the field actually carries once this
+phase gave it a job: a fresh, per-connection random value for the HMAC,
+never a salt.
+
+`Network\Auth\ScramChallenge` is the shared authority for the HMAC itself
+(`nonce()`, `respond()`, `verify()` via `hash_equals()`) — used by the
+server to check a login, and by this phase's own tests to compute a
+correct response, standing in for the real client library Milestone 16
+still has to build. `Network\Auth\UserStore` persists every user's hash
+and roles to `users.json` via the same `Infrastructure\AtomicWriter`
+`Storage\Catalog` already uses, for the same reason: a half-written
+credentials file after a crash is a real outage. `Network\Auth\LoginThrottle`
+is PLAN.md §13.3/§15's "rate limiting + backoff" — in-memory, per
+username, doubling the lockout after `$maxAttempts` free failures, capped
+— checked by `Network\Auth\Authenticator::verify()` before anything else,
+and given the same generic failure reason as a wrong password or an
+unknown username, so neither ever tells an attacker which one it was.
+
+`Network\Session` grows a `handleAuth()` case alongside its existing
+`Hello`/`Query`/`Ping`/`Goodbye` ones; `Query` before a successful `Auth`
+(when one is required) is refused the same way an unsupported message is,
+but a *failed* `Auth` leaves the connection open rather than closing it —
+a client that mistyped a password gets to retry with a new `Auth` message,
+which is exactly what `Authenticator`'s throttling (not the connection
+itself) is what eventually stops. `bin/minidb-user` is the CLI PLAN.md
+§9.2 shows (`add`/`remove`/`list`) — a local tool editing `users.json`
+directly, not a `bin/minidb` client command, since no client library
+exists yet for the real one PLAN.md reserves that name for to connect
+through.
+
+Two things fixed in passing, not new to this phase: `bin/minidb-server`
+(Phase 12) had never actually been checked by `composer analyse` or
+`composer format:check` at all — both tools' directory scans silently
+skip an extensionless file, and nobody had told either one to look at it
+by name specifically. Both configs now do, and `composer format` found
+(and fixed) one real, previously invisible formatting mistake in that
+file the moment it started actually being checked.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Network/Auth/` — `PasswordHashTest.php`,
+`ScramChallengeTest.php` (correct/wrong hash/nonce/response),
+`UserStoreTest.php` (create/find/remove/list, persistence across a fresh
+instance), `LoginThrottleTest.php` (free attempts, lockout, exponential
+backoff, the cap, a lock expiring once enough fake time has passed, reset
+on success, usernames throttled independently), `AuthenticatorTest.php`;
+and `tests/Unit/Network/ServerAuthTest.php` for the end-to-end path —
+`HELLO_ACK` offering a nonce, a `Query` before authenticating refused,
+correct and wrong credentials, a failed attempt not closing the
+connection and a retry succeeding, enough failures locking the account
+out even against the right password, and dev mode still working
+unauthenticated when `authEnabled` is left off.

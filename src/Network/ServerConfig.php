@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Network;
 
+use PhpMiniDatabase\Infrastructure\Path;
+
 /**
  * A server's settings — PLAN.md §7.1's `config/server.php` shape, as a
  * typed object instead of a bare array.
@@ -16,6 +18,12 @@ namespace PhpMiniDatabase\Network;
  * anything could really contend for a lock (Phase 8). `$maxConnections`
  * and `$backlog` *are* enforced, by `SessionManager` and `Acceptor`
  * respectively.
+ *
+ * `$authEnabled` defaults to `false` — Milestone 12's "dev mode" stays the
+ * default so every test and example written against it keeps working
+ * unchanged; a caller opts into real authentication (Milestone 13)
+ * explicitly. `$userStorePath` defaults to `users.json` inside
+ * `$dataDirectory`, matching PLAN.md §6.1's layout, when left `null`.
  */
 final readonly class ServerConfig
 {
@@ -27,6 +35,13 @@ final readonly class ServerConfig
         public int $backlog = 128,
         public int $idleTimeoutSeconds = 300,
         public int $queryTimeoutSeconds = 60,
+        public bool $authEnabled = false,
+        public ?string $userStorePath = null,
     ) {
+    }
+
+    public function resolvedUserStorePath(): string
+    {
+        return $this->userStorePath ?? Path::join($this->dataDirectory, 'users.json');
     }
 }

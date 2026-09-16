@@ -62,7 +62,7 @@
 - [x] Listen on a TCP port (default 5433).
 - [x] Multi-client mode (fork/process pool or event loop).
 - [x] Custom binary protocol.
-- [ ] Authentication by login/password (challenge-response).
+- [x] Authentication by login/password (challenge-response).
 - [ ] Prepared statements support.
 - [ ] Session-level transaction support.
 - [ ] Idle/query timeouts.
@@ -1041,12 +1041,12 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** secure connections.
 
-- [ ] `Authenticator`, `ScramChallenge`, `UserStore`, `PasswordHash`.
-- [ ] Messages `AUTH`, `AUTH_OK`, `AUTH_FAIL`.
-- [ ] CLI `user add/remove/list`.
-- [ ] Password hashing (Argon2id or bcrypt).
-- [ ] Challenge-response via HMAC.
-- [ ] Authentication tests: success, failure, retry, brute-force protection.
+- [x] `Authenticator`, `ScramChallenge`, `UserStore`, `PasswordHash`.
+- [x] Messages `AUTH`, `AUTH_OK`, `AUTH_FAIL`.
+- [x] CLI `user add/remove/list`.
+- [x] Password hashing (Argon2id or bcrypt).
+- [x] Challenge-response via HMAC.
+- [x] Authentication tests: success, failure, retry, brute-force protection.
 
 **Result:** only authorized clients can work with the DB.
 
@@ -1440,7 +1440,7 @@ Client                          Server
 - [x] Milestone 10. Integrity Constraints.
 - [x] Milestone 11. TCP Protocol.
 - [x] Milestone 12. TCP Server (Core).
-- [ ] Milestone 13. Authentication.
+- [x] Milestone 13. Authentication.
 - [ ] Milestone 14. Prepared Statements.
 - [ ] Milestone 15. Transactions over the Network.
 - [ ] Milestone 16. Client Library.

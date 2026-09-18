@@ -63,7 +63,7 @@
 - [x] Multi-client mode (fork/process pool or event loop).
 - [x] Custom binary protocol.
 - [x] Authentication by login/password (challenge-response).
-- [ ] Prepared statements support.
+- [x] Prepared statements support.
 - [ ] Session-level transaction support.
 - [ ] Idle/query timeouts.
 - [x] Max connections limit.
@@ -1058,11 +1058,11 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** parameterized queries over the network.
 
-- [ ] `PREPARE`, `PREPARE_OK`, `EXECUTE`, `CLOSE_STMT`.
-- [ ] Store prepared statements in the session.
-- [ ] Limit on the number of prepared statements.
-- [ ] Prepared statement tests.
-- [ ] Protection against SQL injection.
+- [x] `PREPARE`, `PREPARE_OK`, `EXECUTE`, `CLOSE_STMT`.
+- [x] Store prepared statements in the session.
+- [x] Limit on the number of prepared statements.
+- [x] Prepared statement tests.
+- [x] Protection against SQL injection.
 
 **Estimate:** 4–5 days.
 
@@ -1441,7 +1441,7 @@ Client                          Server
 - [x] Milestone 11. TCP Protocol.
 - [x] Milestone 12. TCP Server (Core).
 - [x] Milestone 13. Authentication.
-- [ ] Milestone 14. Prepared Statements.
+- [x] Milestone 14. Prepared Statements.
 - [ ] Milestone 15. Transactions over the Network.
 - [ ] Milestone 16. Client Library.
 - [ ] Milestone 17. CLI Client and REPL.

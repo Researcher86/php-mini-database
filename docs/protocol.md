@@ -243,15 +243,43 @@ DECISIONS.md for the full reasoning and its cost.
 server or a client connection — see DECISIONS.md for why this is not
 `bin/minidb user`, the client subcommand PLAN.md §9.2 shows.
 
+## Prepared statements
+
+`PREPARE` (a bare SQL string) is answered with `PREPARE_OK` (a `uint32`
+statement id) or a `QueryError` if the SQL does not parse. `EXECUTE` names
+that id and carries a `WireValue`-encoded parameter list, exactly like
+`Query`'s own `$parameters`; the reply is a `QUERY_RESULT` or a `QueryError`,
+same as a plain `Query`. `CLOSE_STMT` releases the id and gets no reply at
+all — a fire-and-forget message, so closing an id that is unknown or was
+already closed is not an error.
+
+Statement ids are scoped to one `Network\Session` and start over at `1` for
+every new connection — nothing about them is meaningful across connections,
+and `Network\ServerConfig::$maxPreparedStatements` (default `100`, PLAN.md
+§7.1) caps how many one connection may hold open at once, past which
+`PREPARE` answers with a `QueryError` instead of a new id.
+
+`Network\Session` caches the *parsed* `Sql\Ast\Statement` `PREPARE` produces,
+not the raw SQL text: `EXECUTE` hands it straight to
+`Execution\Executor::execute()`, which already accepts a pre-parsed
+statement, skipping `Sql\Parser::parseOne()` on every run. This is
+parse-once, not plan-once — a `SELECT` is still planned and optimized fresh
+on every `EXECUTE` — but it is what makes a bound parameter safe: a
+parameter is always carried as a typed `WireValue`, decoded into a plain PHP
+value and bound by `Execution\Expression\Evaluator`'s existing placeholder
+handling, never spliced into SQL text for the parser to see. There is no
+code path from a parameter value back into anything the parser interprets as
+syntax, which is the actual protection PLAN.md §2.1's "protection against
+SQL injection at the protocol level" asks for.
+
 ## What is deliberately not here yet
 
 - **Chunked result streaming.** See `QUERY_RESULT` above.
 - **`COPY_IN`/`COPY_OUT`'s row format**, and **`SHOW_STATUS`/`SHOW_CONNECTIONS`'s
   response shape** — deferred to the milestones that give them a reason to
   exist.
-- **Prepared statements and typed transaction control.** `Prepare`/`Execute`/
-  `CloseStatement` and the typed `Begin`/`Commit`/`Rollback`/`Savepoint`
-  messages are fully defined (Phase 11) but `Network\Session` (Phase 12)
-  closes a connection that sends one — Milestones 14 and 15's jobs,
-  respectively. `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` already work today
-  regardless, as plain SQL text through `Query`.
+- **Typed transaction control.** The typed `Begin`/`Commit`/`Rollback`/
+  `Savepoint` messages are fully defined (Phase 11) but `Network\Session`
+  still closes a connection that sends one — Milestone 15's job.
+  `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` already work today regardless, as
+  plain SQL text through `Query`.

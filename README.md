@@ -21,13 +21,13 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 13 — Authentication**. Real login/password
-authentication now protects the server: Argon2id-derived credentials in
-`users.json`, a challenge-response handshake proving a client knows the
-password without ever sending it, and rate-limited lockout with
-exponential backoff after too many failed attempts. `bin/minidb-user
-add/remove/list` manages accounts locally. Dev mode (no auth) is still the
-default for anything that does not opt in. Prepared statements are next.
+Latest finished phase: **Phase 14 — Prepared Statements**. `PREPARE`,
+`EXECUTE` and `CLOSE_STMT` now work over the wire: a statement is parsed
+once, cached per connection, and run as many times as needed with
+different bound parameters — the same placeholder binding `Query` already
+used, so a parameter value is never interpreted as SQL syntax. A
+per-connection limit on how many statements may stay open at once is
+configurable and enforced. Transactions over the network are next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

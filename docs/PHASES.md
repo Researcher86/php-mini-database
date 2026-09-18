@@ -743,3 +743,49 @@ correct and wrong credentials, a failed attempt not closing the
 connection and a retry succeeding, enough failures locking the account
 out even against the right password, and dev mode still working
 unauthenticated when `authEnabled` is left off.
+
+## Phase 14 — Prepared Statements ✅
+
+`Network\Session` answers `PREPARE`, `EXECUTE` and `CLOSE_STMT` instead of
+closing the connection on them, the last three `Message` types Phase 11
+defined but Phase 12 left unhandled (besides the typed transaction control
+messages, still Milestone 15's job).
+
+`PREPARE` parses `$sql` once with `Sql\Parser::parseOne()` and keeps the
+resulting `Sql\Ast\Statement` in a per-session `array<int, Statement>`
+keyed by a `uint32` id that starts at `1` for every new connection;
+`PREPARE_OK` hands that id back, or a `QueryError` reports a syntax error
+the same way `Query` already does. `EXECUTE` looks the id up and passes it
+straight to `Execution\Executor::execute()` — the same method `Query`'s
+`run()` already calls after its own `parseOne()` — so a prepared statement
+is genuinely parsed only once no matter how many times it runs; an unknown
+or already-closed id is a `QueryError`, not a crash. `CLOSE_STMT` just
+`unset()`s the entry: PLAN.md's message table gives it no reply, and
+closing an id twice (or one that was never open) is treated as the normal
+case for a fire-and-forget release message, not an error.
+
+`ServerConfig::$maxPreparedStatements` (default `100`, matching PLAN.md
+§7.1's example) caps how many statements one session may hold open at
+once; `PREPARE` past the cap answers with a `QueryError` instead of a new
+id, exactly like a parse failure — there is no dedicated "PREPARE failed"
+message any more than there is a dedicated "EXECUTE failed" one.
+
+The SQL-injection protection this milestone asks for was not new machinery
+to build: a bound parameter has always been a typed `WireValue`, decoded
+into a plain value and bound by the existing placeholder handling, never
+text the parser ever sees — `PREPARE`/`EXECUTE` only gives that existing
+guarantee a second entry point. `ServerPreparedStatementTest` proves it
+directly, executing an `INSERT` with a parameter value crafted to look
+like a second SQL statement and confirming it lands in the table as one
+literal string, not as executed SQL.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Network/ServerPreparedStatementTest.php` — a
+prepared `SELECT` executed twice with different parameters, a prepared
+`INSERT` executed multiple times, a malicious parameter value proven to
+land as a literal rather than as SQL, a `PREPARE` with invalid SQL, an
+`EXECUTE` against an unknown or already-closed statement id, closing an
+unknown id being silently harmless, the per-session limit being enforced
+and freed up again by a `CLOSE_STMT`, and `PREPARE` before the handshake
+being refused like any other message.

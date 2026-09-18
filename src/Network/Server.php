@@ -133,7 +133,14 @@ final class Server
             return;
         }
 
-        $session = new Session($connection, $this->nextSessionId++, new Executor($this->database), $this->logger, $this->authenticator);
+        $session = new Session(
+            $connection,
+            $this->nextSessionId++,
+            new Executor($this->database),
+            $this->logger,
+            $this->authenticator,
+            $this->config->maxPreparedStatements,
+        );
         $this->sessions->add($session);
 
         $this->loop->onReadable($connection, function () use ($session): void {

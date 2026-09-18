@@ -52,6 +52,8 @@ project is built from is [PLAN.md](../PLAN.md).
 | Password hashing uses raw `sodium_crypto_pwhash()`, not `password_hash()` | current, [why](#password-hashing-uses-raw-sodium_crypto_pwhash-not-password_hash) |
 | Login throttling is per username, in memory, for the process's life | current, [why](#login-throttling-is-per-username-in-memory-for-the-processs-life) |
 | User management is its own local CLI script, not a network client command | current, [why](#user-management-is-its-own-local-cli-script-not-a-network-client-command) |
+| A prepared statement caches the parsed AST, not a plan; it is parse-once, not plan-once | current, [why](#a-prepared-statement-is-parse-once-not-plan-once) |
+| PREPARE and CLOSE_STMT failures reuse QueryError; there is no dedicated failure message | current, [why](#prepare-and-close_stmt-failures-reuse-queryerror) |
 
 ## One byte format for disk and wire
 
@@ -1447,3 +1449,48 @@ tooling often provides anyway (editing a credentials store directly,
 before or without a running server), and `bin/minidb user` remains free
 for Milestone 16 to implement for real, as a thin wrapper that actually
 does go over the wire once a client exists to send `AUTH` through.
+
+## A prepared statement is parse-once, not plan-once
+
+`PREPARE` caches the `Sql\Ast\Statement` `Sql\Parser::parseOne()` produces,
+not a `Sql\Planner\LogicalPlan` or anything the optimizer has already
+worked on. Every `EXECUTE` hands that same `Statement` straight to
+`Execution\Executor::execute()`, the method `Query`'s own `run()` already
+calls after its own `parseOne()` — so a prepared statement's SQL text is
+genuinely parsed exactly once no matter how many times it runs, but a
+`SELECT` is still planned and optimized fresh on every `EXECUTE`.
+
+A real database usually caches the plan too, since planning can cost more
+than parsing once a query is complex. This project does not, for a
+concrete reason: `Executor::plan()` calls `Optimizer::optimize()` fresh
+against the *current* catalog and (for `IndexSelection`/`JoinReordering`)
+the *current* `Storage\HeapFile::pageCount()` of every table involved, so
+a plan cached at `PREPARE` time could go stale the moment a `CREATE INDEX`
+or a large `INSERT` runs on a long-lived connection before that statement
+is next executed — nothing here invalidates a cached plan when the
+catalog or table sizes change. Re-planning on every `EXECUTE` sidesteps
+that whole problem rather than solving it, at the cost of being a smaller
+performance win than "prepared statement" usually promises. `PREPARE`
+itself does no semantic validation beyond parsing for the same kind of
+reason real databases often defer it: a table `PREPARE` mentions is
+allowed not to exist yet, so long as it exists by the time `EXECUTE` runs.
+
+## PREPARE and CLOSE_STMT failures reuse QueryError
+
+PLAN.md's message table gives `PREPARE` exactly one reply, `PREPARE_OK`,
+and gives `CLOSE_STMT` none at all — neither has a dedicated failure
+message, the same gap `EXECUTE` already has (it, too, has no reply of its
+own beyond the `QUERY_RESULT` any successful statement produces). Rather
+than invent wire messages PLAN.md does not define, a failed `PREPARE`
+(bad SQL, or `ServerConfig::$maxPreparedStatements` already reached) and a
+failed `EXECUTE` (an unknown or already-closed statement id, or the
+statement itself failing) all answer with the same `Message\QueryError`
+`Network\Session::handleQuery()` already sends for a failing `Query` —
+one error shape a client has to understand regardless of which message
+provoked it, rather than three.
+
+`CLOSE_STMT` closing an id that is unknown, or was already closed, is not
+treated as an error at all — there being no reply to put one in is only
+part of the reason; the more important one is that a fire-and-forget
+"I am done with this" message being idempotent is the expected case for
+a resource-release call, not a special one worth a warning over.

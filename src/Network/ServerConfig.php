@@ -24,6 +24,11 @@ use PhpMiniDatabase\Infrastructure\Path;
  * unchanged; a caller opts into real authentication (Milestone 13)
  * explicitly. `$userStorePath` defaults to `users.json` inside
  * `$dataDirectory`, matching PLAN.md §6.1's layout, when left `null`.
+ *
+ * `$maxPreparedStatements` matches PLAN.md §7.1's `max_prepared_statements`
+ * example (`100`) — a per-`Session` limit, not a server-wide one: each
+ * connection gets its own budget, since prepared statements live in
+ * `Session`, not in anything shared across connections.
  */
 final readonly class ServerConfig
 {
@@ -37,6 +42,7 @@ final readonly class ServerConfig
         public int $queryTimeoutSeconds = 60,
         public bool $authEnabled = false,
         public ?string $userStorePath = null,
+        public int $maxPreparedStatements = 100,
     ) {
     }
 

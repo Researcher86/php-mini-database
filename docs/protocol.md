@@ -272,14 +272,42 @@ code path from a parameter value back into anything the parser interprets as
 syntax, which is the actual protection PLAN.md §2.1's "protection against
 SQL injection at the protocol level" asks for.
 
+## Transactions
+
+`BEGIN` (optionally naming an `Transaction\IsolationLevel`), `COMMIT`,
+`ROLLBACK` and `SAVEPOINT name` are typed wrappers around the same
+`Sql\Ast\BeginStatement`/`CommitStatement`/`RollbackStatement`/`SavepointStatement`
+classes plain SQL text already produced through `Query` since Phase 8 —
+`Network\Session` builds one by hand and hands it to the same
+`Execution\Executor::execute()` every other message here already calls.
+Each answers with the same empty `QUERY_RESULT` any statement with nothing
+to return produces, or a `QueryError` — `BEGIN` while one is already open,
+or `COMMIT`/`ROLLBACK`/`SAVEPOINT` with none open, are `TRANSACTION_ERROR`,
+not a new wire error code. `ROLLBACK TO SAVEPOINT` and `RELEASE SAVEPOINT`
+have no typed message of their own — PLAN.md §5.3's table defines none —
+and stay reachable only as plain SQL text through `Query`, same as before
+this phase.
+
+`Schema\Database` allows only one open transaction at a time, system-wide
+(Phase 8's single-writer model) — a session that opens one and then
+disconnects without `COMMIT`/`ROLLBACK` would otherwise leave it open
+forever, locking every other session out of `BEGIN` for good. `Network\Session`
+tracks whether *it* is the one that currently has a transaction open (by
+noticing its own statement flip `Execution\Executor::inTransaction()` from
+`false` to `true`, regardless of whether that statement arrived as a typed
+message or as `Query` SQL text) and rolls it back automatically on
+disconnect if so — a session that never opened one, or already closed it,
+does nothing extra on its way out.
+
 ## What is deliberately not here yet
 
 - **Chunked result streaming.** See `QUERY_RESULT` above.
 - **`COPY_IN`/`COPY_OUT`'s row format**, and **`SHOW_STATUS`/`SHOW_CONNECTIONS`'s
   response shape** — deferred to the milestones that give them a reason to
   exist.
-- **Typed transaction control.** The typed `Begin`/`Commit`/`Rollback`/
-  `Savepoint` messages are fully defined (Phase 11) but `Network\Session`
-  still closes a connection that sends one — Milestone 15's job.
-  `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` already work today regardless, as
-  plain SQL text through `Query`.
+- **Idle and query timeouts.** `ServerConfig::$idleTimeoutSeconds`/
+  `$queryTimeoutSeconds` are recorded but not enforced — `EventLoop` has no
+  per-socket elapsed-time tracking yet. A session's automatic rollback on
+  disconnect (above) covers whatever a future timeout eventually closes,
+  the same as any other disconnect; detecting the timeout itself remains
+  unbuilt.

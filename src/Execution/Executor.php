@@ -164,6 +164,18 @@ final readonly class Executor
         return $this->execute(Parser::parseOne($sql), $parameters);
     }
 
+    /**
+     * Whether *some* transaction is currently open — system-wide, not
+     * per-caller, since `Database` allows only one at a time (see
+     * DECISIONS.md, Phase 8). `Network\Session` uses this to notice when
+     * its own statement is the one that opened or closed it, not to ask
+     * whether it personally owns whatever is open.
+     */
+    public function inTransaction(): bool
+    {
+        return $this->transactions->inTransaction();
+    }
+
     /** @param list<mixed> $parameters */
     public function execute(Statement $statement, array $parameters = []): QueryResult|int|null
     {

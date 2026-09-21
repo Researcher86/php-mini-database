@@ -789,3 +789,55 @@ land as a literal rather than as SQL, a `PREPARE` with invalid SQL, an
 unknown id being silently harmless, the per-session limit being enforced
 and freed up again by a `CLOSE_STMT`, and `PREPARE` before the handshake
 being refused like any other message.
+
+## Phase 15 — Transactions over the Network ✅
+
+`BEGIN`, `COMMIT`, `ROLLBACK` and `SAVEPOINT` now work as typed wire
+messages, not only as plain SQL text through `Query`: `Network\Session`'s
+new `handleBegin()`/`handleCommit()`/`handleRollback()`/`handleSavepoint()`
+each build the matching `Sql\Ast\*Statement` by hand and hand it to
+`Execution\Executor::execute()` — the exact same method `Query` and
+`EXECUTE` already call — rather than teaching `Executor` a second way to
+run a transaction-control statement. `ROLLBACK TO SAVEPOINT` and `RELEASE
+SAVEPOINT` get no typed message of their own, matching PLAN.md §5.3's
+message table exactly (it defines none for either) — both stay reachable
+only as plain SQL text, unchanged from before this phase.
+
+The real work this phase adds is what "handling timeouts and disconnects"
+actually requires: `Schema\Database` allows only one open transaction at a
+time, system-wide (Phase 8's single-writer model), so a session that opens
+one and then disconnects without `COMMIT`/`ROLLBACK` would otherwise leave
+it open forever — locking every other session out of `BEGIN` permanently,
+not just inconveniencing the one client that vanished. `Session` now
+tracks `$ownsOpenTransaction`, set by watching its own statement flip the
+new `Executor::inTransaction()` from `false` to `true` (a false→true
+transition can only be this session's own successful `BEGIN`, since a
+second one is refused outright while one is already open) and cleared the
+same way on the way back to `false`; `close()` rolls back first when this
+flag is set. This works identically whichever path opened the
+transaction — a typed `Begin` or a plain-SQL `Query('BEGIN')` — since both
+reach `Executor` the same way. Full idle/query-timeout *detection* stays
+the pre-existing named gap `ServerConfig::$idleTimeoutSeconds`/
+`$queryTimeoutSeconds` already documented (Phase 12) — `EventLoop` still
+has no per-socket elapsed-time tracking — but whenever that gap is closed,
+a timed-out socket closing is just another disconnect this phase's cleanup
+already covers.
+
+Two boxes fixed in passing, not new to this phase: PLAN.md §2.1's
+"Transactions" functional-requirement checklist (`BEGIN`/`COMMIT`/`ROLLBACK`,
+`SAVEPOINT`/`ROLLBACK TO SAVEPOINT`, isolation levels, ACID via WAL and the
+lock manager) had stayed unchecked since Phase 8 actually built all four,
+apparently missed at the time; ticked now since re-reading the code
+confirmed all four are true and already tested.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Network/ServerTransactionTest.php` — `BEGIN`/
+`COMMIT`/`ROLLBACK` round-tripping over the wire, a `ROLLBACK` undoing
+everything since `BEGIN`, an explicit isolation level on `BEGIN`, `SAVEPOINT`
+combined with a plain-SQL `ROLLBACK TO SAVEPOINT`, a second `BEGIN` while
+one is open and a `COMMIT` with none open both reported as `QueryError`,
+a session disconnecting mid-transaction being rolled back and freeing the
+single writer for a fresh connection, a session disconnecting *outside*
+any transaction leaving another session's open one untouched, and `BEGIN`
+before the handshake refused like any other message.

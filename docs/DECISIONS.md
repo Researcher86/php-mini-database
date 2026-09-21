@@ -54,6 +54,8 @@ project is built from is [PLAN.md](../PLAN.md).
 | User management is its own local CLI script, not a network client command | current, [why](#user-management-is-its-own-local-cli-script-not-a-network-client-command) |
 | A prepared statement caches the parsed AST, not a plan; it is parse-once, not plan-once | current, [why](#a-prepared-statement-is-parse-once-not-plan-once) |
 | PREPARE and CLOSE_STMT failures reuse QueryError; there is no dedicated failure message | current, [why](#prepare-and-close_stmt-failures-reuse-queryerror) |
+| A session's disconnect rolls back its own open transaction, judged by watching Executor::inTransaction() flip, not by trusting message type | current, [why](#a-sessions-disconnect-rolls-back-its-own-open-transaction) |
+| Typed BEGIN/COMMIT/ROLLBACK/SAVEPOINT are thin wrappers around the same statement classes Query already ran | current, [why](#typed-transaction-messages-wrap-the-same-statement-classes-query-already-ran) |
 
 ## One byte format for disk and wire
 
@@ -1494,3 +1496,80 @@ treated as an error at all — there being no reply to put one in is only
 part of the reason; the more important one is that a fire-and-forget
 "I am done with this" message being idempotent is the expected case for
 a resource-release call, not a special one worth a warning over.
+
+## A session's disconnect rolls back its own open transaction
+
+`Schema\Database` allows only one open transaction at a time, system-wide
+(see [Database, not Executor, owns transaction and lock state](#database-not-executor-owns-transaction-and-lock-state)),
+which means a session that runs `BEGIN` and then disconnects without
+`COMMIT`/`ROLLBACK` — a crash, a dropped connection, a client that simply
+forgets — would otherwise leave that transaction open forever. Every other
+session's `BEGIN` is refused outright while one is already open
+(`Transaction\TransactionManager::begin()` throws rather than queuing), so
+an abandoned transaction does not just inconvenience the client that
+vanished — it locks every future connection out of writing anything, for
+good, until the process restarts.
+
+`Network\Session::close()` now rolls back automatically when this session
+is the one holding it open. The harder question was *how* to know that: a
+transaction is not tagged with the session that opened it anywhere in
+`Transaction\TransactionManager` or `Transaction`, and adding that tracking
+there would mean threading a session identity through `Execution\Executor`
+and `Schema\Database`, both of which are otherwise connection-agnostic —
+`Executor` does not know it is being called from a network session at all,
+and should not have to.
+
+Instead, `Session` watches its own statement's effect: `Execution\Executor::inTransaction()`
+(new this phase, forwarding to `TransactionManager::inTransaction()`) is
+checked immediately before and immediately after every statement this
+session runs, whichever message it arrived as. A `false → true` transition
+can only be this session's own successful `BEGIN` — a second one is
+refused while another is open, so nothing else could have caused the flip
+between the two checks in a single-process, single-threaded event loop.
+Symmetrically, any transition to `false` (a `COMMIT` or `ROLLBACK` that
+actually ran) means nothing is open for anyone to abandon any more,
+regardless of which session's statement caused it. This correctly leaves a
+session that never opened a transaction, or already closed the one it did
+open, with nothing to roll back on disconnect — proven by
+`ServerTransactionTest::testDisconnectingOutsideATransactionDoesNotAffectAnotherSessionsOpenOne()`.
+
+One gap this does not close: `TransactionManager::commit()`/`rollback()`
+have no ownership check at all today — a session that never called `BEGIN`
+can `COMMIT` or `ROLLBACK` whatever transaction another session currently
+has open, and `TransactionManager` will do it. This predates this phase
+(single-writer transactions have worked this way since Phase 8) and stays
+unresolved here too: fixing it would mean `TransactionManager` tracking
+which session opened a transaction, which is exactly the coupling the
+design above avoids. Left as a named gap rather than solved by accident as
+a side effect of this phase's actual scope.
+
+## Typed transaction messages wrap the same statement classes Query already ran
+
+`BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` over the wire (`Network\Protocol\Message\Begin`
+etc., defined in Phase 11) do not reimplement transaction control a second
+time: `Network\Session::handleBegin()` and its three siblings each build
+the same `Sql\Ast\BeginStatement`/`CommitStatement`/`RollbackStatement`/`SavepointStatement`
+`Sql\Parser::parseOne()` would have produced from `BEGIN`/`COMMIT`/`ROLLBACK`/
+`SAVEPOINT name` as plain SQL text, and hand it to `Execution\Executor::execute()`
+— the exact same method `Query`'s `run()` and `EXECUTE` already call after
+their own parsing. The alternative — calling `Executor`'s private
+`executeBegin()`/`executeCommit()`/etc. methods directly, or duplicating
+their bodies in `Session` — would mean two paths to the same behavior that
+could silently drift apart; building the small, cheap AST node instead
+keeps there being exactly one way a `BEGIN` (however it arrived) actually
+runs.
+
+A consequence, not a cost: any error a plain-SQL `BEGIN`/`COMMIT`/`ROLLBACK`/
+`SAVEPOINT` could already raise (`Exception\TransactionException` for a
+second `BEGIN`, a `COMMIT` with nothing open, an unknown savepoint name)
+comes back through the typed path too, reported the same way `Query`
+already reports it — a `QueryError` with `ErrorCode::TRANSACTION_ERROR`,
+not a new wire error code invented for the typed messages specifically.
+
+`ROLLBACK TO SAVEPOINT` and `RELEASE SAVEPOINT` get no typed wire message
+of their own: PLAN.md §5.3's message table defines `SAVEPOINT` (`0x23`)
+alone among the four keywords Phase 8's `Sql\Ast` already distinguishes
+(`SavepointStatement`, `RollbackToSavepointStatement`, `ReleaseSavepointStatement`).
+Rather than inventing two message types the protocol's own spec does not
+have, both stay reachable exactly the way they already were before this
+phase: as plain SQL text through `Query`.

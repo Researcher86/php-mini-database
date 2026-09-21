@@ -21,13 +21,13 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 14 — Prepared Statements**. `PREPARE`,
-`EXECUTE` and `CLOSE_STMT` now work over the wire: a statement is parsed
-once, cached per connection, and run as many times as needed with
-different bound parameters — the same placeholder binding `Query` already
-used, so a parameter value is never interpreted as SQL syntax. A
-per-connection limit on how many statements may stay open at once is
-configurable and enforced. Transactions over the network are next.
+Latest finished phase: **Phase 15 — Transactions over the Network**.
+`BEGIN`, `COMMIT`, `ROLLBACK` and `SAVEPOINT` now work as typed wire
+messages, not only as plain SQL text. Since the server allows only one
+open transaction at a time, a client that disconnects mid-transaction has
+it rolled back automatically, so an abandoned connection can no longer
+lock every other client out of writing anything. A PHP client library is
+next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

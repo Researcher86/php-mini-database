@@ -53,10 +53,10 @@
 - [ ] String/numeric/date functions.
 
 #### Transactions
-- [ ] `BEGIN`, `COMMIT`, `ROLLBACK`.
-- [ ] `SAVEPOINT`, `ROLLBACK TO SAVEPOINT`.
-- [ ] Isolation levels: `READ COMMITTED`, `REPEATABLE READ`, `SERIALIZABLE`.
-- [ ] ACID via WAL and lock manager.
+- [x] `BEGIN`, `COMMIT`, `ROLLBACK`.
+- [x] `SAVEPOINT`, `ROLLBACK TO SAVEPOINT`.
+- [x] Isolation levels: `READ COMMITTED`, `REPEATABLE READ`, `SERIALIZABLE`.
+- [x] ACID via WAL and lock manager.
 
 #### TCP Server
 - [x] Listen on a TCP port (default 5433).
@@ -64,7 +64,7 @@
 - [x] Custom binary protocol.
 - [x] Authentication by login/password (challenge-response).
 - [x] Prepared statements support.
-- [ ] Session-level transaction support.
+- [x] Session-level transaction support.
 - [ ] Idle/query timeouts.
 - [x] Max connections limit.
 - [x] Graceful shutdown.
@@ -1072,10 +1072,10 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** transaction management via the protocol.
 
-- [ ] Messages `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`.
-- [ ] Transaction state in `Session`.
-- [ ] Handling timeouts and disconnects.
-- [ ] Transaction tests via the client.
+- [x] Messages `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`.
+- [x] Transaction state in `Session`.
+- [x] Handling timeouts and disconnects.
+- [x] Transaction tests via the client.
 
 **Estimate:** 3–4 days.
 
@@ -1442,7 +1442,7 @@ Client                          Server
 - [x] Milestone 12. TCP Server (Core).
 - [x] Milestone 13. Authentication.
 - [x] Milestone 14. Prepared Statements.
-- [ ] Milestone 15. Transactions over the Network.
+- [x] Milestone 15. Transactions over the Network.
 - [ ] Milestone 16. Client Library.
 - [ ] Milestone 17. CLI Client and REPL.
 - [ ] Milestone 18. Server Administration.

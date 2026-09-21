@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network;
 use PhpMiniDatabase\Exception\ExecutionException;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Execution\Executor;
+use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Infrastructure\Logger;
 use PhpMiniDatabase\Network\Auth\Authenticator;
 use PhpMiniDatabase\Network\Protocol\Codec;
@@ -16,7 +17,9 @@ use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\Message\Auth;
 use PhpMiniDatabase\Network\Protocol\Message\AuthFail;
 use PhpMiniDatabase\Network\Protocol\Message\AuthOk;
+use PhpMiniDatabase\Network\Protocol\Message\Begin;
 use PhpMiniDatabase\Network\Protocol\Message\CloseStatement;
+use PhpMiniDatabase\Network\Protocol\Message\Commit;
 use PhpMiniDatabase\Network\Protocol\Message\Execute;
 use PhpMiniDatabase\Network\Protocol\Message\Goodbye;
 use PhpMiniDatabase\Network\Protocol\Message\Hello;
@@ -26,7 +29,13 @@ use PhpMiniDatabase\Network\Protocol\Message\Pong;
 use PhpMiniDatabase\Network\Protocol\Message\Prepare;
 use PhpMiniDatabase\Network\Protocol\Message\PrepareOk;
 use PhpMiniDatabase\Network\Protocol\Message\Query;
+use PhpMiniDatabase\Network\Protocol\Message\Rollback;
+use PhpMiniDatabase\Network\Protocol\Message\Savepoint;
 use PhpMiniDatabase\Network\Protocol\ResultEncoder;
+use PhpMiniDatabase\Sql\Ast\BeginStatement;
+use PhpMiniDatabase\Sql\Ast\CommitStatement;
+use PhpMiniDatabase\Sql\Ast\RollbackStatement;
+use PhpMiniDatabase\Sql\Ast\SavepointStatement;
 use PhpMiniDatabase\Sql\Ast\Statement;
 use PhpMiniDatabase\Sql\Parser;
 use Throwable;
@@ -46,13 +55,23 @@ use Throwable;
  * does *not* close the connection, so a client that mistyped a password
  * can retry with a new `Auth` message on the same connection.
  *
- * `Begin`/`Commit`/`Rollback`/`Savepoint` — every `Message` type this phase
- * still does not handle — close the connection rather than being silently
- * ignored: `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` already work today, but
- * only as plain SQL text through `Query` (`Executor` has parsed and run
- * them since Phase 8) — the *typed* wire messages for them are
- * Milestone 15's job, once a session has more reason to prefer them over
- * SQL text.
+ * `Begin`/`Commit`/`Rollback`/`Savepoint` (Milestone 15) are thin wrappers
+ * around the same `Sql\Ast\*Statement` classes `Query`'s plain SQL text
+ * already produced since Phase 8 — `handleBegin()` etc. build one by hand
+ * and hand it to `Executor::execute()` directly, the same method every
+ * other path here already calls, rather than duplicating `BEGIN`'s
+ * behavior a second time.
+ *
+ * `$ownsOpenTransaction` is what makes a client's disconnect mid-transaction
+ * safe: `Schema\Database` allows only one open transaction system-wide
+ * (Phase 8's single-writer model), so a session that opens one and then
+ * disconnects without `COMMIT`/`ROLLBACK` would otherwise leave it open
+ * forever, locking out every other session's `BEGIN` for good. `close()`
+ * rolls it back first when this session is the one that opened it — judged
+ * by watching `Executor::inTransaction()` flip false→true across this
+ * session's own statement, not by trusting the statement type alone, since
+ * `BEGIN`/`COMMIT`/`ROLLBACK` reach `Executor` exactly the same way whether
+ * they arrived as a typed message or as plain SQL text through `Query`.
  *
  * `Prepare`/`Execute`/`CloseStatement` (Milestone 14): `$preparedStatements`
  * caches `Sql\Ast\Statement`, not raw SQL — `PREPARE` parses once via
@@ -99,6 +118,8 @@ final class Session
     private array $preparedStatements = [];
 
     private int $nextStatementId = 1;
+
+    private bool $ownsOpenTransaction = false;
 
     /** @param resource $socket */
     public function __construct(
@@ -162,6 +183,10 @@ final class Session
             $message instanceof Prepare => $this->handlePrepare($message),
             $message instanceof Execute => $this->handleExecute($message),
             $message instanceof CloseStatement => $this->handleCloseStatement($message),
+            $message instanceof Begin => $this->handleBegin($message),
+            $message instanceof Commit => $this->handleCommit($message),
+            $message instanceof Rollback => $this->handleRollback($message),
+            $message instanceof Savepoint => $this->handleSavepoint($message),
             $message instanceof Ping => $this->send(new Pong()),
             $message instanceof Goodbye => $this->close(),
             default => $this->rejectUnsupported($message),
@@ -212,12 +237,7 @@ final class Session
             return;
         }
 
-        try {
-            $result = $this->executor->run($query->sql, $query->parameters);
-            $this->send($this->resultEncoder->encode($result));
-        } catch (Throwable $e) {
-            $this->send($this->resultEncoder->encodeError($e));
-        }
+        $this->runAndRespond(fn () => $this->executor->run($query->sql, $query->parameters));
     }
 
     private function handlePrepare(Prepare $prepare): void
@@ -269,12 +289,7 @@ final class Session
             return;
         }
 
-        try {
-            $result = $this->executor->execute($statement, $execute->parameters);
-            $this->send($this->resultEncoder->encode($result));
-        } catch (Throwable $e) {
-            $this->send($this->resultEncoder->encodeError($e));
-        }
+        $this->runAndRespond(fn () => $this->executor->execute($statement, $execute->parameters));
     }
 
     private function handleCloseStatement(CloseStatement $close): void
@@ -286,6 +301,85 @@ final class Session
         }
 
         unset($this->preparedStatements[$close->statementId]);
+    }
+
+    private function handleBegin(Begin $begin): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($begin);
+
+            return;
+        }
+
+        $this->runAndRespond(fn () => $this->executor->execute(new BeginStatement($begin->isolationLevel)));
+    }
+
+    private function handleCommit(Commit $commit): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($commit);
+
+            return;
+        }
+
+        $this->runAndRespond(fn () => $this->executor->execute(new CommitStatement()));
+    }
+
+    private function handleRollback(Rollback $rollback): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($rollback);
+
+            return;
+        }
+
+        $this->runAndRespond(fn () => $this->executor->execute(new RollbackStatement()));
+    }
+
+    private function handleSavepoint(Savepoint $savepoint): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($savepoint);
+
+            return;
+        }
+
+        $this->runAndRespond(fn () => $this->executor->execute(new SavepointStatement($savepoint->name)));
+    }
+
+    /** @param callable(): (QueryResult|int|null) $run */
+    private function runAndRespond(callable $run): void
+    {
+        $wasInTransaction = $this->executor->inTransaction();
+
+        try {
+            $result = $run();
+            $this->send($this->resultEncoder->encode($result));
+        } catch (Throwable $e) {
+            $this->send($this->resultEncoder->encodeError($e));
+        }
+
+        $this->trackTransactionOwnership($wasInTransaction);
+    }
+
+    /**
+     * Notices when *this* session's own statement — just run above,
+     * whatever it was — is what opened or closed the one transaction
+     * `Database` allows at a time: a false→true transition can only be
+     * this session's own successful `BEGIN`, since a second one is refused
+     * outright while another is already open (see `Executor::inTransaction()`'s
+     * docblock); any transition to `false` means nothing is open for
+     * anyone to abandon any more.
+     */
+    private function trackTransactionOwnership(bool $wasInTransaction): void
+    {
+        $isInTransaction = $this->executor->inTransaction();
+
+        if ($isInTransaction && !$wasInTransaction) {
+            $this->ownsOpenTransaction = true;
+        } elseif (!$isInTransaction) {
+            $this->ownsOpenTransaction = false;
+        }
     }
 
     private function rejectUnsupported(Message $message): void
@@ -312,6 +406,20 @@ final class Session
     {
         if ($this->closed) {
             return;
+        }
+
+        if ($this->ownsOpenTransaction) {
+            try {
+                $this->executor->execute(new RollbackStatement());
+            } catch (Throwable $e) {
+                $this->logger->warning(sprintf(
+                    'Session %d disconnected mid-transaction and its automatic ROLLBACK failed: %s',
+                    $this->id,
+                    $e->getMessage(),
+                ));
+            }
+
+            $this->ownsOpenTransaction = false;
         }
 
         $this->closed = true;

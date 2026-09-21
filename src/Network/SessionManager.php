@@ -6,10 +6,10 @@ namespace PhpMiniDatabase\Network;
 
 /**
  * Every currently-open `Session`, keyed by its id — what `Acceptor`'s
- * `$maxConnections` limit is checked against, and (Milestone 18) what
- * `SHOW_CONNECTIONS`/`KILL` will eventually read and act on. Nothing here
- * decides *when* a session is added or removed; `Server` does, around the
- * connection lifecycle it already owns.
+ * `$maxConnections` limit is checked against, and what `SHOW_CONNECTIONS`/
+ * `KILL` (Milestone 18) read and act on through `all()`/`find()`. Nothing
+ * here decides *when* a session is added or removed; `Server` does,
+ * around the connection lifecycle it already owns.
  */
 final class SessionManager
 {
@@ -17,7 +17,7 @@ final class SessionManager
     private array $sessions = [];
 
     public function __construct(
-        private readonly int $maxConnections,
+        private int $maxConnections,
     ) {
     }
 
@@ -29,6 +29,21 @@ final class SessionManager
     public function hasCapacity(): bool
     {
         return count($this->sessions) < $this->maxConnections;
+    }
+
+    public function maxConnections(): int
+    {
+        return $this->maxConnections;
+    }
+
+    /**
+     * `SIGHUP`'s one reloadable setting (`bin/minidb-server reload`) — see
+     * DECISIONS.md for why this is the only thing a reload currently
+     * changes.
+     */
+    public function setMaxConnections(int $maxConnections): void
+    {
+        $this->maxConnections = $maxConnections;
     }
 
     public function add(Session $session): void
@@ -45,6 +60,11 @@ final class SessionManager
     public function all(): array
     {
         return array_values($this->sessions);
+    }
+
+    public function find(int $id): ?Session
+    {
+        return $this->sessions[$id] ?? null;
     }
 
     public function closeAll(): void

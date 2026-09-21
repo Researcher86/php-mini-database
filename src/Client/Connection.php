@@ -22,6 +22,7 @@ use PhpMiniDatabase\Network\Protocol\Message\Execute;
 use PhpMiniDatabase\Network\Protocol\Message\Goodbye;
 use PhpMiniDatabase\Network\Protocol\Message\Hello;
 use PhpMiniDatabase\Network\Protocol\Message\HelloAck;
+use PhpMiniDatabase\Network\Protocol\Message\Kill;
 use PhpMiniDatabase\Network\Protocol\Message\Ping;
 use PhpMiniDatabase\Network\Protocol\Message\Pong;
 use PhpMiniDatabase\Network\Protocol\Message\Prepare;
@@ -31,6 +32,8 @@ use PhpMiniDatabase\Network\Protocol\Message\QueryError;
 use PhpMiniDatabase\Network\Protocol\Message\QueryResultMessage;
 use PhpMiniDatabase\Network\Protocol\Message\Rollback;
 use PhpMiniDatabase\Network\Protocol\Message\Savepoint;
+use PhpMiniDatabase\Network\Protocol\Message\ShowConnections;
+use PhpMiniDatabase\Network\Protocol\Message\ShowStatus;
 use PhpMiniDatabase\Transaction\IsolationLevel;
 use Throwable;
 
@@ -205,6 +208,29 @@ final class Connection
     public function savepoint(string $name): void
     {
         $this->send(new Savepoint($name));
+        $this->receiveAck();
+    }
+
+    /** PLAN.md §10.4's `SHOW STATUS` — one row of server-wide counters (see `Network\Session::handleShowStatus()`). */
+    public function showStatus(): ResultSet
+    {
+        $this->send(new ShowStatus());
+
+        return $this->receiveResult();
+    }
+
+    /** PLAN.md §10.4's `SHOW CONNECTIONS` — one row per currently-open session. */
+    public function showConnections(): ResultSet
+    {
+        $this->send(new ShowConnections());
+
+        return $this->receiveResult();
+    }
+
+    /** PLAN.md §10.4's `KILL <id>` — closes another session by its `Session::$id`. */
+    public function kill(int $connectionId): void
+    {
+        $this->send(new Kill($connectionId));
         $this->receiveAck();
     }
 

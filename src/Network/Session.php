@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Network;
 
+use DateTimeImmutable;
 use PhpMiniDatabase\Exception\ExecutionException;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Execution\Executor;
@@ -24,13 +25,17 @@ use PhpMiniDatabase\Network\Protocol\Message\Execute;
 use PhpMiniDatabase\Network\Protocol\Message\Goodbye;
 use PhpMiniDatabase\Network\Protocol\Message\Hello;
 use PhpMiniDatabase\Network\Protocol\Message\HelloAck;
+use PhpMiniDatabase\Network\Protocol\Message\Kill;
 use PhpMiniDatabase\Network\Protocol\Message\Ping;
 use PhpMiniDatabase\Network\Protocol\Message\Pong;
 use PhpMiniDatabase\Network\Protocol\Message\Prepare;
 use PhpMiniDatabase\Network\Protocol\Message\PrepareOk;
 use PhpMiniDatabase\Network\Protocol\Message\Query;
+use PhpMiniDatabase\Network\Protocol\Message\QueryResultMessage;
 use PhpMiniDatabase\Network\Protocol\Message\Rollback;
 use PhpMiniDatabase\Network\Protocol\Message\Savepoint;
+use PhpMiniDatabase\Network\Protocol\Message\ShowConnections;
+use PhpMiniDatabase\Network\Protocol\Message\ShowStatus;
 use PhpMiniDatabase\Network\Protocol\ResultEncoder;
 use PhpMiniDatabase\Sql\Ast\BeginStatement;
 use PhpMiniDatabase\Sql\Ast\CommitStatement;
@@ -38,6 +43,8 @@ use PhpMiniDatabase\Sql\Ast\RollbackStatement;
 use PhpMiniDatabase\Sql\Ast\SavepointStatement;
 use PhpMiniDatabase\Sql\Ast\Statement;
 use PhpMiniDatabase\Sql\Parser;
+use PhpMiniDatabase\Support\Clock;
+use PhpMiniDatabase\Support\SystemClock;
 use Throwable;
 
 /**
@@ -95,6 +102,17 @@ use Throwable;
  * closed is not an error — a fire-and-forget release message being
  * idempotent is the ordinary case, not a special one.
  *
+ * `ShowStatus`/`ShowConnections`/`Kill` (Milestone 18) each answer with a
+ * `QueryResultMessage` too, the same as everything else here — one row of
+ * counters from `$metrics` for `SHOW_STATUS`, one row per `$sessions->all()`
+ * for `SHOW_CONNECTIONS`, and an empty one for a successful `KILL`
+ * (matching the DDL/transaction-control convention: nothing to report).
+ * `KILL` of an unknown connection id is a `QueryError`, the same shape
+ * `EXECUTE` of an unknown statement id already uses. `$username` is
+ * `null` until a successful `Auth` sets it (or forever, in dev mode,
+ * where there is no login to know one from) — what `SHOW_CONNECTIONS`
+ * shows for a connection this server cannot otherwise name.
+ *
  * A response is written in one `fwrite()` call, no write buffering or
  * write-readiness registration — correct for the size of a response this
  * phase actually produces, and a named gap for the day a `QUERY_RESULT`
@@ -121,18 +139,26 @@ final class Session
 
     private bool $ownsOpenTransaction = false;
 
+    private ?string $username = null;
+
+    private readonly DateTimeImmutable $connectedAt;
+
     /** @param resource $socket */
     public function __construct(
         private mixed $socket,
         public readonly int $id,
         private readonly Executor $executor,
+        private readonly SessionManager $sessions,
+        private readonly Metrics $metrics,
         private readonly Logger $logger = new Logger(),
         private readonly ?Authenticator $authenticator = null,
         private readonly int $maxPreparedStatements = 100,
+        Clock $clock = new SystemClock(),
     ) {
         $this->reader = new FrameReader();
         $this->codec = new Codec();
         $this->resultEncoder = new ResultEncoder();
+        $this->connectedAt = $clock->now();
     }
 
     /** @return resource */
@@ -144,6 +170,21 @@ final class Session
     public function isClosed(): bool
     {
         return $this->closed;
+    }
+
+    public function isAuthenticated(): bool
+    {
+        return $this->authenticated;
+    }
+
+    public function username(): ?string
+    {
+        return $this->username;
+    }
+
+    public function connectedAt(): DateTimeImmutable
+    {
+        return $this->connectedAt;
     }
 
     public function handleReadable(): void
@@ -187,6 +228,9 @@ final class Session
             $message instanceof Commit => $this->handleCommit($message),
             $message instanceof Rollback => $this->handleRollback($message),
             $message instanceof Savepoint => $this->handleSavepoint($message),
+            $message instanceof ShowStatus => $this->handleShowStatus($message),
+            $message instanceof ShowConnections => $this->handleShowConnections($message),
+            $message instanceof Kill => $this->handleKill($message),
             $message instanceof Ping => $this->send(new Pong()),
             $message instanceof Goodbye => $this->close(),
             default => $this->rejectUnsupported($message),
@@ -226,6 +270,7 @@ final class Session
         }
 
         $this->authenticated = true;
+        $this->username = $auth->username;
         $this->send(new AuthOk((string) $this->id, time()));
     }
 
@@ -347,15 +392,78 @@ final class Session
         $this->runAndRespond(fn () => $this->executor->execute(new SavepointStatement($savepoint->name)));
     }
 
+    private function handleShowStatus(ShowStatus $showStatus): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($showStatus);
+
+            return;
+        }
+
+        $this->send(new QueryResultMessage(
+            ['uptime_seconds', 'active_connections', 'total_connections', 'total_queries', 'total_errors', 'queries_per_second'],
+            [[
+                (int) round($this->metrics->uptimeSeconds()),
+                $this->sessions->count(),
+                $this->metrics->totalConnections(),
+                $this->metrics->totalQueries(),
+                $this->metrics->totalErrors(),
+                round($this->metrics->queriesPerSecond(), 3),
+            ]],
+        ));
+    }
+
+    private function handleShowConnections(ShowConnections $showConnections): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($showConnections);
+
+            return;
+        }
+
+        $rows = [];
+
+        foreach ($this->sessions->all() as $session) {
+            $rows[] = [$session->id, $session->username(), $session->connectedAt(), $session->isAuthenticated()];
+        }
+
+        $this->send(new QueryResultMessage(['id', 'username', 'connected_at', 'authenticated'], $rows));
+    }
+
+    private function handleKill(Kill $kill): void
+    {
+        if (!$this->authenticated) {
+            $this->rejectUnsupported($kill);
+
+            return;
+        }
+
+        $target = $this->sessions->find($kill->connectionId);
+
+        if ($target === null) {
+            $this->send($this->resultEncoder->encodeError(new ExecutionException(sprintf(
+                'No connection %d.',
+                $kill->connectionId,
+            ))));
+
+            return;
+        }
+
+        $target->close();
+        $this->send(new QueryResultMessage([], []));
+    }
+
     /** @param callable(): (QueryResult|int|null) $run */
     private function runAndRespond(callable $run): void
     {
         $wasInTransaction = $this->executor->inTransaction();
+        $this->metrics->recordQuery();
 
         try {
             $result = $run();
             $this->send($this->resultEncoder->encode($result));
         } catch (Throwable $e) {
+            $this->metrics->recordError();
             $this->send($this->resultEncoder->encodeError($e));
         }
 

@@ -63,6 +63,11 @@ project is built from is [PLAN.md](../PLAN.md).
 | import/export are scoped to what the protocol supports: named tables, data only | current, [why](#importexport-are-scoped-to-what-the-protocol-supports) |
 | Repl's statement completeness check is tokenize-and-look-at-the-last-token | current, [why](#repls-statement-completeness-check-is-tokenize-and-look-at-the-last-token) |
 | Connection::requireOpen() guards against a TypeError stream_select() throws on a closed resource | current, [why](#connectionrequireopen-guards-against-a-typeerror) |
+| SHOW_STATUS/SHOW_CONNECTIONS/KILL are typed messages only, never SQL grammar | current, [why](#show_statusshow_connectionskill-are-typed-messages-only) |
+| Server::serviceSession() sweeps every session for isClosed(), not only its own | current, [why](#serverservicesession-sweeps-every-session-for-isclosed) |
+| bin/minidb-server's PID-file lifecycle never talks to the server over the wire | current, [why](#bin-minidb-servers-pid-file-lifecycle-never-talks-to-the-server) |
+| SIGHUP reload is scoped to max_connections only, since nothing else can reload without a config file | current, [why](#sighup-reload-is-scoped-to-max_connections-only) |
+| --daemon refuses to run without a real --log-file | current, [why](#daemon-refuses-to-run-without-a-real---log-file) |
 
 ## One byte format for disk and wire
 
@@ -1784,3 +1789,120 @@ fresh socket, before calling `handshake()` — matching how a freshly
 `connect()`ed `Connection` already starts out (`$closed` defaults
 `false` before its own first `handshake()` runs) — and only sets it back
 to `true` if that handshake then actually fails.
+
+## SHOW_STATUS/SHOW_CONNECTIONS/KILL are typed messages only
+
+PLAN.md §10.4 illustrates `SHOW STATUS;`, `SHOW CONNECTIONS;`, `SHOW
+TABLES;`, `SHOW INDEXES FROM users;` and `KILL 42;` together, as if all
+five were SQL statements this project's grammar understands. Milestone
+18's own checklist, though, only ever claims three of the five —
+`SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>` — and `Network\Protocol\Message\ShowStatus`/
+`ShowConnections`/`Kill` already existed as typed wire messages since
+Phase 11, with `ShowStatus`'s own docblock naming Milestone 18 as the one
+that would decide what they answer with. `SHOW TABLES`/`SHOW INDEXES
+FROM` are not claimed by any milestone's checklist at all and stay
+unbuilt (a real, separate gap — see [import/export are scoped to what the
+protocol supports](#importexport-are-scoped-to-what-the-protocol-supports),
+which already leans on this).
+
+Given that, this phase implements `SHOW_STATUS`/`SHOW_CONNECTIONS`/`KILL`
+purely as the typed messages they already were, in `Network\Session` —
+not as new SQL grammar. Extending `Sql\Lexer`/`Sql\Parser`/`Sql\Ast` to
+parse `SHOW STATUS` as a real statement would mean new token types, a new
+AST node, and `Execution\Executor` dispatch for something that already
+has a working, purpose-built wire message — solving a problem this
+project does not have, for three commands out of PLAN's five that would
+still leave the other two (`SHOW TABLES`/`SHOW INDEXES`) just as
+unimplemented as before.
+
+The illustration is not abandoned, though: `Client\Connection::showStatus()`/
+`showConnections()`/`kill()` are real methods a caller can use directly,
+and `Cli\Repl` recognizes the exact plain text PLAN.md shows
+(`Cli\AdminCommand::parse()`) and translates it to those same typed
+calls — close enough to feel like the example, at a fraction of the cost
+of teaching the parser new grammar for three administration commands
+alone. `bin/minidb`'s one-shot CLI gets `status`/`connections`/`kill <id>`
+as real subcommands instead of SQL-shaped text, consistent with `user`/
+`import`/`export` already being subcommands rather than text a client has
+to sniff out of a `Query`.
+
+## Server::serviceSession() sweeps every session for isClosed()
+
+Found while testing `KILL`: closing a session from *inside a different
+session's* `handleFrame()` call (exactly what `KILL` does —
+`SessionManager::find()` plus that session's own `close()`) used to leave
+`Network\EventLoop` still watching the now-`fclose()`d socket, because
+the only place anything ever checked `Session::isClosed()` was
+`Server::serviceSession()`, and only for the *one* session whose own
+callback had just run. The next `tick()`'s `stream_select()` would then
+be handed an already-closed resource and throw a `TypeError` — "supplied
+resource is not a valid stream resource" — rather than failing gracefully
+the way a merely broken (not closed) socket does. The same sharp edge
+`Client\Connection::requireOpen()` (Phase 17) already guards against on
+the client side, just discovered on the server side this phase, by the
+one new feature (`KILL`) that lets one session's handling touch another's
+socket at all.
+
+`serviceSession()` now sweeps `SessionManager::all()` for any session
+reporting `isClosed()`, not only the one it was just servicing, right
+after every callback runs. This is a small, constant amount of extra work
+per `tick()` (one cheap boolean check per open session) next to the
+`stream_select()` call already happening once per tick regardless of how
+many sessions are open — negligible, and it catches a `KILL`-closed other
+session the moment it happens, in the same tick that caused it.
+
+## bin/minidb-server's PID-file lifecycle never talks to the server
+
+`stop`, `status` and `reload` (PLAN.md §9.1) never open a `Client\Connection`
+to the server they are acting on, even though one now exists (Phase 16).
+There is nothing a connection would buy any of the three: "is this pid
+alive" (`status`, and the check `stop`/`reload` both do before acting) is
+`posix_kill($pid, 0)`, a plain OS operation; "ask it to stop" is
+`posix_kill($pid, SIGTERM)`; "ask it to reload" is `posix_kill($pid, SIGHUP)`.
+Opening a real connection just to send a signal the OS already lets a pid
+file address directly would add a dependency on the server actually
+answering `HELLO` (impossible if it is genuinely wedged, which is exactly
+when `stop` most needs to work) for no benefit over the pid + signal pair
+every Unix service manager already uses for the same three operations.
+
+`Cli\PidFile` is the one class both halves of this phase's CLI work
+share: `Command\ServeCommand::run()` (`start`) writes it and removes it
+on clean shutdown; `Cli\ServerApplication`'s inline `stop()`/`status()`/
+`reload()` only ever read it and signal the pid it names.
+
+## SIGHUP reload is scoped to max_connections only
+
+PLAN.md's checklist says "Handle `SIGHUP` (reload)" without saying what
+should actually reload — the natural reading, "reload `config/server.php`",
+is not buildable here: no milestone's checklist ever claims loading that
+file (see [bin/minidb-server's own docblock](#bin-minidb-servers-pid-file-lifecycle-never-talks-to-the-server)'s
+neighboring reasoning), so there is no config source to re-read from at
+all.
+
+What actually *is* reloadable without one: almost nothing.
+`ServerConfig::$host`/`$port` are the listening socket a restart would be
+needed to rebind anyway; `$dataDirectory` is the one `Schema\Database`
+already open, and reopening a different one mid-flight would mean
+draining every in-flight session first — a much bigger undertaking than
+"handle a signal." `$maxConnections`, read fresh from
+`MINIDB_MAX_CONNECTIONS`, is the one setting that can genuinely change
+while the process keeps running — `Network\SessionManager::setMaxConnections()`
+just updates a plain integer field nothing else depends on being fixed at
+startup. `Server::reload()` does exactly that and nothing else, and its
+own docblock says so plainly rather than implying a fuller "reload the
+config" this project cannot yet do.
+
+## --daemon refuses to run without a real --log-file
+
+`Command\ServeCommand`'s daemonizing (`pcntl_fork()`, `posix_setsid()`,
+closing `STDIN`/`STDOUT`/`STDERR`) detaches the process from the
+terminal that started it — after that point, nothing can ever read
+whatever `Infrastructure\Logger` writes to `php://stdout`/`php://stderr`
+again. Rather than daemonize into that silence and leave an operator
+wondering why a backgrounded server produces no logs anywhere, `start
+--daemon` checks `--log-file`/`MINIDB_LOG_FILE` first and refuses
+outright, with a clear message, if it is still one of those two terminal
+streams (or left at `Logger`'s own default, which is `php://stderr`).
+A caller who wants a silent daemon can still point `--log-file` at
+`/dev/null` explicitly — this only refuses the case where losing every
+log line was probably not the intent.

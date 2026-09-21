@@ -21,14 +21,13 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 17 — CLI Client and REPL**. `bin/minidb
-connect/query/shell/import/export/user` are real: a table/json/csv/vertical
-result printer, an interactive shell with readline history and keyword
-autocompletion that accepts a statement spanning several lines, and a
-dump/restore pair scoped to named tables (there is no `SHOW TABLES` yet
-to discover a whole database on its own). `bin/minidb-user` is retired —
-`user add/remove/list` now lives under `bin/minidb` itself. Server
-administration (`SHOW STATUS`, PID file, daemonizing) is next.
+Latest finished phase: **Phase 18 — Server Administration**. `SHOW STATUS`,
+`SHOW CONNECTIONS` and `KILL <id>` work over the wire and from `bin/minidb`
+(`status`/`connections`/`kill`, and as plain text in the shell). `bin/minidb-server`
+now has a real `start`/`stop`/`status`/`reload` lifecycle: a PID file,
+`--daemon` (refusing to run without a real log file to write to once
+detached), and `SIGHUP`/`SIGTERM` handled cleanly. Backup, dump and
+restore are next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

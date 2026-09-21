@@ -32,6 +32,11 @@ use Throwable;
  * `ServerConfig::$authEnabled` decides whether every `Session` gets a real
  * `Network\Auth\Authenticator` (reading `ServerConfig::resolvedUserStorePath()`)
  * or `null` — Milestone 12's "dev mode", still the default (Phase 13).
+ *
+ * `$metrics` (Milestone 18) is the one `Metrics` instance every `Session`
+ * shares, the same way they already share `$sessions` — what `SHOW_STATUS`
+ * reports. `run()` also installs a `SIGHUP` handler calling `reload()`; see
+ * that method's own docblock for exactly what it does and does not do.
  */
 final class Server
 {
@@ -40,6 +45,8 @@ final class Server
     private readonly Database $database;
 
     private readonly SessionManager $sessions;
+
+    private readonly Metrics $metrics;
 
     private readonly EventLoop $loop;
 
@@ -55,6 +62,7 @@ final class Server
     ) {
         $this->database = Database::open($config->dataDirectory);
         $this->sessions = new SessionManager($config->maxConnections);
+        $this->metrics = new Metrics();
         $this->loop = new EventLoop();
         $this->authenticator = $config->authEnabled
             ? new Authenticator(new UserStore($config->resolvedUserStorePath()))
@@ -101,9 +109,35 @@ final class Server
             $this->logger->info('Received SIGINT, shutting down.');
             $this->loop->stop();
         });
+        pcntl_signal(SIGHUP, function (): void {
+            $this->logger->info('Received SIGHUP, reloading.');
+            $this->reload();
+        });
 
         $this->loop->run();
         $this->shutdown();
+    }
+
+    /**
+     * `SIGHUP` (`bin/minidb-server reload`). There is no `config/server.php`
+     * file support to reload from yet (a named, deliberate gap — see
+     * DECISIONS.md), and most of `ServerConfig` cannot be changed live
+     * regardless — `$host`/`$port` are the listening socket, `$dataDirectory`
+     * is the one `Schema\Database` already open. `$maxConnections`, read
+     * fresh from `MINIDB_MAX_CONNECTIONS`, is the one setting that
+     * genuinely can change without restarting anything, so it is the one
+     * thing this reloads.
+     */
+    public function reload(): void
+    {
+        $max = getenv('MINIDB_MAX_CONNECTIONS');
+
+        if ($max === false) {
+            return;
+        }
+
+        $this->sessions->setMaxConnections((int) $max);
+        $this->logger->info(sprintf('Reloaded: max_connections is now %d.', $this->sessions->maxConnections()));
     }
 
     /**
@@ -137,11 +171,14 @@ final class Server
             $connection,
             $this->nextSessionId++,
             new Executor($this->database),
+            $this->sessions,
+            $this->metrics,
             $this->logger,
             $this->authenticator,
             $this->config->maxPreparedStatements,
         );
         $this->sessions->add($session);
+        $this->metrics->recordConnection();
 
         $this->loop->onReadable($connection, function () use ($session): void {
             $this->serviceSession($session);
@@ -164,7 +201,32 @@ final class Server
             $session->close();
         }
 
-        if ($session->isClosed()) {
+        $this->reapClosedSessions();
+    }
+
+    /**
+     * Removes every session that has become closed, not only `$session`
+     * itself — `KILL` (Milestone 18) lets one session close a *different*
+     * one from inside its own `handleReadable()` call, which `close()`s
+     * that other session's socket without `EventLoop` ever being told to
+     * stop watching it. Left alone, the next `tick()`'s `stream_select()`
+     * would be handed an already-`fclose()`d resource and throw a
+     * `TypeError` rather than failing gracefully the way a merely broken
+     * socket does — the same sharp edge `Client\Connection::requireOpen()`
+     * guards against on the client side (see DECISIONS.md). Sweeping every
+     * session after any one callback runs catches this the moment it
+     * happens, in the same `tick()` that caused it, at the cost of one
+     * cheap `isClosed()` check per session on every callback — negligible
+     * next to a `stream_select()` call already happening once per `tick()`
+     * regardless of how many sessions are open.
+     */
+    private function reapClosedSessions(): void
+    {
+        foreach ($this->sessions->all() as $session) {
+            if (!$session->isClosed()) {
+                continue;
+            }
+
             $this->loop->removeReadable($session->socket());
             $this->sessions->remove($session);
             $this->logger->info(sprintf('Session %d disconnected (%d active).', $session->id, $this->sessions->count()));

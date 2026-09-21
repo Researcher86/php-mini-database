@@ -972,3 +972,91 @@ every subcommand, a round trip through `export` then `import`, an
 import stopping at its first failing statement, a REPL statement spanning
 several lines, two statements on one line, a failing statement not
 ending the session, and a lost connection ending it with a nonzero exit.
+
+## Phase 18 — Server Administration ✅
+
+Two mostly-independent halves: `SHOW_STATUS`/`SHOW_CONNECTIONS`/`KILL`
+over the wire, and `bin/minidb-server`'s own `start`/`stop`/`status`/
+`reload` process lifecycle.
+
+`Network\Metrics` is one instance shared across every `Session` (owned by
+`Server`, injected the way `SessionManager` already is) — cumulative
+counters for connections, queries and errors, plus a plain average
+queries-per-second since the process started. `SHOW_STATUS`/
+`SHOW_CONNECTIONS`/`KILL` (`Network\Session::handleShowStatus()`/
+`handleShowConnections()`/`handleKill()`) all answer with a
+`QUERY_RESULT`, the same convention every prior phase's new response
+shape has reused rather than inventing a message type for. `Session`
+gained `$username` (set on a successful `AUTH`, `null` forever in dev
+mode) and `$connectedAt` for `SHOW_CONNECTIONS`' rows, and a reference to
+both `SessionManager` and `Metrics` to read from and act on. There is no
+SQL grammar for any of this — `Sql\Lexer`/`Sql\Parser` were never taught
+`SHOW`/`KILL` — only the typed wire messages Phase 11 already defined;
+`Client\Connection` exposes them directly, `bin/minidb` gets `status`/
+`connections`/`kill <id>` as real subcommands, and `Cli\Repl` recognizes
+PLAN.md §10.4's plain text (`Cli\AdminCommand`) and translates it to the
+same typed calls, so the interactive shell still looks like the plan's
+own illustration without the parser gaining new grammar for
+administration commands alone. See DECISIONS.md.
+
+A real bug surfaced building `KILL`: one session closing a *different*
+session's socket (`SessionManager::find()` plus that session's own
+`close()`) left `Network\EventLoop` still watching the now-closed
+resource, since only the session whose own callback is running got swept
+from the loop before this phase. The next `tick()`'s `stream_select()`
+would be handed an already-`fclose()`d resource and throw a `TypeError`
+rather than fail gracefully. `Server::serviceSession()` now sweeps every
+session for `isClosed()` after any one callback runs, not only the one
+whose callback it was — the same class of sharp edge Phase 17's
+`Client\Connection::requireOpen()` already guards against on the client
+side.
+
+`bin/minidb-server` gets real subcommands (`Cli\ServerApplication`/
+`Cli\Command\ServeCommand`, matching PLAN.md §4's file layout, which
+names only `ServeCommand` — `stop`/`status`/`reload` stay inline the same
+way `connect` did in `Cli\ClientApplication`). `start` reads `--host`/
+`--port`/`--data`/`--max-connections`/`--auth-enabled`/`--log-level`/
+`--log-file` (CLI flag, then the matching `MINIDB_*` variable, then a
+default — PLAN.md §7.3's precedence minus the `config/server.php` layer,
+which no milestone's checklist actually claims building; see
+DECISIONS.md), plus `--pid-file` and `--daemon` for the process
+lifecycle. `Cli\PidFile` is what `start` writes and `stop`/`status`/
+`reload` read back — none of the three ever open a connection to the
+server they are talking about, since a pid and a signal are all any of
+them need. `start` refuses outright if the pid file already names a
+running process, and recovers cleanly from a stale one (the process
+behind it is gone). `--daemon` forks (`pcntl_fork()`), the parent exits
+immediately, and the child calls `posix_setsid()` and closes `STDIN`/
+`STDOUT`/`STDERR` — the standard minimal Unix daemonizing recipe — but
+refuses to daemonize at all if `--log-file`/`MINIDB_LOG_FILE` still names
+a terminal stream, since a detached process can never be told what it
+tried to log there again.
+
+`SIGHUP` (`reload`) is honestly scoped to the one thing that is actually
+reloadable without a config file: `Network\SessionManager::$maxConnections`,
+re-read from `MINIDB_MAX_CONNECTIONS`. `$host`/`$port` are the listening
+socket and `$dataDirectory` is the one `Schema\Database` already open —
+neither can change without restarting something, and nothing else in
+`ServerConfig` has anywhere to reload *from* yet.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Network/MetricsTest.php` (a `Tests\Support\FakeClock`,
+no sockets); `tests/Unit/Network/ServerAdminTest.php` — `SHOW_STATUS`'s
+counters after real queries and a real error, `SHOW_CONNECTIONS` listing
+every open session, `KILL` actually closing its target and freeing the
+`EventLoop`'s watch on it, killing an unknown id as a `QueryError`,
+admin commands before the handshake refused like any other message, and
+`Server::reload()` raising the connection limit live; `tests/Unit/Cli/AdminCommandTest.php`
+(pure text-parsing, no sockets); `tests/Unit/Cli/ServerApplicationTest.php` —
+real child processes for `start`/`stop`/`status`/`reload`/`--daemon`,
+including the already-running refusal, stale-pid recovery, the daemon
+requiring a real log file, and the daemon actually detaching while the
+server keeps answering queries; extended `ClientApplicationTest.php`/
+`ReplTest.php` for `status`/`connections`/`kill` and the REPL's plain-text
+recognition of them.
+
+Two boxes ticked in passing, not new to this phase: PLAN.md §2.1's CLI
+checklist had `minidb-server` unchecked despite working since Phase 12,
+and `EXPLAIN` unchecked despite working since Phase 9 — both re-verified
+against the current code and ticked now.

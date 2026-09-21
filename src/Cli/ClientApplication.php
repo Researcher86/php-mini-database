@@ -15,17 +15,24 @@ use PhpMiniDatabase\Cli\Command\UserCommand;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\ClientException;
 use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Client\ResultSet;
 
 /**
  * `bin/minidb`'s dispatcher — PLAN.md §9.2's `connect`, `query`, `shell`,
- * `import`, `export`, `user`, `backup`, `restore` subcommands, over the
- * argument shape `ArgvParser` produces.
+ * `import`, `export`, `user`, `backup`, `restore` subcommands, plus three
+ * this phase (Milestone 18) adds beyond that list: `status`,
+ * `connections`, `kill <id>` — one-shot, scriptable access to `SHOW_STATUS`/
+ * `SHOW_CONNECTIONS`/`KILL`, the typed messages `Cli\Repl` recognizes from
+ * plain text instead (`Cli\AdminCommand`) for the interactive shell. Real
+ * subcommands here, not SQL-shaped text, for the same reason `user`/
+ * `import`/`export` already are.
  *
  * `connect` has no `Command\*` class of its own (unlike every other
  * subcommand here) — PLAN.md §4's file layout does not list one either,
  * and there is little to it beyond opening a `Connection` and reporting
  * whether that worked, which is handled inline instead of promoted to an
- * eighth command class for a one-line body.
+ * eighth command class for a one-line body. `status`/`connections`/`kill`
+ * stay inline for the same reason.
  *
  * `--json`/`--csv`/`--vertical`/`--quiet` (PLAN.md §9.4) are read once,
  * globally, here — not per-statement inside `Repl` (there is no `\G`-style
@@ -41,6 +48,8 @@ final class ClientApplication
 {
     private const BOOLEAN_FLAGS = ['json', 'csv', 'vertical', 'quiet'];
 
+    private readonly ResultPrinter $printer;
+
     /**
      * @param resource $output
      * @param resource $errorOutput
@@ -49,6 +58,7 @@ final class ClientApplication
         private readonly mixed $output = STDOUT,
         private readonly mixed $errorOutput = STDERR,
     ) {
+        $this->printer = new ResultPrinter();
     }
 
     /** @param list<string> $argv everything after the script name */
@@ -75,6 +85,9 @@ final class ClientApplication
             'import' => $this->import($config, $args),
             'export' => (new ExportCommand())->run($config, $options['table'] ?? [], $options['output'][0] ?? null, $this->errorOutput),
             'user' => (new UserCommand())->run($args[0] ?? null, array_slice($args, 1), $options, $this->output, $this->errorOutput),
+            'status' => $this->runAdminQuery($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showStatus()),
+            'connections' => $this->runAdminQuery($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showConnections()),
+            'kill' => $this->kill($config, $args),
             'backup' => (new BackupCommand())->run($this->errorOutput),
             'restore' => (new RestoreCommand())->run($this->errorOutput),
             default => $this->usage(),
@@ -144,9 +157,74 @@ final class ClientApplication
         return (new ImportCommand())->run($config, $path, $this->output, $this->errorOutput);
     }
 
+    /** @param callable(Connection): ResultSet $call */
+    private function runAdminQuery(ClientConfig $config, OutputFormat $format, bool $quiet, callable $call): int
+    {
+        try {
+            $connection = Connection::connect($config);
+        } catch (ClientException $e) {
+            fwrite($this->errorOutput, $e->getMessage() . "\n");
+
+            return 1;
+        }
+
+        try {
+            $start = microtime(true);
+            $result = $call($connection);
+            $elapsed = microtime(true) - $start;
+
+            $this->printer->print($result, $format, $this->output);
+
+            if (!$quiet) {
+                fwrite($this->output, $this->printer->statusLine($result, $elapsed) . "\n");
+            }
+
+            return 0;
+        } catch (ClientException $e) {
+            fwrite($this->errorOutput, 'ERROR: ' . $e->getMessage() . "\n");
+
+            return 1;
+        } finally {
+            $connection->close();
+        }
+    }
+
+    /** @param list<string> $args */
+    private function kill(ClientConfig $config, array $args): int
+    {
+        $id = $args[0] ?? null;
+
+        if ($id === null || !ctype_digit($id)) {
+            fwrite($this->errorOutput, "kill requires a numeric connection id.\n");
+
+            return 1;
+        }
+
+        try {
+            $connection = Connection::connect($config);
+        } catch (ClientException $e) {
+            fwrite($this->errorOutput, $e->getMessage() . "\n");
+
+            return 1;
+        }
+
+        try {
+            $connection->kill((int) $id);
+            fwrite($this->output, "Connection {$id} killed.\n");
+
+            return 0;
+        } catch (ClientException $e) {
+            fwrite($this->errorOutput, 'ERROR: ' . $e->getMessage() . "\n");
+
+            return 1;
+        } finally {
+            $connection->close();
+        }
+    }
+
     private function usage(): int
     {
-        fwrite($this->errorOutput, "Usage: minidb <connect|query|shell|import|export|user|backup|restore> ...\n");
+        fwrite($this->errorOutput, "Usage: minidb <connect|query|shell|import|export|user|status|connections|kill|backup|restore> ...\n");
 
         return 1;
     }

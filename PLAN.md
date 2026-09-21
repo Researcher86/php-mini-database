@@ -69,7 +69,7 @@
 - [x] Max connections limit.
 - [x] Graceful shutdown.
 - [x] Query and error logging.
-- [ ] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
+- [x] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
 
 #### Client
 - [x] PHP client library.
@@ -86,8 +86,8 @@
 - [ ] Backup/restore.
 
 #### Other
-- [ ] `EXPLAIN` query plan.
-- [ ] Metrics: connections, queries/sec, errors.
+- [x] `EXPLAIN` query plan.
+- [x] Metrics: connections, queries/sec, errors.
 - [ ] Configuration via file + ENV + flags.
 
 ### 2.2. Non-Functional Requirements
@@ -1110,12 +1110,12 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 18. Server Administration
 
-- [ ] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
-- [ ] Metrics: connections, queries/sec, errors.
-- [ ] PID file.
-- [ ] Daemonize (`--daemon`).
-- [ ] Handle `SIGHUP` (reload), `SIGTERM` (graceful stop).
-- [ ] Administration tests.
+- [x] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
+- [x] Metrics: connections, queries/sec, errors.
+- [x] PID file.
+- [x] Daemonize (`--daemon`).
+- [x] Handle `SIGHUP` (reload), `SIGTERM` (graceful stop).
+- [x] Administration tests.
 
 **Estimate:** 4–5 days.
 
@@ -1445,7 +1445,7 @@ Client                          Server
 - [x] Milestone 15. Transactions over the Network.
 - [x] Milestone 16. Client Library.
 - [x] Milestone 17. CLI Client and REPL.
-- [ ] Milestone 18. Server Administration.
+- [x] Milestone 18. Server Administration.
 - [ ] Milestone 19. Backup, Dump, Restore.
 - [ ] Milestone 20. Testing, Optimization, Documentation.
 

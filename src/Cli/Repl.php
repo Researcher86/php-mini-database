@@ -38,7 +38,12 @@ use Throwable;
  * rather than an error, the same as a real SQL shell's multi-line input.
  * One buffered line may still hold more than one statement
  * (`SELECT 1; SELECT 2;`) — `SqlSplitter` is what splits it, the same
- * class `Command\ImportCommand` uses for a dump file.
+ * class `Command\ImportCommand` uses for a dump file. Each resulting
+ * statement is checked against `AdminCommand::parse()` first — PLAN.md
+ * §10.4's `SHOW STATUS`/`SHOW CONNECTIONS`/`KILL <id>`, recognized as
+ * plain text rather than real SQL grammar (see that class's own
+ * docblock) and dispatched to `Client\Connection`'s matching typed-message
+ * method instead of `query()`.
  *
  * A `ClientException` with `$errorCode !== null` is a normal failed
  * statement (bad SQL, a constraint violation) - reported, and the REPL
@@ -145,9 +150,26 @@ final class Repl
     /** Runs one statement. Returns `false` if the REPL should stop. */
     private function runOne(string $sql): bool
     {
+        $admin = AdminCommand::parse($sql);
+
         try {
             $start = microtime(true);
-            $result = $this->connection->query($sql);
+
+            if ($admin?->kind === AdminCommandKind::KILL) {
+                $this->connection->kill($admin->connectionId);
+
+                if (!$this->quiet) {
+                    fwrite($this->output, sprintf("Connection %d killed.\n", $admin->connectionId));
+                }
+
+                return true;
+            }
+
+            $result = match ($admin?->kind) {
+                AdminCommandKind::SHOW_STATUS => $this->connection->showStatus(),
+                AdminCommandKind::SHOW_CONNECTIONS => $this->connection->showConnections(),
+                null => $this->connection->query($sql),
+            };
             $elapsed = microtime(true) - $start;
 
             $this->printer->print($result, $this->format, $this->output);

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Tests\Unit\Cli;
 
 use PhpMiniDatabase\Cli\ClientApplication;
+use PhpMiniDatabase\Client\ClientConfig;
+use PhpMiniDatabase\Client\Connection;
 use PhpMiniDatabase\Tests\Support\RunningServer;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
@@ -232,5 +234,58 @@ final class ClientApplicationTest extends TestCase
 
         self::assertSame(1, $exitCode);
         self::assertStringContainsString('Usage: minidb', $this->errorText());
+    }
+
+    public function testStatusReportsCounters(): void
+    {
+        $exitCode = $this->runCli(['status', '--port', (string) self::PORT]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('active_connections', $this->outputText());
+        self::assertStringContainsString('queries_per_second', $this->outputText());
+    }
+
+    public function testConnectionsListsTheCallingSession(): void
+    {
+        $exitCode = $this->runCli(['connections', '--port', (string) self::PORT, '--json', '--quiet']);
+
+        self::assertSame(0, $exitCode);
+        $rows = json_decode($this->outputText(), true);
+        self::assertCount(1, $rows);
+        self::assertArrayHasKey('id', $rows[0]);
+    }
+
+    public function testKillClosesTheNamedConnection(): void
+    {
+        // The CLI's own "connections" subcommand opens a fresh connection
+        // and closes it again before returning - by the time it could
+        // print an id, that session would already be gone. A separate,
+        // still-open connection is needed as the actual victim, asking
+        // about itself while it is the only session so the one row it
+        // gets back is unambiguously its own id.
+        $victim = Connection::connect(new ClientConfig(port: self::PORT));
+        $victimId = $victim->showConnections()->fetch()['id'];
+
+        $exitCode = $this->runCli(['kill', (string) $victimId, '--port', (string) self::PORT]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString("Connection {$victimId} killed.", $this->outputText());
+        self::assertFalse($victim->isAlive());
+    }
+
+    public function testKillOfAnUnknownConnectionFails(): void
+    {
+        $exitCode = $this->runCli(['kill', '999999', '--port', (string) self::PORT]);
+
+        self::assertSame(1, $exitCode);
+        self::assertStringContainsString('ERROR', $this->errorText());
+    }
+
+    public function testKillWithoutANumericIdFails(): void
+    {
+        $exitCode = $this->runCli(['kill', '--port', (string) self::PORT]);
+
+        self::assertSame(1, $exitCode);
+        self::assertStringContainsString('requires a numeric connection id', $this->errorText());
     }
 }

@@ -35,8 +35,9 @@ trait RunningServer
 
     /**
      * @param array<string, string> $extraEnv
+     * @param list<string>          $extraArgs appended after the `start` subcommand
      */
-    protected function startServer(string $dataDirectory, int $port, array $extraEnv = []): void
+    protected function startServer(string $dataDirectory, int $port, array $extraEnv = [], array $extraArgs = []): void
     {
         $binary = dirname(__DIR__, 2) . '/bin/minidb-server';
 
@@ -53,7 +54,7 @@ trait RunningServer
             2 => ['pipe', 'w'],
         ];
 
-        $process = proc_open(['php', $binary], $descriptors, $pipes, dirname(__DIR__, 2), $env);
+        $process = proc_open(['php', $binary, 'start', ...$extraArgs], $descriptors, $pipes, dirname(__DIR__, 2), $env);
 
         if ($process === false) {
             throw new RuntimeException('Could not start bin/minidb-server.');

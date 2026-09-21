@@ -89,11 +89,9 @@ implements this" on an interface) — `Codec::decode()` dispatches to the
 right one directly, by `MessageType`, the same way `Sql\Parser::statement()`
 dispatches on a `TokenType`.
 
-`COPY_IN`/`COPY_OUT`'s row format, and what `SHOW_STATUS`/`SHOW_CONNECTIONS`
-actually report, are open: PLAN.md names the messages but not their payload,
-and nothing before Milestone 18 (Server Administration) or 19 (Backup,
-Dump, Restore) needs them designed. Their frame format is already settled —
-`Codec` already round-trips them — only their contents remain to be defined.
+`COPY_IN`/`COPY_OUT`'s row format is still open — nothing before Milestone
+19 (Backup, Dump, Restore) needs it designed. `SHOW_STATUS`/`SHOW_CONNECTIONS`/
+`KILL` are settled as of Milestone 18 — see below.
 
 ## Codec
 
@@ -300,12 +298,40 @@ message or as `Query` SQL text) and rolls it back automatically on
 disconnect if so — a session that never opened one, or already closed it,
 does nothing extra on its way out.
 
+## Server administration
+
+`SHOW_STATUS`, `SHOW_CONNECTIONS` and `KILL` (Milestone 18) all answer
+with a `QUERY_RESULT` too, like everything else in this protocol that has
+something to report — no new message shapes invented for them.
+
+`SHOW_STATUS` replies with one row: `uptime_seconds`, `active_connections`,
+`total_connections`, `total_queries`, `total_errors`, `queries_per_second` —
+`Network\Metrics`'s cumulative counters (shared across every `Session`,
+owned by `Server`) plus `Network\SessionManager::count()` for the one
+that is not cumulative. `queries_per_second` is a plain average since the
+server started, not a live sliding-window rate.
+
+`SHOW_CONNECTIONS` replies with one row per currently open session: `id`,
+`username` (`NULL` until a successful `AUTH`, or always, in dev mode),
+`connected_at`, `authenticated`. `KILL <id>` closes that session's socket
+and answers with an empty `QUERY_RESULT` — the same "nothing to report"
+convention `BEGIN`/`COMMIT` already use — or a `QueryError` naming an
+unknown id, the same shape `EXECUTE` of an unknown prepared statement
+already uses.
+
+There is no SQL-level `SHOW STATUS;`/`KILL 42;` — PLAN.md §10.4 shows
+them as if they were SQL, but `Sql\Lexer`/`Sql\Parser` were never taught
+this grammar; a client reaches these only through the typed messages
+above. `Client\Connection` exposes `showStatus()`/`showConnections()`/
+`kill()` directly, and `Cli\Repl` recognizes the plain text PLAN.md shows
+(`Cli\AdminCommand`) and translates it to the same typed calls — see
+DECISIONS.md.
+
 ## What is deliberately not here yet
 
 - **Chunked result streaming.** See `QUERY_RESULT` above.
-- **`COPY_IN`/`COPY_OUT`'s row format**, and **`SHOW_STATUS`/`SHOW_CONNECTIONS`'s
-  response shape** — deferred to the milestones that give them a reason to
-  exist.
+- **`COPY_IN`/`COPY_OUT`'s row format** — deferred to Milestone 19
+  (Backup, Dump, Restore), which gives it a reason to exist.
 - **Idle and query timeouts.** `ServerConfig::$idleTimeoutSeconds`/
   `$queryTimeoutSeconds` are recorded but not enforced — `EventLoop` has no
   per-socket elapsed-time tracking yet. A session's automatic rollback on

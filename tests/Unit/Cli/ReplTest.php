@@ -177,4 +177,59 @@ final class ReplTest extends TestCase
         self::assertSame(1, $exitCode);
         self::assertStringContainsString('ERROR', $this->contents($output));
     }
+
+    public function testShowStatusAndShowConnectionsAreRecognizedAsAdminCommands(): void
+    {
+        $output = $this->stream();
+        $repl = new Repl(
+            $this->connection,
+            OutputFormat::TABLE,
+            true,
+            $output,
+            $this->scriptedReadLine(['show status;', 'SHOW CONNECTIONS;']),
+        );
+
+        $exitCode = $repl->run();
+
+        self::assertSame(0, $exitCode);
+        $text = $this->contents($output);
+        self::assertStringContainsString('active_connections', $text);
+        self::assertStringContainsString('| username', $text);
+    }
+
+    public function testKillIsRecognizedAsAnAdminCommand(): void
+    {
+        // $this->connection (the REPL's own) is already open from setUp(),
+        // so a fresh victim connection is never "the only session" the
+        // way ServerAdminTest's equivalent test can rely on - its own id
+        // has to be picked out from $this->connection's own SHOW_CONNECTIONS
+        // as the row that is not $this->connection's own id instead.
+        $selfId = $this->connection->showConnections()->fetch()['id'];
+
+        $secondConnection = Connection::connect(new ClientConfig(port: self::PORT));
+
+        $victimId = null;
+
+        foreach ($this->connection->showConnections()->fetchAll() as $row) {
+            if ($row['id'] !== $selfId) {
+                $victimId = $row['id'];
+            }
+        }
+
+        self::assertNotNull($victimId);
+
+        $output = $this->stream();
+        $repl = new Repl(
+            $this->connection,
+            OutputFormat::TABLE,
+            false,
+            $output,
+            $this->scriptedReadLine(["kill {$victimId};"]),
+        );
+
+        $repl->run();
+
+        self::assertStringContainsString("Connection {$victimId} killed.", $this->contents($output));
+        self::assertFalse($secondConnection->isAlive());
+    }
 }

@@ -4,38 +4,18 @@
 declare(strict_types=1);
 
 /**
- * Starts the TCP server — PLAN.md §7.2's environment variables, with no
- * flag parsing or `config/server.php` file support yet (Milestone 18's
- * job, alongside the PID file and start/stop/status/reload lifecycle those
- * flags exist for — not Milestone 17, which builds the CLIENT's `bin/minidb`
- * and leaves this script alone; a citation this docblock previously got
- * wrong): this is the minimal entrypoint Milestone 12 needs to make the
- * server something a real process can run, not only something tests drive
- * by calling methods directly. `MINIDB_AUTH_ENABLED` is not one of §7.2's
- * named variables — added because Milestone 13 needs some way to turn on
- * `ServerConfig::$authEnabled` from outside a test, the same reasoning
- * that already added `MINIDB_LOG_FILE` in Milestone 12.
+ * The server CLI — PLAN.md §9.1: `start`, `stop`, `status`, `reload`.
+ * `start` reads `--host`/`--port`/`--data`/`--max-connections`/
+ * `--auth-enabled`/`--log-level`/`--log-file` (CLI flags, then the
+ * matching `MINIDB_*` environment variable, then a default — PLAN.md
+ * §7.3's precedence, minus the `config/server.php` file layer no
+ * milestone's checklist ever claims building; see DECISIONS.md), plus
+ * `--pid-file` and `--daemon` for the process lifecycle `stop`/`status`/
+ * `reload` need a pid to act on.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use PhpMiniDatabase\Infrastructure\Logger;
-use PhpMiniDatabase\Infrastructure\LogLevel;
-use PhpMiniDatabase\Network\Server;
-use PhpMiniDatabase\Network\ServerConfig;
+use PhpMiniDatabase\Cli\ServerApplication;
 
-$dataDirectory = getenv('MINIDB_DATA') ?: (getcwd() . '/data/mydb');
-$logLevel = LogLevel::tryFrom(strtolower((string) (getenv('MINIDB_LOG_LEVEL') ?: 'info'))) ?? LogLevel::INFO;
-$logFile = getenv('MINIDB_LOG_FILE') ?: 'php://stderr';
-
-$config = new ServerConfig(
-    dataDirectory: $dataDirectory,
-    host: getenv('MINIDB_HOST') ?: '127.0.0.1',
-    port: (int) (getenv('MINIDB_PORT') ?: 5433),
-    maxConnections: (int) (getenv('MINIDB_MAX_CONNECTIONS') ?: 100),
-    authEnabled: in_array(strtolower((string) (getenv('MINIDB_AUTH_ENABLED') ?: 'false')), ['1', 'true', 'yes'], true),
-);
-
-$server = new Server($config, new Logger($logFile, $logLevel));
-$server->start();
-$server->run();
+exit((new ServerApplication())->run(array_slice($_SERVER['argv'], 1)));

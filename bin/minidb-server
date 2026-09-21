@@ -5,8 +5,11 @@ declare(strict_types=1);
 
 /**
  * Starts the TCP server — PLAN.md §7.2's environment variables, with no
- * flag parsing or `config/server.php` file support yet (Milestone 17's
- * job): this is the minimal entrypoint Milestone 12 needs to make the
+ * flag parsing or `config/server.php` file support yet (Milestone 18's
+ * job, alongside the PID file and start/stop/status/reload lifecycle those
+ * flags exist for — not Milestone 17, which builds the CLIENT's `bin/minidb`
+ * and leaves this script alone; a citation this docblock previously got
+ * wrong): this is the minimal entrypoint Milestone 12 needs to make the
  * server something a real process can run, not only something tests drive
  * by calling methods directly. `MINIDB_AUTH_ENABLED` is not one of §7.2's
  * named variables — added because Milestone 13 needs some way to turn on

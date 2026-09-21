@@ -906,3 +906,69 @@ firing. The write timeout is implemented the same way as the read timeout
 but is not independently exercised — reliably forcing a loopback socket's
 write to block needs its kernel send buffer full, which this suite does
 not attempt to simulate; see DECISIONS.md.
+
+## Phase 17 — CLI Client and REPL ✅
+
+`bin/minidb` — PLAN.md §9.2/§9.3's `connect`, `query`, `shell`, `import`,
+`export`, `user` subcommands are real; `backup`/`restore` are recognized
+subcommands that print an honest "not implemented yet, see Milestone 19"
+rather than improvising a backup format the plan gives a later milestone
+to design. `bin/minidb-user` (Phase 13) is retired: its logic now lives
+in `Cli\Command\UserCommand`, reached as `bin/minidb user ...` — the
+single entrypoint PLAN.md's file layout always showed, `bin/minidb-user`
+having only existed because `bin/minidb` itself did not yet.
+
+`Cli\ArgvParser` splits `argv` into a command, positional args, and
+`--name value` options (repeatable, e.g. `--table users --table posts`),
+generalized from `bin/minidb-user`'s own parser to also support
+value-less boolean flags (`--json`, `--quiet`) from an explicit list,
+rather than guessing from context. `Cli\OutputFormat` picks table (the
+default)/json/csv/vertical from those flags; `Cli\ResultPrinter` renders
+each, plus the `N row(s) in set|affected (X sec)` status line every
+command prints unless `--quiet`.
+
+`import`/`export` are scoped to what the protocol can actually support:
+there is no `SHOW TABLES` (no SQL statement, no wire message), so
+`export` cannot discover a database's tables on its own — every table
+has to be named with `--table`, repeatable — and there is no way to ask
+for a table's schema either, so only `INSERT` statements are written,
+data without `CREATE TABLE`. `Cli\SqlSplitter` (reusing `Sql\Lexer::tokenize()`,
+already quote- and comment-aware) is what lets `import` and `Cli\Repl`
+both split a dump file or a REPL line into individual statements, since
+`Message\Query` only ever carries one at a time.
+
+`Cli\Repl` reads a line at a time, buffering across lines until tokenizing
+what has been typed so far both succeeds and ends in a `;` — an
+unterminated string or an unfinished `CREATE TABLE` reads as "keep going",
+not an error, the same as a real SQL shell's multi-line input. History
+and autocompletion come from `ext-readline` when present (a graceful
+fallback to plain `fgets(STDIN)` otherwise); completion is keyword-only,
+seeded from `Sql\TokenType::keywords()` — the same reason `export` cannot
+discover tables applies to completing their names too.
+
+Fixing a real bug found while testing: `Client\Connection::query()` on an
+already-closed connection previously crashed with an uncaught `TypeError`
+from `stream_select()` instead of a clean `ClientException` — `send()`/
+`receive()` now check `$closed` first (`requireOpen()`), and
+`reconnect()`'s internal ordering had to change to flip `$closed` back to
+`false` *before* calling `handshake()` rather than after, to avoid the
+same new guard blocking its own reconnection attempt.
+
+Two boxes fixed in passing, not new to this phase: PLAN.md §2.1's CLI
+checklist had `minidb-server` unchecked despite it working since Phase 12;
+and `bin/minidb-server`'s own docblock cited "Milestone 17" as the future
+home of its `--host`/`--port`/`--config` flag parsing, which actually
+belongs to Milestone 18's PID-file/start-stop-status-reload lifecycle —
+corrected, and left untouched otherwise, since retrofitting flags with no
+lifecycle around them yet would be premature.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Cli/SqlSplitterTest.php`, `ArgvParserTest.php`,
+`OutputFormatTest.php`, `ResultPrinterTest.php` (all pure logic, no
+sockets); `tests/Unit/Cli/ClientApplicationTest.php` and `ReplTest.php`
+against a real `bin/minidb-server` child process via `RunningServer` —
+every subcommand, a round trip through `export` then `import`, an
+import stopping at its first failing statement, a REPL statement spanning
+several lines, two statements on one line, a failing statement not
+ending the session, and a lost connection ending it with a nonzero exit.

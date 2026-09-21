@@ -239,9 +239,10 @@ sketches work at all without an extra round trip to fetch it (at `HELLO_ACK`
 time the server does not yet know which user is connecting). See
 DECISIONS.md for the full reasoning and its cost.
 
-`bin/minidb-user add/remove/list` edits `users.json` directly, without a
-server or a client connection — see DECISIONS.md for why this is not
-`bin/minidb user`, the client subcommand PLAN.md §9.2 shows.
+`bin/minidb user add/remove/list` edits `users.json` directly, without a
+server or a client connection — see DECISIONS.md for why it stays a local
+file operation rather than a wire request, even now that it lives under
+the same `bin/minidb` PLAN.md §9.2 shows.
 
 ## Prepared statements
 

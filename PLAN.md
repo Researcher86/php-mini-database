@@ -80,9 +80,9 @@
 - [x] Transaction support.
 
 #### CLI
-- [ ] `minidb-server` — start the server.
-- [ ] `minidb` — CLI client with REPL.
-- [ ] Import/export SQL dump.
+- [x] `minidb-server` — start the server.
+- [x] `minidb` — CLI client with REPL.
+- [x] Import/export SQL dump.
 - [ ] Backup/restore.
 
 #### Other
@@ -1099,10 +1099,10 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 17. CLI Client and REPL
 
-- [ ] `bin/minidb` with commands `connect`, `query`, `shell`, `import`, `export`, `user`, `backup`, `restore`.
-- [ ] REPL with history and autocompletion.
-- [ ] Output in table/json/csv/vertical.
-- [ ] CLI tests.
+- [x] `bin/minidb` with commands `connect`, `query`, `shell`, `import`, `export`, `user`, `backup`, `restore`.
+- [x] REPL with history and autocompletion.
+- [x] Output in table/json/csv/vertical.
+- [x] CLI tests.
 
 **Estimate:** 5–6 days.
 
@@ -1444,7 +1444,7 @@ Client                          Server
 - [x] Milestone 14. Prepared Statements.
 - [x] Milestone 15. Transactions over the Network.
 - [x] Milestone 16. Client Library.
-- [ ] Milestone 17. CLI Client and REPL.
+- [x] Milestone 17. CLI Client and REPL.
 - [ ] Milestone 18. Server Administration.
 - [ ] Milestone 19. Backup, Dump, Restore.
 - [ ] Milestone 20. Testing, Optimization, Documentation.

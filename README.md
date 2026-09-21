@@ -21,12 +21,14 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 16 — Client Library**. A real PHP client:
-`Connection::connect($config)`, `query()`/`execute()` with bound
-parameters, `prepare()`/`Statement`, transactions, independent
-connect/read/write timeouts, a `ConnectionPool` that reconnects a dead
-connection instead of handing one out broken, and one exception type
-(`ClientException`) for all of it. A CLI client and REPL are next.
+Latest finished phase: **Phase 17 — CLI Client and REPL**. `bin/minidb
+connect/query/shell/import/export/user` are real: a table/json/csv/vertical
+result printer, an interactive shell with readline history and keyword
+autocompletion that accepts a statement spanning several lines, and a
+dump/restore pair scoped to named tables (there is no `SHOW TABLES` yet
+to discover a whole database on its own). `bin/minidb-user` is retired —
+`user add/remove/list` now lives under `bin/minidb` itself. Server
+administration (`SHOW STATUS`, PID file, daemonizing) is next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

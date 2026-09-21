@@ -111,22 +111,25 @@ final class Connection
     {
         if (!$this->closed) {
             @fclose($this->socket);
-            $this->closed = true;
         }
 
         $socket = self::openSocket($this->config);
         $this->socket = $socket;
         $this->reader = new FrameReader();
+        // Flipped before handshake(), not after: send()/receive() (which
+        // handshake() itself calls) refuse to run at all once $closed is
+        // true, via requireOpen() - the same guard connect()'s own,
+        // freshly-constructed Connection satisfies by starting out false.
+        $this->closed = false;
 
         try {
             $this->handshake();
         } catch (Throwable $e) {
+            $this->closed = true;
             @fclose($socket);
 
             throw $e;
         }
-
-        $this->closed = false;
     }
 
     /** @param list<mixed> $parameters */
@@ -238,6 +241,24 @@ final class Connection
         @fclose($this->socket);
     }
 
+    /**
+     * `stream_select()` throws a `TypeError` given an already-closed
+     * resource rather than failing gracefully the way it does for a
+     * *broken* one — a real difference this project's other non-blocking
+     * socket code (`Network\Acceptor`/`Session`) never has to guard
+     * against, since nothing there keeps a `Session` object alive past
+     * closing its socket the way a caller may keep a `Connection` alive
+     * past `close()`. Checked at both `send()` and `receive()`, the two
+     * entry points every public method here funnels through, so using a
+     * closed connection is always a clean `ClientException`.
+     */
+    private function requireOpen(): void
+    {
+        if ($this->closed) {
+            throw new ClientException('This connection is closed.');
+        }
+    }
+
     private function handshake(): void
     {
         $this->send(new Hello(Frame::CURRENT_VERSION, self::CLIENT_NAME, self::CLIENT_VERSION));
@@ -297,11 +318,13 @@ final class Connection
 
     private function send(Message $message): void
     {
+        $this->requireOpen();
         $this->writeAll($this->codec->encode($message)->toBytes());
     }
 
     private function receive(): Message
     {
+        $this->requireOpen();
         $frame = $this->readFrame();
 
         try {

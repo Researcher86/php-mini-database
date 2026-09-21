@@ -51,7 +51,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | A user's salt is derived from their username, not stored | current, [why](#a-users-salt-is-derived-from-their-username-not-stored) |
 | Password hashing uses raw `sodium_crypto_pwhash()`, not `password_hash()` | current, [why](#password-hashing-uses-raw-sodium_crypto_pwhash-not-password_hash) |
 | Login throttling is per username, in memory, for the process's life | current, [why](#login-throttling-is-per-username-in-memory-for-the-processs-life) |
-| User management is its own local CLI script, not a network client command | current, [why](#user-management-is-its-own-local-cli-script-not-a-network-client-command) |
+| User management is its own local CLI script, not a network client command | superseded, [why](#user-management-is-its-own-local-cli-script-not-a-network-client-command) — see [User management stays local, now under bin/minidb itself](#user-management-stays-local-now-under-binminidb-itself) |
 | A prepared statement caches the parsed AST, not a plan; it is parse-once, not plan-once | current, [why](#a-prepared-statement-is-parse-once-not-plan-once) |
 | PREPARE and CLOSE_STMT failures reuse QueryError; there is no dedicated failure message | current, [why](#prepare-and-close_stmt-failures-reuse-queryerror) |
 | A session's disconnect rolls back its own open transaction, judged by watching Executor::inTransaction() flip, not by trusting message type | current, [why](#a-sessions-disconnect-rolls-back-its-own-open-transaction) |
@@ -59,6 +59,10 @@ project is built from is [PLAN.md](../PLAN.md).
 | Connection uses stream_select for its own read/write timeouts, not stream_set_timeout | current, [why](#connection-uses-stream_select-for-its-own-readwrite-timeouts) |
 | ConnectionPool tests a connection on acquire, not on release | current, [why](#connectionpool-tests-a-connection-on-acquire-not-on-release) |
 | Client tests run a real bin/minidb-server child process, not Server::tick() driven by hand | current, [why](#client-tests-run-a-real-binminidb-server-child-process) |
+| User management stays local, now under bin/minidb itself | current, [why](#user-management-stays-local-now-under-binminidb-itself) |
+| import/export are scoped to what the protocol supports: named tables, data only | current, [why](#importexport-are-scoped-to-what-the-protocol-supports) |
+| Repl's statement completeness check is tokenize-and-look-at-the-last-token | current, [why](#repls-statement-completeness-check-is-tokenize-and-look-at-the-last-token) |
+| Connection::requireOpen() guards against a TypeError stream_select() throws on a closed resource | current, [why](#connectionrequireopen-guards-against-a-typeerror) |
 
 ## One byte format for disk and wire
 
@@ -1676,3 +1680,107 @@ uses per test method), and a fixed, distinct port per test class rather
 than an OS-assigned one — `port: 0`'s actual bound port is only knowable
 in-process (`Server::localAddress()`), and `bin/minidb-server` as a
 subprocess exposes no equivalent way to report it back.
+
+## User management stays local, now under bin/minidb itself
+
+Supersedes [User management is its own local CLI script, not a network
+client command](#user-management-is-its-own-local-cli-script-not-a-network-client-command),
+Phase 13's decision — written before this project's own wire protocol was
+fully built out, on the expectation that "Milestone 16 [would] implement
+[`bin/minidb user`] for real, as a thin wrapper that actually does go
+over the wire once a client exists to send `AUTH` through." That
+expectation turned out wrong once there was an actual client to check it
+against: PLAN.md §5.3's message table has no wire operation for creating,
+removing or listing users at all — `HELLO`/`AUTH`/`QUERY`/`PREPARE`/
+`EXECUTE`/transaction control/`PING`/`GOODBYE`/`SHOW_STATUS`/
+`SHOW_CONNECTIONS`/`KILL`, and nothing named "add a user." There was
+never a wire request for `bin/minidb user` to become a "real" thin
+wrapper around.
+
+Given that, `user add`/`remove`/`list` stays exactly what Phase 13 built:
+a local edit to `users.json` through `Network\Auth\UserStore`, no
+connection opened. What changes this phase is only where it lives —
+`bin/minidb-user`, the standalone script Phase 13 built because
+`bin/minidb` did not exist yet, is retired, and its logic moves to
+`Cli\Command\UserCommand`, reached as `bin/minidb user ...` under the one
+entrypoint PLAN.md's own file layout (§4) always showed. Inventing a wire
+message now just to make the "real client, real wire request" version of
+this decision come true would be protocol design nobody asked for —
+Milestone 17's own checklist is about the CLI's shape, not the protocol's.
+
+## import/export are scoped to what the protocol supports
+
+PLAN.md §9.2 shows `bin/minidb export --host ... --user alice --output dump.sql`
+with no table named — implying, by its shape, that it dumps an entire
+database on its own. That is not buildable with what this project's
+protocol and SQL grammar actually expose: there is no `SHOW TABLES` (no
+SQL statement, no wire message) for a client to discover which tables
+exist, and no way to ask the server for a table's *schema* either (no
+`SHOW CREATE TABLE`, no equivalent message). A client genuinely cannot
+find out "what is in this database" beyond what it is told to look at.
+
+`Command\ExportCommand` is scoped to what actually is answerable:
+`--table <name>` (repeatable) names every table to export explicitly, and
+for each one, `SELECT *` plus its `Client\ResultSet::columns()` is enough
+to write `INSERT INTO table (col, ...) VALUES (...);` for every row —
+data, not schema, since there is no way to produce a `CREATE TABLE` for a
+table the client has never been told the definition of. `Command\ImportCommand`
+consequently expects the target tables to already exist; a dump this
+project's own `export` writes is exactly built to satisfy that.
+
+This is not the full "dump the database" tool PLAN.md's example gestures
+at, and closing that gap for real would mean adding an introspection
+statement or message this project does not have — a protocol change well
+outside "CLI Client and REPL" territory. Scoping down to what is honestly
+buildable now, and naming the gap here, was preferred over either
+inventing new protocol surface mid-milestone or building something that
+only *looks* like it dumps a whole database.
+
+## Repl's statement completeness check is tokenize-and-look-at-the-last-token
+
+`Cli\Repl` reads one line at a time and has to decide, after each one,
+whether the buffered input so far is a complete statement (run it) or
+not (read another line, with a continuation prompt) — the same problem
+every interactive SQL shell has for `CREATE TABLE users (\n  id INT\n);`
+spanning several lines.
+
+The check is: try `Sql\Lexer::tokenize()` on the whole buffer; if it
+throws, the input is not complete yet (an unterminated string is exactly
+this case — `SELECT 'still typing` fails to tokenize, which is read as
+"needs more input," not an error); if it succeeds, look at the last
+non-`EOF` token and check whether it is a `;`. This reuses the same
+lexer the server itself parses with, rather than a second, hand-rolled
+"does this look finished" heuristic that could disagree with what the
+server would actually accept — the REPL's idea of "complete" and the
+parser's idea of "complete" are, by construction, the same idea.
+
+A buffered, complete line can still hold more than one statement
+(`SELECT 1; SELECT 2;`) — `Cli\SqlSplitter` (the same class
+`Command\ImportCommand` uses for a dump file) is what splits it once the
+completeness check passes, and each resulting statement is run in turn.
+
+## Connection::requireOpen() guards against a TypeError
+
+Found while writing `ReplTest`'s "the connection dies mid-session" case:
+calling `Client\Connection::query()` (or any other method that sends a
+message) on an already-`close()`d connection crashed with an uncaught
+`TypeError` from `stream_select()` — "supplied resource is not a valid
+stream resource" — rather than the `ClientException` every other failure
+mode in this class produces. `stream_select()` fails *gracefully* (a
+warning, `false` returned) for a socket that is merely broken, but throws
+outright for one that has actually been `fclose()`d — a real, sharp edge
+`@`-suppression does not soften, since PHP 8 raises this as an exception,
+not the warning `@` exists to silence.
+
+`Connection::requireOpen()` checks `$closed` at the top of both `send()`
+and `receive()` — the two methods every public method here funnels
+through — and throws a plain `ClientException('This connection is
+closed.')` before any resource ever reaches `stream_select()`. Fixing it
+here needed one more change: `reconnect()` used to flip `$closed` back to
+`false` only *after* a successful `handshake()`, which would have made
+its own internal `send()`/`receive()` calls trip the new guard on every
+reconnect. It now flips `$closed` to `false` right after opening the
+fresh socket, before calling `handshake()` — matching how a freshly
+`connect()`ed `Connection` already starts out (`$closed` defaults
+`false` before its own first `handshake()` runs) — and only sets it back
+to `true` if that handshake then actually fails.

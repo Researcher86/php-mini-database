@@ -1,0 +1,19 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * The CLI client — PLAN.md §9.2/§9.3: `connect`, `query`, `shell`,
+ * `import`, `export`, `user`, `backup`, `restore`. `bin/minidb-user`
+ * (Milestone 13) is retired as of this phase — its `add`/`remove`/`list`
+ * logic now lives in `Cli\Command\UserCommand`, reached as
+ * `bin/minidb user ...`, exactly the single entrypoint PLAN.md's own file
+ * layout (§4) always showed. See DECISIONS.md.
+ */
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use PhpMiniDatabase\Cli\ClientApplication;
+
+exit((new ClientApplication())->run(array_slice($_SERVER['argv'], 1)));

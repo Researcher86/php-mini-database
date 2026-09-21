@@ -34,7 +34,7 @@ $finder = PhpCsFixer\Finder::create()
     ])
     ->append([
         __DIR__ . '/bin/minidb-server',
-        __DIR__ . '/bin/minidb-user',
+        __DIR__ . '/bin/minidb',
     ]);
 
 return (new PhpCsFixer\Config())

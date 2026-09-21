@@ -56,6 +56,9 @@ project is built from is [PLAN.md](../PLAN.md).
 | PREPARE and CLOSE_STMT failures reuse QueryError; there is no dedicated failure message | current, [why](#prepare-and-close_stmt-failures-reuse-queryerror) |
 | A session's disconnect rolls back its own open transaction, judged by watching Executor::inTransaction() flip, not by trusting message type | current, [why](#a-sessions-disconnect-rolls-back-its-own-open-transaction) |
 | Typed BEGIN/COMMIT/ROLLBACK/SAVEPOINT are thin wrappers around the same statement classes Query already ran | current, [why](#typed-transaction-messages-wrap-the-same-statement-classes-query-already-ran) |
+| Connection uses stream_select for its own read/write timeouts, not stream_set_timeout | current, [why](#connection-uses-stream_select-for-its-own-readwrite-timeouts) |
+| ConnectionPool tests a connection on acquire, not on release | current, [why](#connectionpool-tests-a-connection-on-acquire-not-on-release) |
+| Client tests run a real bin/minidb-server child process, not Server::tick() driven by hand | current, [why](#client-tests-run-a-real-binminidb-server-child-process) |
 
 ## One byte format for disk and wire
 
@@ -1573,3 +1576,103 @@ alone among the four keywords Phase 8's `Sql\Ast` already distinguishes
 Rather than inventing two message types the protocol's own spec does not
 have, both stay reachable exactly the way they already were before this
 phase: as plain SQL text through `Query`.
+
+## Connection uses stream_select for its own read/write timeouts
+
+`Client\ClientConfig` gives a caller three independent timeouts:
+`$connectTimeoutSeconds`, `$readTimeoutSeconds`, `$writeTimeoutSeconds`.
+The obvious PHP tool for the latter two, `stream_set_timeout()`, does not
+actually give them independence — it sets one shared timeout PHP applies
+to whichever blocking stream operation happens to be waiting, not a
+separate read budget and write budget. Using it would mean
+`ClientConfig`'s two fields promise something the mechanism underneath
+cannot deliver.
+
+`Client\Connection` puts its socket in non-blocking mode instead (the
+same choice `Network\Acceptor` already made server-side) and waits for
+readability or writability explicitly with `stream_select()` before every
+`fread()`/`fwrite()`, tracking its own deadline in PHP (`microtime(true)`
+plus the configured budget, decremented across however many partial reads
+or writes a large frame takes). This is the same primitive
+`Network\EventLoop` already uses to watch many sockets at once
+server-side (see [`Server` tests drive `tick()` by hand over a real
+socket](#server-tests-drive-tick-by-hand-over-a-real-socket)); here it is
+called once per blocking-looking request instead of once per event-loop
+tick, but it is the same mechanism, not a second one invented for the
+client side.
+
+The write-timeout half of this is real, working code, but is not
+independently exercised by a test: reliably forcing a write to a loopback
+socket to actually block requires its kernel send buffer full, and
+filling that deterministically (without a flaky, environment-dependent
+amount of data or an artificially shrunk buffer) is not something this
+suite attempts. The read-timeout half *is* tested directly
+(`ConnectionTimeoutTest`), since simulating "the other side never
+replies" needs nothing more than a listening socket that accepts a
+connection and stays silent — no buffer-filling trick required. This
+mirrors the project's existing practice of documenting a genuinely hard
+to test timing behavior rather than writing a slow or flaky test to chase
+full coverage of it (see `ServerConfig::$idleTimeoutSeconds`'s own gap).
+
+## ConnectionPool tests a connection on acquire, not on release
+
+PLAN.md §2.1 asks for "reconnect on failure" from the client's connection
+pool. Two points to check a pooled connection's health: when a caller
+returns it (`release()`) or when the next caller asks for one
+(`acquire()`). Checking on `release()` would mean paying a `PING`/`PONG`
+round trip on every single release whether or not the connection is ever
+reused again before the pool is closed; checking only on `acquire()`
+("test on borrow") pays that cost exactly once per connection that is
+actually about to be reused, and never at all for one released right
+before the pool itself is closed.
+
+`ConnectionPool::release()` therefore does nothing but push the
+connection onto the idle list, unconditionally — it has no opinion on
+whether the connection is still good. `acquire()` is the one place that
+calls `Connection::isAlive()` on a reused connection, and calls
+`Connection::reconnect()` on it — in place, keeping the same `Connection`
+object identity — if it is not. A connection is never reconnected
+*mid-request*, only in the gap between one caller's `release()` and the
+next caller's `acquire()`, since transparently retrying whatever the
+previous caller was doing (inside `query()`/`execute()` itself) could
+silently replay a write that had already reached the server once — a
+correctness hazard real connection pools are usually careful to avoid,
+and this one is too.
+
+## Client tests run a real bin/minidb-server child process
+
+Every `Network\Server` test up to this phase (`ServerTest` and its
+siblings) drives `Server::tick()` by hand, one call at a time, from
+inside the test method itself — documented in [`Server` tests drive
+`tick()` by hand over a real socket](#server-tests-drive-tick-by-hand-over-a-real-socket).
+That only works because the test method is *also* the thing making the
+client-side calls on the same real socket: nothing blocks waiting for the
+server, since the test alternates "poke the server" and "check the
+client's socket" itself.
+
+`Client\Connection` breaks that trick by design: its entire public API is
+one blocking-looking call per request (`$conn->query(...)` sends and then
+waits for its own reply before returning), because that is what a real
+caller actually wants from a client library. A test written the same way
+`ServerTest` is — one PHPUnit process, an in-process `Server`, `tick()`
+called by hand — would deadlock the moment it tried to call
+`Connection::connect()` or `query()`: nothing would ever run `tick()`
+while that call is blocked waiting for a reply, since the test method
+*is* the only thing that could call it, and it is not free to until the
+blocking call returns.
+
+`tests/Support/RunningServer` resolves this the direct way: it launches
+the real, unmodified `bin/minidb-server` as a genuine child process via
+`proc_open()`, polls a raw socket connect until it is actually listening,
+and tears it down with `proc_terminate()`/`proc_close()` afterward. This
+is a new testing pattern for this project — no earlier phase spawns a
+subprocess — but it is also the more honest one for this specific layer:
+a `Client\Connection` is built to talk to a server running in a genuinely
+separate process, so testing it against exactly that, rather than against
+an in-process simulation convenient for the *server's* own tests, is what
+actually proves it works. Each test gets its own fresh subprocess and
+temporary data directory (matching the granularity `ServerTest` already
+uses per test method), and a fixed, distinct port per test class rather
+than an OS-assigned one — `port: 0`'s actual bound port is only knowable
+in-process (`Server::localAddress()`), and `bin/minidb-server` as a
+subprocess exposes no equivalent way to report it back.

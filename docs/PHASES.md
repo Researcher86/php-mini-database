@@ -841,3 +841,68 @@ a session disconnecting mid-transaction being rolled back and freeing the
 single writer for a fresh connection, a session disconnecting *outside*
 any transaction leaving another session's open one untouched, and `BEGIN`
 before the handshake refused like any other message.
+
+## Phase 16 — Client Library ✅
+
+A real PHP client for this project's own protocol: `Client\Connection`
+(`connect()`/`query()`/`execute()`/`prepare()`/`beginTransaction()`/`commit()`/
+`rollback()`/`savepoint()`/`isAlive()`/`close()`/`reconnect()`), `Client\Statement`
+(a `PREPARE`d handle), `Client\ResultSet` (a fetched result, `fetch()`/
+`fetchAll()`/`foreach`-able/`Countable`), `Client\ClientConfig` and
+`Client\ClientException` — PLAN.md §4's file layout and §8.2's usage
+example, now real code instead of an illustration.
+
+`Connection` is a thin, blocking-looking wrapper over the same wire this
+project's server side already speaks: every public method sends one
+`Message` and waits for exactly one reply. The socket itself is
+non-blocking, and every wait goes through `stream_select()` — the same
+primitive `Network\EventLoop` already uses server-side — rather than
+`stream_set_timeout()`, because that call shares one timeout between reads
+and writes and could not give `ClientConfig`'s three separate timeouts
+(`connect`/`read`/`write`) real, independent budgets. Auth reuses
+`Network\Auth\PasswordHash`/`ScramChallenge` directly rather than
+reimplementing the challenge-response math a second time — exactly what
+their own docblocks (written back in Phase 13) already earmarked them for.
+
+`execute()` is not a second wire request: every `Query` answers with the
+same `QUERY_RESULT` regardless of statement kind, so `execute()` just
+calls `query()` and reads `ResultSet::affectedRows()` off the
+`affected_rows`-column convention `Network\Protocol\ResultEncoder`'s own
+docblock already spelled out for exactly this. `ConnectionPool` is
+"test on borrow", not "test on return": `release()` returns a connection
+to the idle list unconditionally, and `acquire()` is the one place that
+spends a `PING`/`PONG` round trip checking `isAlive()`, reconnecting in
+place via `Connection::reconnect()` if not — satisfying PLAN.md's
+"Reconnect on failure" without ever silently retrying a request that may
+have already reached the server once.
+
+The bigger decision this phase made was how to *test* a library whose
+whole API is one blocking call per request: `Network\Server`'s own tests
+(`ServerTest` and its siblings) drive `Server::tick()` by hand from the
+test method itself, which only works because the test is also the thing
+making the client calls. `Client\Connection` end to end needs something
+actually running concurrently to answer it, so `tests/Support/RunningServer`
+launches the real `bin/minidb-server` as a genuine child process via
+`proc_open()` — a new testing pattern for this project, and a more
+faithful one for this specific layer: it is the actual thing a `Connection`
+is built to talk to, not a stand-in for it. See DECISIONS.md.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Client/ResultSetTest.php` (no sockets — `fetch()`'s
+own cursor vs. `foreach`/`fetchAll()` not sharing it, the `affected_rows`
+convention, an empty DDL-shaped result); `tests/Unit/Client/ConnectionTest.php`,
+`ConnectionAuthTest.php` and `ConnectionPoolTest.php` (a real
+`bin/minidb-server` child process per test, via `RunningServer`) covering
+connect, `query()`/`execute()`, bound parameters, a `QueryError` arriving
+as a `ClientException` carrying its `ErrorCode`, prepare/execute/close,
+`BEGIN`/`SAVEPOINT`/`ROLLBACK`/`COMMIT` round-tripping through the client,
+`close()`/`reconnect()`/`isAlive()`, a closed port failing immediately,
+correct and wrong credentials against a real challenge-response handshake,
+and the pool's exhaustion, reuse, dead-connection reconnect, and `close()`
+behavior; `tests/Unit/Client/ConnectionTimeoutTest.php` (a bare, silent
+listening socket, no real server needed) for the read timeout actually
+firing. The write timeout is implemented the same way as the read timeout
+but is not independently exercised — reliably forcing a loopback socket's
+write to block needs its kernel send buffer full, which this suite does
+not attempt to simulate; see DECISIONS.md.

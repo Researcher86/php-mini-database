@@ -72,12 +72,12 @@
 - [ ] `SHOW STATUS`, `SHOW CONNECTIONS`, `KILL <id>`.
 
 #### Client
-- [ ] PHP client library.
-- [ ] Connection pool.
-- [ ] Reconnect on failure.
-- [ ] Connect/read/write timeouts.
-- [ ] Prepared statements support.
-- [ ] Transaction support.
+- [x] PHP client library.
+- [x] Connection pool.
+- [x] Reconnect on failure.
+- [x] Connect/read/write timeouts.
+- [x] Prepared statements support.
+- [x] Transaction support.
 
 #### CLI
 - [ ] `minidb-server` — start the server.
@@ -1085,13 +1085,13 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 **Goal:** convenient PHP client.
 
-- [ ] `ClientConfig`, `Connection`, `Statement`, `ResultSet`.
-- [ ] Handshake and auth in the client.
-- [ ] Connect/read/write timeouts.
-- [ ] Reconnect on failure.
-- [ ] `ConnectionPool`.
-- [ ] Error handling.
-- [ ] Client and pool tests.
+- [x] `ClientConfig`, `Connection`, `Statement`, `ResultSet`.
+- [x] Handshake and auth in the client.
+- [x] Connect/read/write timeouts.
+- [x] Reconnect on failure.
+- [x] `ConnectionPool`.
+- [x] Error handling.
+- [x] Client and pool tests.
 
 **Estimate:** 6–8 days.
 
@@ -1443,7 +1443,7 @@ Client                          Server
 - [x] Milestone 13. Authentication.
 - [x] Milestone 14. Prepared Statements.
 - [x] Milestone 15. Transactions over the Network.
-- [ ] Milestone 16. Client Library.
+- [x] Milestone 16. Client Library.
 - [ ] Milestone 17. CLI Client and REPL.
 - [ ] Milestone 18. Server Administration.
 - [ ] Milestone 19. Backup, Dump, Restore.

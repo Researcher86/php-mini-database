@@ -85,8 +85,8 @@ final class ClientApplication
             'import' => $this->import($config, $args),
             'export' => (new ExportCommand())->run($config, $options['table'] ?? [], $options['output'][0] ?? null, $this->errorOutput),
             'user' => (new UserCommand())->run($args[0] ?? null, array_slice($args, 1), $options, $this->output, $this->errorOutput),
-            'status' => $this->runAdminQuery($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showStatus()),
-            'connections' => $this->runAdminQuery($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showConnections()),
+            'status' => $this->runRequest($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showStatus()),
+            'connections' => $this->runRequest($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showConnections()),
             'kill' => $this->kill($config, $args),
             'backup' => (new BackupCommand())->run($options, $this->output, $this->errorOutput),
             'restore' => (new RestoreCommand())->run($options, $flags, $this->output, $this->errorOutput),
@@ -140,7 +140,7 @@ final class ClientApplication
             return 1;
         }
 
-        return (new QueryCommand())->run($config, $sql, $format, $quiet, $this->output, $this->errorOutput);
+        return $this->runRequest($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->query($sql));
     }
 
     /** @param list<string> $args */
@@ -158,35 +158,9 @@ final class ClientApplication
     }
 
     /** @param callable(Connection): ResultSet $call */
-    private function runAdminQuery(ClientConfig $config, OutputFormat $format, bool $quiet, callable $call): int
+    private function runRequest(ClientConfig $config, OutputFormat $format, bool $quiet, callable $call): int
     {
-        try {
-            $connection = Connection::connect($config);
-        } catch (ClientException $e) {
-            fwrite($this->errorOutput, $e->getMessage() . "\n");
-
-            return 1;
-        }
-
-        try {
-            $start = microtime(true);
-            $result = $call($connection);
-            $elapsed = microtime(true) - $start;
-
-            $this->printer->print($result, $format, $this->output);
-
-            if (!$quiet) {
-                fwrite($this->output, $this->printer->statusLine($result, $elapsed) . "\n");
-            }
-
-            return 0;
-        } catch (ClientException $e) {
-            fwrite($this->errorOutput, 'ERROR: ' . $e->getMessage() . "\n");
-
-            return 1;
-        } finally {
-            $connection->close();
-        }
+        return (new QueryCommand($this->printer))->run($config, $call, $format, $quiet, $this->output, $this->errorOutput);
     }
 
     /** @param list<string> $args */

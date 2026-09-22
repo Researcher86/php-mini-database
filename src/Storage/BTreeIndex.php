@@ -354,16 +354,7 @@ final class BTreeIndex
                 return $pageId;
             }
 
-            $entries = $this->readInternalEntries($page);
-            $child = $entries[0]['child'];
-
-            foreach ($entries as $entry) {
-                if ($entry['key'] !== null && strcmp($entry['key'], $key) <= 0) {
-                    $child = $entry['child'];
-                }
-            }
-
-            $pageId = $child;
+            $pageId = $this->childFor($this->readInternalEntries($page), $key);
         }
     }
 
@@ -394,15 +385,7 @@ final class BTreeIndex
         }
 
         $entries = $this->readInternalEntries($page);
-        $child = $entries[0]['child'];
-
-        foreach ($entries as $entry) {
-            if ($entry['key'] !== null && strcmp($entry['key'], $fullKey) <= 0) {
-                $child = $entry['child'];
-            }
-        }
-
-        $split = $this->insertIntoNode($child, $fullKey);
+        $split = $this->insertIntoNode($this->childFor($entries, $fullKey), $fullKey);
 
         if ($split === null) {
             return null;
@@ -525,6 +508,27 @@ final class BTreeIndex
         }
 
         return true;
+    }
+
+    /**
+     * Which child subtree $key belongs in: the last entry whose separator
+     * is still <= it, or entry 0's "lower than every real key on this
+     * page" pointer when none is. Relies on readInternalEntries() putting
+     * that null-key sentinel first, which its own sort guarantees.
+     *
+     * @param list<array{key: ?string, child: int}> $entries
+     */
+    private function childFor(array $entries, string $key): int
+    {
+        $child = $entries[0]['child'];
+
+        foreach ($entries as $entry) {
+            if ($entry['key'] !== null && strcmp($entry['key'], $key) <= 0) {
+                $child = $entry['child'];
+            }
+        }
+
+        return $child;
     }
 
     /**

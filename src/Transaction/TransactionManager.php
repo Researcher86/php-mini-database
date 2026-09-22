@@ -136,12 +136,25 @@ final class TransactionManager
         $this->finish($tx);
     }
 
-    /** @see commit() for why `$sync` runs before the `ROLLBACK` record, not after. */
+    /**
+     * @see commit() for why `$sync` runs before the `ROLLBACK` record, not after.
+     *
+     * The log is emptied between the undo and that barrier, because
+     * everything after the undo can still fail and leave this transaction
+     * open for the caller to retry: a retry that found the log still
+     * populated would undo every change a second time, and the second
+     * delete of an already-deleted row is a `StorageException`, which
+     * would leave the transaction permanently unable to finish. This is
+     * what `rollbackToSavepoint()` has always done with
+     * `truncateToSavepoint()` — dropping what it just undid — applied to
+     * the whole-transaction case.
+     */
     public function rollback(mixed $owner = null): void
     {
         $tx = $this->requireOwnedCurrent($owner);
 
         $this->applyUndo($tx->allRecordsReversed());
+        $tx->forgetAllRecords();
         $this->sync?->__invoke();
         $this->wal->append(WalRecord::rollback($this->wal->nextLsn(), $tx->id));
         $this->finish($tx);

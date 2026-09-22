@@ -83,6 +83,23 @@ final class Transaction
         return array_reverse($this->log);
     }
 
+    /**
+     * Empties the log, once every change in it has actually been undone —
+     * `TransactionManager::rollback()` calls this between applying the
+     * undo and its own durability barrier, so that a barrier failure
+     * leaves a transaction that is still open but has nothing left to
+     * undo. Without it, the retry that failure invites would undo every
+     * change a second time, and a second delete of an already-deleted row
+     * is a `StorageException`, not a no-op — leaving the transaction
+     * permanently unable to finish. The savepoints go with it: they index
+     * into a log that no longer exists.
+     */
+    public function forgetAllRecords(): void
+    {
+        $this->log = [];
+        $this->savepoints = [];
+    }
+
     private function savepointIndex(string $name): int
     {
         return $this->savepoints[$name] ?? throw new TransactionException(sprintf('No such savepoint "%s".', $name));

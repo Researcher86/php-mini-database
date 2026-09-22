@@ -147,13 +147,7 @@ final readonly class Planner
     /** @param list<SelectItem> $items */
     private function containsAggregate(array $items): bool
     {
-        foreach ($items as $item) {
-            if ($this->expressionContainsAggregate($item->expression)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($items, fn (SelectItem $item): bool => $this->expressionContainsAggregate($item->expression));
     }
 
     private function expressionContainsAggregate(Expression $expression): bool

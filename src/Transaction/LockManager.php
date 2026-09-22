@@ -63,7 +63,7 @@ final class LockManager
             return; // already holds the strongest lock there is
         }
 
-        $others = array_filter($holders, static fn (LockMode $m, int $holder): bool => $holder !== $txId, ARRAY_FILTER_USE_BOTH);
+        $others = array_filter($holders, static fn (int $holder): bool => $holder !== $txId, ARRAY_FILTER_USE_KEY);
 
         $compatible = match ($mode) {
             // Exclusive tolerates no other holder at all, not even another

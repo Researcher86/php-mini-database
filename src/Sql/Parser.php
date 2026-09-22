@@ -86,8 +86,14 @@ use PhpMiniDatabase\Transaction\IsolationLevel;
  */
 final class Parser
 {
-    /** Zero-argument date/time functions, legal written with no parentheses. */
-    private const NILADIC_FUNCTIONS = ['CURRENT_TIMESTAMP', 'CURRENT_DATE', 'CURRENT_TIME'];
+    /**
+     * Zero-argument date/time functions, legal written with no
+     * parentheses. `CURRENT_TIME` is deliberately not among them: this
+     * engine has no TIME type for one to be (`Schema\Type\*` goes as far
+     * as `DATE` and `DATETIME`), so accepting the spelling would only
+     * promise a value with nowhere to be stored or compared.
+     */
+    private const NILADIC_FUNCTIONS = ['CURRENT_TIMESTAMP', 'CURRENT_DATE'];
 
     /** @var list<Token> */
     private readonly array $tokens;
@@ -276,7 +282,7 @@ final class Parser
         while (true) {
             $type = match (true) {
                 $this->match(TokenType::JOIN) => JoinType::INNER,
-                $this->matchSequence(TokenType::INNER, TokenType::JOIN) => JoinType::INNER,
+                $this->matchPair(TokenType::INNER, TokenType::JOIN) => JoinType::INNER,
                 $this->matchJoinSide(TokenType::LEFT) => JoinType::LEFT,
                 $this->matchJoinSide(TokenType::RIGHT) => JoinType::RIGHT,
                 default => null,
@@ -558,6 +564,9 @@ final class Parser
             $columns = $this->identifierList();
             $this->expect(TokenType::RPAREN);
 
+            // A `CONSTRAINT <name>` given here has nowhere to go: a primary
+            // key's name is fixed ('PRIMARY', see Schema\Constraint\PrimaryKey),
+            // since that is the name the automatic index carries too.
             return new PrimaryKeyDefinition($columns);
         }
 
@@ -1135,20 +1144,19 @@ final class Parser
         return true;
     }
 
-    private function matchSequence(TokenType ...$types): bool
+    /**
+     * Two tokens consumed as one unit, or neither — both are checked
+     * before either is consumed, so a failed match leaves the position
+     * exactly where it was for the next alternative to try.
+     */
+    private function matchPair(TokenType $first, TokenType $second): bool
     {
-        foreach ($types as $ahead => $type) {
-            // $types is TokenType ...$types - $ahead is always the plain
-            // int index PHP always gives a variadic array; PHPStan just
-            // does not track that specifically through a generic foreach.
-            if (!$this->checkAhead((int) $ahead, $type)) {
-                return false;
-            }
+        if (!$this->check($first) || !$this->checkAhead(1, $second)) {
+            return false;
         }
 
-        for ($i = 0; $i < count($types); $i++) {
-            $this->advance();
-        }
+        $this->advance();
+        $this->advance();
 
         return true;
     }

@@ -65,8 +65,8 @@ final readonly class Table
         }
         $this->columnsByName = $byName;
 
-        $this->validateConstraints($name);
-        $this->validateIndexes($name);
+        $this->validateConstraints();
+        $this->validateIndexes();
     }
 
     /** @return list<Column> */
@@ -208,18 +208,18 @@ final readonly class Table
         return $this->rowFromValues($this->serializer->deserialize($record, $this->types()));
     }
 
-    private function validateConstraints(string $name): void
+    private function validateConstraints(): void
     {
         $primaryKeys = 0;
         $seenNames = [];
 
         foreach ($this->constraints as $constraint) {
             if (isset($seenNames[$constraint->name()])) {
-                throw new SchemaException(sprintf('Table "%s" declares constraint "%s" twice.', $name, $constraint->name()));
+                throw new SchemaException(sprintf('Table "%s" declares constraint "%s" twice.', $this->name, $constraint->name()));
             }
             $seenNames[$constraint->name()] = true;
 
-            $this->assertColumnsExist($name, $constraint->name(), $constraint->columns());
+            $this->assertColumnsExist($constraint->name(), $constraint->columns());
 
             if ($constraint instanceof PrimaryKey) {
                 $primaryKeys++;
@@ -228,7 +228,7 @@ final readonly class Table
                     if (!$this->columnsByName[$column]->notNull) {
                         throw new SchemaException(sprintf(
                             'Primary key column "%s.%s" must be declared NOT NULL.',
-                            $name,
+                            $this->name,
                             $column,
                         ));
                     }
@@ -237,30 +237,30 @@ final readonly class Table
         }
 
         if ($primaryKeys > 1) {
-            throw new SchemaException(sprintf('Table "%s" declares more than one PRIMARY KEY.', $name));
+            throw new SchemaException(sprintf('Table "%s" declares more than one PRIMARY KEY.', $this->name));
         }
     }
 
-    private function validateIndexes(string $name): void
+    private function validateIndexes(): void
     {
         $seenNames = [];
 
         foreach ($this->indexes as $index) {
             if (isset($seenNames[$index->name])) {
-                throw new SchemaException(sprintf('Table "%s" declares index "%s" twice.', $name, $index->name));
+                throw new SchemaException(sprintf('Table "%s" declares index "%s" twice.', $this->name, $index->name));
             }
             $seenNames[$index->name] = true;
 
-            $this->assertColumnsExist($name, $index->name, $index->columns());
+            $this->assertColumnsExist($index->name, $index->columns());
         }
     }
 
     /** @param list<string> $columns */
-    private function assertColumnsExist(string $table, string $subject, array $columns): void
+    private function assertColumnsExist(string $subject, array $columns): void
     {
         foreach ($columns as $column) {
             if (!$this->hasColumn($column)) {
-                throw new SchemaException(sprintf('"%s" on table "%s" names unknown column "%s".', $subject, $table, $column));
+                throw new SchemaException(sprintf('"%s" on table "%s" names unknown column "%s".', $subject, $this->name, $column));
             }
         }
     }

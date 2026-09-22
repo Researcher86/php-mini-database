@@ -329,17 +329,15 @@ final class Connection
         return new ResultSet($reply->columns, $reply->rows);
     }
 
+    /**
+     * A reply that carries nothing worth reading — `BEGIN`, `COMMIT`,
+     * `ROLLBACK`, `SAVEPOINT`, `KILL`. Validated exactly like a result,
+     * since on the wire it *is* one (`ResultEncoder` answers every one of
+     * them with an empty `QUERY_RESULT`), and then discarded.
+     */
     private function receiveAck(): void
     {
-        $reply = $this->receive();
-
-        if ($reply instanceof QueryError) {
-            throw ClientException::fromQueryError($reply);
-        }
-
-        if (!$reply instanceof QueryResultMessage) {
-            throw new ClientException(sprintf('Expected QUERY_RESULT, got %s.', $reply::class));
-        }
+        $this->receiveResult();
     }
 
     private function send(Message $message): void

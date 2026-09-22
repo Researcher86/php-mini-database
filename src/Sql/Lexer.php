@@ -63,7 +63,6 @@ final class Lexer
 
     private function next(): Token
     {
-        $start = $this->position;
         $char = $this->source[$this->position];
 
         return match (true) {
@@ -71,7 +70,7 @@ final class Lexer
             $char === "'" => $this->stringLiteral(),
             $this->isDigit($char) => $this->number(),
             $this->isIdentifierStart($char) => $this->identifierOrKeyword(),
-            default => $this->operator($start),
+            default => $this->operator(),
         };
     }
 
@@ -165,8 +164,10 @@ final class Lexer
         return new Token($type, $text, $start);
     }
 
-    private function operator(int $start): Token
+    private function operator(): Token
     {
+        $start = $this->position;
+
         $twoCharType = match (substr($this->source, $this->position, 2)) {
             '<=' => TokenType::LTE,
             '>=' => TokenType::GTE,

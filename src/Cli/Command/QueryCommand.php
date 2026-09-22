@@ -9,8 +9,18 @@ use PhpMiniDatabase\Cli\ResultPrinter;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\ClientException;
 use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Client\ResultSet;
 
-/** `bin/minidb query ... "SQL"` — PLAN.md §9.2: one statement, one connection, then exit. */
+/**
+ * `bin/minidb query ... "SQL"` — PLAN.md §9.2: one request, one
+ * connection, then exit.
+ *
+ * `$call` rather than a SQL string, because `status` and `connections`
+ * (Milestone 18) are the same command with a different request:
+ * connect-or-fail, time it, print the rows, print the status line unless
+ * `--quiet`, close whatever happened. They used to carry their own copy
+ * of all of that in `Cli\ClientApplication`.
+ */
 final class QueryCommand
 {
     public function __construct(
@@ -19,12 +29,13 @@ final class QueryCommand
     }
 
     /**
-     * @param resource $output
-     * @param resource $errorOutput
+     * @param callable(Connection): ResultSet $call
+     * @param resource                        $output
+     * @param resource                        $errorOutput
      */
     public function run(
         ClientConfig $config,
-        string $sql,
+        callable $call,
         OutputFormat $format,
         bool $quiet,
         mixed $output,
@@ -40,7 +51,7 @@ final class QueryCommand
 
         try {
             $start = microtime(true);
-            $result = $connection->query($sql);
+            $result = $call($connection);
             $elapsed = microtime(true) - $start;
 
             $this->printer->print($result, $format, $output);

@@ -109,8 +109,10 @@ final class Dumper
     {
         $lines = array_map($this->columnDefinition(...), $table->columns());
 
-        if ($table->primaryKey() !== null) {
-            $lines[] = sprintf('PRIMARY KEY (%s)', implode(', ', $table->primaryKey()->columns()));
+        $primaryKey = $table->primaryKey();
+
+        if ($primaryKey !== null) {
+            $lines[] = sprintf('PRIMARY KEY (%s)', implode(', ', $primaryKey->columns()));
         }
 
         foreach ($table->constraints() as $constraint) {

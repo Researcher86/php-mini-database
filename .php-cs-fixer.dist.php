@@ -54,6 +54,16 @@ return (new PhpCsFixer\Config())
             'import_functions' => false,
         ],
         'ordered_imports' => ['sort_algorithm' => 'alpha'],
+        // An import left behind by a deleted call site is invisible in
+        // review and silently wrong in a file's dependency list — the
+        // sibling projects in php-systems-lab enforce this one too.
+        'no_unused_imports' => true,
+        // `in_array($x, $ys)` without the strict flag compares loosely,
+        // which for the mixed-type row values this engine passes around
+        // (0 == 'a' was true before PHP 8, '1' == 1 still is) is never
+        // what is meant. Every call here already passes `true`; the rule
+        // is what keeps the next one from forgetting.
+        'strict_param' => true,
         // PER-CS wants `fn(`; this codebase and its sibling projects write
         // `fn (`, so the existing spelling wins over the preset.
         'function_declaration' => ['closure_fn_spacing' => 'one'],

@@ -75,7 +75,7 @@ final readonly class Aggregate implements Operator
 
     public function getIterator(): Generator
     {
-        /** @var array<string, array{keyValues: list<mixed>, rows: list<Row>}> $buckets */
+        /** @var array<string, list<Row>> $buckets */
         $buckets = [];
 
         foreach ($this->source as $row) {
@@ -84,21 +84,25 @@ final readonly class Aggregate implements Operator
                 $this->groupBy,
             );
 
-            $key = serialize($keyValues);
-            $buckets[$key]['keyValues'] = $keyValues;
-            $buckets[$key]['rows'][] = $row;
+            // serialize() rather than a string cast: the grouping values
+            // can be of any type, and it is the only cheap way to give
+            // (1, '1') and (1, 1) distinct keys.
+            $buckets[serialize($keyValues)][] = $row;
         }
 
+        // No GROUP BY and no rows still produces exactly one group — what
+        // makes `SELECT COUNT(*) FROM empty_table` answer 0 rather than
+        // answering nothing at all.
         if ($buckets === [] && $this->groupBy === []) {
-            $buckets[''] = ['keyValues' => [], 'rows' => []];
+            $buckets[''] = [];
         }
 
-        foreach ($buckets as $bucket) {
-            $representative = $bucket['rows'][0] ?? null;
+        foreach ($buckets as $rows) {
+            $representative = $rows[0] ?? null;
             $context = $representative !== null ? ($this->contextFor)($representative) : new RowContext();
 
             if ($this->having !== null) {
-                $havingValue = $this->evaluator->evaluate($this->substituteAggregates($this->having, $bucket['rows']), $context);
+                $havingValue = $this->evaluator->evaluate($this->substituteAggregates($this->having, $rows), $context);
 
                 if (!$this->evaluator->isTrue($havingValue)) {
                     continue;
@@ -107,7 +111,7 @@ final readonly class Aggregate implements Operator
 
             $values = [];
             foreach ($this->items as $i => $item) {
-                $rewritten = $this->substituteAggregates($item->expression, $bucket['rows']);
+                $rewritten = $this->substituteAggregates($item->expression, $rows);
                 $values[$this->labels[$i]] = $this->evaluator->evaluate($rewritten, $context);
             }
 
@@ -170,11 +174,15 @@ final readonly class Aggregate implements Operator
             return null; // SUM/AVG/MIN/MAX over nothing is NULL, the same as any other aggregate over zero rows
         }
 
+        // min()/max() rather than a hand-rolled reduce: they compare with
+        // the same `<=>` semantics, and argumentValues() has already
+        // dropped every NULL, which is the only case where SQL's ordering
+        // rules and PHP's would disagree.
         return match ($name) {
             'SUM' => array_sum($values),
             'AVG' => array_sum($values) / count($values),
-            'MIN' => array_reduce($values, fn (mixed $a, mixed $b): mixed => $a === null || ($b <=> $a) < 0 ? $b : $a),
-            'MAX' => array_reduce($values, fn (mixed $a, mixed $b): mixed => $a === null || ($b <=> $a) > 0 ? $b : $a),
+            'MIN' => min($values),
+            'MAX' => max($values),
             default => throw new ExecutionException(sprintf('Unknown aggregate function "%s".', $call->name)),
         };
     }

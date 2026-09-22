@@ -29,8 +29,9 @@ use IteratorAggregate;
  * recognizable from `$columns` alone, without a fourth message type. This
  * is the client half of that same convention; `Connection::execute()` is
  * what actually calls it.
+ *
+ * @implements IteratorAggregate<int, array<string, mixed>>
  */
-/** @implements IteratorAggregate<int, array<string, mixed>> */
 final class ResultSet implements IteratorAggregate, Countable
 {
     private int $cursor = 0;
@@ -65,13 +66,11 @@ final class ResultSet implements IteratorAggregate, Countable
     /** @return list<array<string, mixed>> */
     public function fetchAll(): array
     {
-        $all = [];
-
-        foreach ($this->rows as $row) {
-            $all[] = array_combine($this->columns, $row);
-        }
-
-        return $all;
+        // Independent of fetch()'s cursor, deliberately: getIterator()
+        // walks from the start every time (see the class docblock), so
+        // fetchAll() after a partial fetch() loop still returns the whole
+        // result rather than the remainder.
+        return iterator_to_array($this->getIterator(), false);
     }
 
     public function affectedRows(): ?int

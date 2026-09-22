@@ -62,12 +62,24 @@ final readonly class Catalog
         return $this->dataDirectory;
     }
 
+    /**
+     * Where one table's files live. The only place this layout is spelled
+     * out — creating, dropping, listing and reading a table all ask here
+     * rather than each joining the path themselves, so the directory
+     * structure `docs/storage.md` documents has exactly one definition in
+     * code.
+     */
+    private function tableDirectory(string $name): string
+    {
+        return Path::join($this->tablesDirectory, $name);
+    }
+
     /** @return list<string> */
     public function tableNames(): array
     {
         $names = array_filter(
             $this->files->listDirectory($this->tablesDirectory),
-            fn (string $name): bool => $this->files->isDirectory(Path::join($this->tablesDirectory, $name)),
+            fn (string $name): bool => $this->files->isDirectory($this->tableDirectory($name)),
         );
         sort($names);
 
@@ -97,7 +109,7 @@ final readonly class Catalog
             throw new SchemaException(sprintf('Table "%s" already exists.', $table->name));
         }
 
-        $this->files->ensureDirectory(Path::join($this->tablesDirectory, $table->name));
+        $this->files->ensureDirectory($this->tableDirectory($table->name));
         $this->save($table);
     }
 
@@ -146,7 +158,7 @@ final readonly class Catalog
             }
         }
 
-        $this->files->removeDirectory(Path::join($this->tablesDirectory, $name));
+        $this->files->removeDirectory($this->tableDirectory($name));
     }
 
     private function validateForeignKeys(Table $table): void
@@ -220,6 +232,6 @@ final readonly class Catalog
 
     private function schemaPath(string $name): string
     {
-        return Path::join($this->tablesDirectory, $name, 'schema.json');
+        return Path::join($this->tableDirectory($name), 'schema.json');
     }
 }

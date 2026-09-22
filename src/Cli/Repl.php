@@ -155,8 +155,6 @@ final class Repl
         $admin = AdminCommand::parse($sql);
 
         try {
-            $start = microtime(true);
-
             if ($admin?->kind === AdminCommandKind::KILL) {
                 // AdminCommand::parse() only ever builds a KILL with a
                 // real connection id (see its own regex) - this is just
@@ -174,6 +172,7 @@ final class Repl
                 return true;
             }
 
+            $start = microtime(true);
             $result = match ($admin?->kind) {
                 AdminCommandKind::SHOW_STATUS => $this->connection->showStatus(),
                 AdminCommandKind::SHOW_CONNECTIONS => $this->connection->showConnections(),

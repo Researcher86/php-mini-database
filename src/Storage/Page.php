@@ -229,7 +229,7 @@ final class Page
     /** Slots that currently hold a record. */
     public function recordCount(): int
     {
-        return count(array_filter($this->records, static fn (?string $record): bool => $record !== null));
+        return count($this->occupiedSlots());
     }
 
     /**

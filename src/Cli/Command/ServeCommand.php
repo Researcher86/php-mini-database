@@ -67,6 +67,10 @@ final class ServeCommand
             }
         }
 
+        // After daemonize(), never before: the parent exits immediately,
+        // so a pid written above the fork would name a process that no
+        // longer exists - and stop/status/reload have nothing but this
+        // file to go on.
         $pidFile?->write((int) getmypid());
 
         $logLevel = LogLevel::tryFrom(strtolower($this->resolve($options, 'log-level', 'MINIDB_LOG_LEVEL', 'info'))) ?? LogLevel::INFO;

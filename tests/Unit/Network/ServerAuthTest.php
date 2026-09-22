@@ -8,7 +8,6 @@ use PhpMiniDatabase\Network\Auth\PasswordHash;
 use PhpMiniDatabase\Network\Auth\ScramChallenge;
 use PhpMiniDatabase\Network\Auth\UserStore;
 use PhpMiniDatabase\Network\Protocol\Codec;
-use PhpMiniDatabase\Network\Protocol\Frame;
 use PhpMiniDatabase\Network\Protocol\FrameReader;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\Message\Auth;

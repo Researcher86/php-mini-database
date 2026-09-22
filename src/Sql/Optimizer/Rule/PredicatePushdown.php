@@ -148,6 +148,7 @@ final readonly class PredicatePushdown implements Rule
         return new Filter($plan, $conjunct);
     }
 
+    /** @param 'left'|'right' $side which physical side of $join is being asked about */
     private function isNullableSide(Join $join, string $side): bool
     {
         return match ($join->type) {
@@ -237,6 +238,11 @@ final readonly class PredicatePushdown implements Rule
             return $this->collectReferences($expression->subject, $refs);
         }
 
+        // The loops below cannot become array_all(), the way isSubset()
+        // above is written: $refs accumulates by reference, and an arrow
+        // function captures by value - the collected qualifiers would
+        // silently come back empty, and every conjunct would look
+        // pushable.
         if ($expression instanceof InList) {
             foreach ([$expression->subject, ...$expression->values] as $part) {
                 if (!$this->collectReferences($part, $refs)) {

@@ -215,6 +215,25 @@ final class Session
     {
         $message = $this->codec->decode($frame);
 
+        // One gate for every message past the handshake, rather than the
+        // same check repeated in each handler. Four kinds stay open to an
+        // unauthenticated client: HELLO and AUTH are the handshake itself
+        // (in dev mode HELLO also sets $authenticated, so the check below
+        // is the same either way), PING reveals nothing but liveness, and
+        // GOODBYE is how a client that gave up mid-handshake says so.
+        // Anything else - including a message type this server does not
+        // implement - lands on rejectUnsupported() exactly as before.
+        if (!$this->authenticated
+            && !$message instanceof Hello
+            && !$message instanceof Auth
+            && !$message instanceof Ping
+            && !$message instanceof Goodbye
+        ) {
+            $this->rejectUnsupported($message);
+
+            return;
+        }
+
         match (true) {
             $message instanceof Hello => $this->handleHello(),
             $message instanceof Auth => $this->handleAuth($message),
@@ -223,11 +242,11 @@ final class Session
             $message instanceof Execute => $this->handleExecute($message),
             $message instanceof CloseStatement => $this->handleCloseStatement($message),
             $message instanceof Begin => $this->handleBegin($message),
-            $message instanceof Commit => $this->handleCommit($message),
-            $message instanceof Rollback => $this->handleRollback($message),
+            $message instanceof Commit => $this->handleCommit(),
+            $message instanceof Rollback => $this->handleRollback(),
             $message instanceof Savepoint => $this->handleSavepoint($message),
-            $message instanceof ShowStatus => $this->handleShowStatus($message),
-            $message instanceof ShowConnections => $this->handleShowConnections($message),
+            $message instanceof ShowStatus => $this->handleShowStatus(),
+            $message instanceof ShowConnections => $this->handleShowConnections(),
             $message instanceof Kill => $this->handleKill($message),
             $message instanceof Ping => $this->send(new Pong()),
             $message instanceof Goodbye => $this->close(),
@@ -274,23 +293,11 @@ final class Session
 
     private function handleQuery(Query $query): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($query);
-
-            return;
-        }
-
         $this->runAndRespond(fn () => $this->executor->run($query->sql, $query->parameters));
     }
 
     private function handlePrepare(Prepare $prepare): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($prepare);
-
-            return;
-        }
-
         if (count($this->preparedStatements) >= $this->maxPreparedStatements) {
             $this->send($this->resultEncoder->encodeError(new ExecutionException(sprintf(
                 'Cannot prepare another statement: this connection already has %d open (the limit).',
@@ -315,12 +322,6 @@ final class Session
 
     private function handleExecute(Execute $execute): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($execute);
-
-            return;
-        }
-
         $statement = $this->preparedStatements[$execute->statementId] ?? null;
 
         if ($statement === null) {
@@ -337,67 +338,31 @@ final class Session
 
     private function handleCloseStatement(CloseStatement $close): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($close);
-
-            return;
-        }
-
         unset($this->preparedStatements[$close->statementId]);
     }
 
     private function handleBegin(Begin $begin): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($begin);
-
-            return;
-        }
-
         $this->runAndRespond(fn () => $this->executor->execute(new BeginStatement($begin->isolationLevel)));
     }
 
-    private function handleCommit(Commit $commit): void
+    private function handleCommit(): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($commit);
-
-            return;
-        }
-
         $this->runAndRespond(fn () => $this->executor->execute(new CommitStatement()));
     }
 
-    private function handleRollback(Rollback $rollback): void
+    private function handleRollback(): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($rollback);
-
-            return;
-        }
-
         $this->runAndRespond(fn () => $this->executor->execute(new RollbackStatement()));
     }
 
     private function handleSavepoint(Savepoint $savepoint): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($savepoint);
-
-            return;
-        }
-
         $this->runAndRespond(fn () => $this->executor->execute(new SavepointStatement($savepoint->name)));
     }
 
-    private function handleShowStatus(ShowStatus $showStatus): void
+    private function handleShowStatus(): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($showStatus);
-
-            return;
-        }
-
         $this->send(new QueryResultMessage(
             ['uptime_seconds', 'active_connections', 'total_connections', 'total_queries', 'total_errors', 'queries_per_second'],
             [[
@@ -411,14 +376,8 @@ final class Session
         ));
     }
 
-    private function handleShowConnections(ShowConnections $showConnections): void
+    private function handleShowConnections(): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($showConnections);
-
-            return;
-        }
-
         $rows = [];
 
         foreach ($this->sessions->all() as $session) {
@@ -430,12 +389,6 @@ final class Session
 
     private function handleKill(Kill $kill): void
     {
-        if (!$this->authenticated) {
-            $this->rejectUnsupported($kill);
-
-            return;
-        }
-
         $target = $this->sessions->find($kill->connectionId);
 
         if ($target === null) {

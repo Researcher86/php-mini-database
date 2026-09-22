@@ -6,7 +6,6 @@ namespace PhpMiniDatabase\Tests\Unit\Client;
 
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\ClientException;
-use PhpMiniDatabase\Client\Connection;
 use PhpMiniDatabase\Client\ConnectionPool;
 use PhpMiniDatabase\Tests\Support\RunningServer;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;

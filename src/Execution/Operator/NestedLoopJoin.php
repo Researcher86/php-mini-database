@@ -64,6 +64,10 @@ final readonly class NestedLoopJoin implements Operator
                 $context = new QualifiedRowContext($combined, $this->parameters);
 
                 if ($this->evaluator->isTrue($this->evaluator->evaluate($this->on, $context))) {
+                    // Yielded with no RecordId key, unlike every other
+                    // operator here: a merged row has no single address to
+                    // name. That is exactly why Executor's row locking is
+                    // scoped to single-table statements (see lockForRead()).
                     yield $combined;
                     $matched = true;
                 }

@@ -54,9 +54,10 @@ final class RecordSerializer
     public function deserialize(string $record, array $types): array
     {
         $columns = count($types);
-        $nullBitmap = substr($record, 0, (int) ceil($columns / 8));
+        $bitmapLength = (int) ceil($columns / 8);
+        $nullBitmap = substr($record, 0, $bitmapLength);
 
-        if (strlen($nullBitmap) !== (int) ceil($columns / 8)) {
+        if (strlen($nullBitmap) !== $bitmapLength) {
             throw new StorageException('Record is too short for its null bitmap.');
         }
 

@@ -594,7 +594,7 @@ final readonly class Executor
                 // row's own update is applied - see cascadeBeforeUpdate()'s
                 // docblock for why the order matters.
                 $this->cascadeBeforeUpdate($table, $write['oldRow'], $write['newRow'], $txId);
-                $this->physicallyUpdateRow($table, $write['id'], $write['oldRow'], $write['newRow'], $txId);
+                $this->physicallyUpdateRow($table, $write['id'], $write['oldRow'], $write['newRow']);
             }
 
             return count($writes);
@@ -633,7 +633,7 @@ final readonly class Executor
                 // row itself is deleted - see cascadeBeforeDelete()'s
                 // docblock for why the order matters.
                 $this->cascadeBeforeDelete($table, $match['row'], $txId);
-                $this->physicallyDeleteRow($table, $match['id'], $match['row'], $txId);
+                $this->physicallyDeleteRow($table, $match['id'], $match['row']);
             }
 
             return count($matches);
@@ -646,7 +646,7 @@ final readonly class Executor
      * `cascadeBeforeDelete()` can call it for a `CASCADE`d child row too,
      * without duplicating it.
      */
-    private function physicallyDeleteRow(Table $table, RecordId $id, Row $row, int $txId): void
+    private function physicallyDeleteRow(Table $table, RecordId $id, Row $row): void
     {
         $this->database->heapFile($table->name)->delete($id);
         $this->indexMaintainer->afterDelete($table, $row, $id);
@@ -658,7 +658,7 @@ final readonly class Executor
      * what the pre-Phase-10 `executeUpdate()` did inline. Split out for the
      * same reason as `physicallyDeleteRow()`.
      */
-    private function physicallyUpdateRow(Table $table, RecordId $id, Row $oldRow, Row $newRow, int $txId): RecordId
+    private function physicallyUpdateRow(Table $table, RecordId $id, Row $oldRow, Row $newRow): RecordId
     {
         $newId = $this->database->heapFile($table->name)->update($id, $table->serializeRow($newRow));
         $this->indexMaintainer->afterDelete($table, $oldRow, $id);
@@ -745,7 +745,7 @@ final readonly class Executor
     {
         $this->locks->acquireRowLock($childTable->name, $id, $txId, LockMode::EXCLUSIVE);
         $this->cascadeBeforeDelete($childTable, $row, $txId);
-        $this->physicallyDeleteRow($childTable, $id, $row, $txId);
+        $this->physicallyDeleteRow($childTable, $id, $row);
     }
 
     /** @param list<mixed> $newKeyValues in the same order as $foreignKey->columns() */
@@ -760,7 +760,7 @@ final readonly class Executor
 
         $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
         $this->indexMaintainer->assertUniqueForUpdate($childTable, $newRow, $id);
-        $this->physicallyUpdateRow($childTable, $id, $row, $newRow, $txId);
+        $this->physicallyUpdateRow($childTable, $id, $row, $newRow);
     }
 
     private function cascadeNullifyChild(Table $childTable, RecordId $id, Row $row, ForeignKey $foreignKey, int $txId): void
@@ -774,7 +774,7 @@ final readonly class Executor
 
         $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
         $this->indexMaintainer->assertUniqueForUpdate($childTable, $newRow, $id);
-        $this->physicallyUpdateRow($childTable, $id, $row, $newRow, $txId);
+        $this->physicallyUpdateRow($childTable, $id, $row, $newRow);
     }
 
     /**

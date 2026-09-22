@@ -1299,3 +1299,71 @@ sections (the latter proven by making the sync handler itself throw, and
 asserting the WAL survives — the only way that can pass is if `sync()`
 genuinely runs before `checkpoint()`); `ServerClientTest::testASecondConnectionCannotJoinOrCommitAnotherConnectionsOpenTransaction`
 against a real server.
+
+## Post-plan: a full read of the finished code
+
+A whole-project review pass, area by area (`Sql`, `Execution`,
+`Storage`+`Schema`, `Network`+`Client`, `Cli`+`Backup`+`Infrastructure`+
+`Transaction`), looking for code worth simplifying and places a reader
+would stumble with no comment to help — deliberately *not* for new
+features, and deliberately not touching the explanatory docblocks, which
+are the point of this project rather than clutter in it.
+
+**One more transaction bug, from the same reviewer who found the previous
+two.** Moving the durability barrier in front of the `ROLLBACK` record
+(the phase above) had created a state that could not exist before it: the
+undo applied, the transaction still open, and the caller invited to retry.
+The retry undid everything a second time and died on
+`StorageException: Page 0 slot 1 holds no record`, leaving the transaction
+unable to either commit or roll back. Reproduced against a real
+`Database` first, fixed by emptying the transaction's log the moment its
+undo has been applied — what `ROLLBACK TO SAVEPOINT` already did — and
+covered by `ExecutorTransactionTest::testARollbackRetriedAfterAFailedSyncDoesNotUndoTheSameChangeTwice`.
+See [DECISIONS.md](DECISIONS.md#a-failed-rollback-stays-retryable).
+
+**Simplifications, all behaviour-preserving.** The largest: `Network\Session`
+had the same five-line "reject if not authenticated" guard in eleven
+handlers — hoisted into `handleFrame()` as one gate (which also left four
+handler parameters that existed only to feed it, now gone). `Client\Connection::receiveAck()`
+and `Client\ResultSet::fetchAll()` were each a second copy of the method
+beside them. `Cli\Command\QueryCommand` and `ClientApplication::runAdminQuery()`
+were the same 25-line "connect, time it, print, close" function written
+twice — now one, taking the request to make rather than only a SQL
+string. `BinaryOperator` gained `symbol()`, so the operator→SQL map lives
+on the enum instead of being copied into both printers. `BTreeIndex`'s
+tree-descent rule, written out twice, became `childFor()`. Smaller ones:
+`Parser::matchSequence()`'s variadic machinery served exactly one
+two-token call site (now `matchPair()`, and the PHPStan workaround comment
+it needed is gone with it), `Aggregate` stored a bucket field nothing read
+and hand-rolled `min()`/`max()`, `Executor` threaded a `$txId` two methods
+never used, `Table` threaded its own name into three private validators
+that already had `$this->name`, `Catalog` built the same path four ways.
+
+**Comments added** only where the code was genuinely opaque: why
+`NestedLoopJoin` is the one operator that yields rows without a
+`RecordId` key (it is why joins cannot be row-locked), why
+`ServeCommand` writes the pid file *after* `daemonize()` and not before,
+why `PredicatePushdown`'s reference collection cannot become the
+`array_all()` sitting fifty lines above it, and why a named
+`CONSTRAINT` on a `PRIMARY KEY` is parsed and then dropped.
+
+**Two honesty fixes.** `CURRENT_TIME` was accepted by the parser and
+promised by `docs/sql.md`, but the evaluator has never implemented it —
+and cannot meaningfully, since there is no TIME type for it to return;
+removed from both, rather than inventing a half-typed value. And
+`docs/sql.md`'s scalar-function list is now the actual list
+`Evaluator::functionCall()` implements.
+
+**Tooling.** `.php-cs-fixer.dist.php` gained `no_unused_imports` and
+`strict_param`, both of which the sibling projects in php-systems-lab
+already enforce; the first immediately removed three stale imports in
+`tests/`. The empty `src/Index/`, `src/Query/` and `src/Recovery/`
+directories — placeholders from PLAN.md §4's original sketch, whose code
+ended up in `Storage`, `Sql`/`Execution` and `Transaction` instead — are
+gone.
+
+**Done when:** `composer test` (1012), `composer analyse` (level 8) and
+`composer format:check` all clean, `make bench` unchanged within noise,
+and every CLI subcommand plus all four `examples/` scripts re-run by hand
+against a real server.
+

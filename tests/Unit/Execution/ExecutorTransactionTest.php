@@ -14,6 +14,7 @@ use PhpMiniDatabase\Storage\RecordId;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PhpMiniDatabase\Transaction\LockMode;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` driven end-to-end through
@@ -241,6 +242,44 @@ final class ExecutorTransactionTest extends TestCase
 
         $this->database->locks()->acquireRowLock('users', $id, 999, LockMode::EXCLUSIVE);
         $this->addToAssertionCount(1);
+    }
+
+    /**
+     * A `ROLLBACK` whose durability barrier fails leaves the transaction
+     * open on purpose, for the caller to retry — so the retry has to
+     * work. It would not if the first attempt's undo were applied a
+     * second time: undoing an `INSERT` deletes the row, and deleting an
+     * already-deleted row is a `StorageException`, which would leave the
+     * transaction permanently unable to either commit or roll back.
+     */
+    public function testARollbackRetriedAfterAFailedSyncDoesNotUndoTheSameChangeTwice(): void
+    {
+        $this->executor->run('BEGIN');
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $this->executor->run("INSERT INTO users (id, name) VALUES (2, 'Bob')");
+
+        $this->database->transactions()->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $this->executor->run('ROLLBACK');
+            self::fail('Expected the sync failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected - and the transaction stays open, by design.
+        }
+
+        self::assertTrue($this->executor->inTransaction());
+
+        // The device is fine again; the caller retries, as the still-open
+        // transaction invites them to.
+        $this->database->transactions()->setSyncHandler(static function (): void {
+        });
+
+        $this->executor->run('ROLLBACK');
+
+        self::assertFalse($this->executor->inTransaction());
+        self::assertSame([], $this->query('SELECT * FROM users'));
     }
 
     private function onlyRecordIdInUsers(): RecordId

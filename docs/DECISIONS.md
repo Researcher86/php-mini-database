@@ -78,6 +78,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | Benchmarks are plain PHPUnit tests in their own testsuite, not a new dependency | current, [why](#benchmarks-are-plain-phpunit-not-a-new-dependency) |
 | A transaction belongs to its owning connection, checked by identity, not merely by existing | current, [why](#a-transaction-belongs-to-its-owning-connection) |
 | commit()/rollback()/recover() sync storage before their own WAL record, not merely before checkpoint | current, [why](#commitrollbackrecover-sync-storage-before-their-own-wal-record) |
+| A failed ROLLBACK stays retryable: the undo log is emptied as soon as it is applied | current, [why](#a-failed-rollback-stays-retryable) |
 
 ## One byte format for disk and wire
 
@@ -2301,3 +2302,32 @@ size: recovery's own undo pass is not itself crash-safe (see "Recovery
 assumes a single crash" above) — a crash *during* `recover()`'s loop,
 between two transactions' undos, is not defended against by this fix
 either, only the boundary at the very end of it.
+
+## A failed ROLLBACK stays retryable
+
+Moving the durability barrier in front of the `ROLLBACK` record (above)
+created a state that did not exist before it: an undo that has already
+been applied, physically, to a transaction that is still open — because
+`sync()` threw after `applyUndo()` and the caller is now invited to try
+again. Retrying was not safe. `rollback()` read `$tx->allRecordsReversed()`
+each time, so the second attempt undid every change a second time, and
+undoing an `INSERT` twice means deleting an already-deleted row, which is
+a `StorageException`. Reproduced end to end: the first `ROLLBACK` fails
+with the sync error, every retry after it fails with `Page 0 slot 1 holds
+no record`, and the transaction can then neither commit nor roll back —
+permanently stuck, on a connection that did nothing wrong.
+
+`rollback()` now calls `Transaction::forgetAllRecords()` between applying
+the undo and the sync, so a retry finds nothing left to undo and gets as
+far as the barrier that actually failed. This is what
+`rollbackToSavepoint()` has always done — `truncateToSavepoint()` drops
+exactly the records it just undid — applied to the whole-transaction
+case, which had no equivalent because before the barrier existed nothing
+could fail between the undo and the end of the transaction.
+
+The narrower window one level in is still open and still named: if
+`applyUndo()` itself throws part-way, the records it already undid are
+still in the log, and a retry will undo those again. That is the same
+single-failure assumption "Recovery assumes a single crash" already
+states, and closing it properly needs undo operations that are idempotent
+by construction — a different engine than this one.

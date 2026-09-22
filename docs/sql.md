@@ -84,10 +84,14 @@ comparison over `NOT` over `AND` over `OR`, matching standard SQL.
 Functions: `COUNT(*)`, `COUNT([DISTINCT] expr)`, `SUM`, `AVG`, `MIN`, `MAX`
 (`Execution\Operator\Aggregate::AGGREGATE_FUNCTIONS`) — usable only where an
 aggregate makes sense, i.e. a select item, `HAVING`, or `ORDER BY` on a
-grouped query. `CURRENT_TIMESTAMP`, `CURRENT_DATE`, `CURRENT_TIME` are
-niladic (no parentheses required). Any other bare `NAME(args)` parses as a
-generic `FunctionCall`, but the evaluator only actually implements the ones
-above — an unrecognised function throws at execution, not at parse time.
+grouped query. `CURRENT_TIMESTAMP` and `CURRENT_DATE` are niladic (no
+parentheses required). The scalar functions are exactly `COALESCE(a, b,
+...)`, `UPPER`, `LOWER`, `LENGTH`, `ABS` (one argument each) and `CONCAT`
+(any number) — `Execution\Expression\Evaluator::functionCall()` is the
+whole list. There is no `CURRENT_TIME`: this engine has no TIME type for
+one to return. Any other bare `NAME(args)` parses as a generic
+`FunctionCall`, but the evaluator only implements the ones above — an
+unrecognised function throws at execution, not at parse time.
 
 ## DDL
 

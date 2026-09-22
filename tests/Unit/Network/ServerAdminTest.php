@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Tests\Unit\Network;
 
 use PhpMiniDatabase\Network\Protocol\Codec;
-use PhpMiniDatabase\Network\Protocol\Frame;
 use PhpMiniDatabase\Network\Protocol\FrameReader;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\Message\Hello;

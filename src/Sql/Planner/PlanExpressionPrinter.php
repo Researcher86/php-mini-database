@@ -8,7 +8,6 @@ use PhpMiniDatabase\Exception\ExecutionException;
 use PhpMiniDatabase\Sql\Ast\Expression;
 use PhpMiniDatabase\Sql\Ast\Expression\Between;
 use PhpMiniDatabase\Sql\Ast\Expression\BinaryOp;
-use PhpMiniDatabase\Sql\Ast\Expression\BinaryOperator;
 use PhpMiniDatabase\Sql\Ast\Expression\ColumnRef;
 use PhpMiniDatabase\Sql\Ast\Expression\FunctionCall;
 use PhpMiniDatabase\Sql\Ast\Expression\InList;
@@ -47,7 +46,7 @@ final class PlanExpressionPrinter
             $expression instanceof BinaryOp => sprintf(
                 '%s %s %s',
                 $this->print($expression->left),
-                $this->binaryOperator($expression->operator),
+                $expression->operator->symbol(),
                 $this->print($expression->right),
             ),
             $expression instanceof UnaryOp => sprintf(
@@ -100,22 +99,4 @@ final class PlanExpressionPrinter
         };
     }
 
-    private function binaryOperator(BinaryOperator $operator): string
-    {
-        return match ($operator) {
-            BinaryOperator::ADD => '+',
-            BinaryOperator::SUBTRACT => '-',
-            BinaryOperator::MULTIPLY => '*',
-            BinaryOperator::DIVIDE => '/',
-            BinaryOperator::MODULO => '%',
-            BinaryOperator::EQUAL => '=',
-            BinaryOperator::NOT_EQUAL => '<>',
-            BinaryOperator::LESS_THAN => '<',
-            BinaryOperator::LESS_THAN_OR_EQUAL => '<=',
-            BinaryOperator::GREATER_THAN => '>',
-            BinaryOperator::GREATER_THAN_OR_EQUAL => '>=',
-            BinaryOperator::AND => 'AND',
-            BinaryOperator::OR => 'OR',
-        };
-    }
 }

@@ -79,6 +79,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | A transaction belongs to its owning connection, checked by identity, not merely by existing | current, [why](#a-transaction-belongs-to-its-owning-connection) |
 | commit()/rollback()/recover() sync storage before their own WAL record, not merely before checkpoint | current, [why](#commitrollbackrecover-sync-storage-before-their-own-wal-record) |
 | A failed ROLLBACK stays retryable: the undo log is emptied as soon as it is applied | current, [why](#a-failed-rollback-stays-retryable) |
+| Undoing an already-undone change is success, not an error | current, [why](#undoing-an-already-undone-change-is-success-not-an-error) |
 
 ## One byte format for disk and wire
 
@@ -2331,3 +2332,51 @@ still in the log, and a retry will undo those again. That is the same
 single-failure assumption "Recovery assumes a single crash" already
 states, and closing it properly needs undo operations that are idempotent
 by construction — a different engine than this one.
+
+## Undoing an already-undone change is success, not an error
+
+Making a failed `ROLLBACK` retryable (above) answered the case where the
+caller gets to retry. The reviewer who found that one then asked what
+happens when the caller does *not* get to retry — when the process dies
+in the same window, between the undo and the `ROLLBACK` record. Checked
+rather than assumed, and the answer was worse than a missing guarantee:
+
+```
+BEGIN; INSERT; INSERT; ROLLBACK
+  -> undo applied, rows gone
+  -> sync() throws (full disk), ROLLBACK record never written
+  -> process dies
+restart
+  -> recover() sees a transaction with no COMMIT/ROLLBACK
+  -> undoes both INSERTs again, against rows already deleted
+  -> StorageException: Page 0 slot 1 holds no record
+```
+
+`recover()` runs inside `Execution\Executor`'s constructor, so that
+exception is not merely a failed recovery: *every* `Executor` built
+against that data directory throws, forever. One full disk plus one crash
+left a database that could never be opened again — reproduced end to end
+before changing anything.
+
+The fix is the property the reviewer named as the real requirement:
+undo is idempotent, so replaying it is harmless. `undoInsert()` and
+`undoUpdate()` return early when `HeapFile::read()` says the row is
+already gone — for an insert that *is* the undone state, and for an
+update it means the insert that created the row has been undone too, so
+there is nothing left to restore values into. `undoDelete()` cannot ask
+the same question, because restoring a deleted row gives it a *new*
+`RecordId` (see its own comment) and the logged one therefore says
+nothing about whether it is back; it asks a unique index instead, by
+reusing `IndexMaintainer::assertUniqueForInsert()` and treating its
+refusal as "already restored".
+
+Two things this deliberately does not do. It does not make undo
+idempotent for a table with no unique constraint at all: there, a second
+undo pass genuinely can restore a deleted row twice, because nothing in
+the data can distinguish a restored row from a legitimately identical
+one — a named gap, and the narrower one that is left. And it does not
+add compensation records to the WAL (ARIES-style CLRs), which is how a
+production engine makes undo progress itself durable rather than
+inferring it from the data; that is a different WAL protocol, and this
+project's single-crash model (see "Recovery assumes a single crash")
+stays as stated.

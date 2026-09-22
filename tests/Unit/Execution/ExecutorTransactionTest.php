@@ -282,6 +282,74 @@ final class ExecutorTransactionTest extends TestCase
         self::assertSame([], $this->query('SELECT * FROM users'));
     }
 
+    /**
+     * The window the retry test above cannot cover: the process does not
+     * get to retry, it dies. The undo has been applied, the transaction's
+     * own log is empty, and the WAL still shows an unfinished transaction
+     * — so the next process's `recover()` undoes the same records a second
+     * time, against rows that are already gone. That must leave the
+     * database openable and the rollback intact, not throw: `recover()`
+     * runs inside `Executor`'s constructor, so an exception there would
+     * make every future `Executor` against this database fail too.
+     */
+    public function testACrashBetweenARollbacksUndoAndItsWalRecordStillRecoversCleanly(): void
+    {
+        $this->executor->run('BEGIN');
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $this->executor->run("INSERT INTO users (id, name) VALUES (2, 'Bob')");
+
+        $this->database->transactions()->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $this->executor->run('ROLLBACK');
+            self::fail('Expected the sync failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected. The undo is applied; the ROLLBACK record is not
+            // written, because the barrier before it failed.
+        }
+
+        // Simulate the crash: the handles go away with the transaction
+        // still unfinished as far as the WAL is concerned.
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $recovered = new Executor($this->database);
+
+        self::assertSame([], $this->query('SELECT * FROM users', $recovered));
+    }
+
+    /**
+     * The same window, for a rolled-back `DELETE`. Restoring a deleted row
+     * gives it a new `RecordId`, so unlike an undone `INSERT` the logged
+     * id cannot say whether it is already back — a unique index is what
+     * answers instead, and `users.id` is a `PRIMARY KEY`.
+     */
+    public function testACrashBetweenARollbacksUndoAndItsWalRecordDoesNotDuplicateARestoredRow(): void
+    {
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+
+        $this->executor->run('BEGIN');
+        $this->executor->run('DELETE FROM users WHERE id = 1');
+
+        $this->database->transactions()->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $this->executor->run('ROLLBACK');
+            self::fail('Expected the sync failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected - the row is already restored at this point.
+        }
+
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $recovered = new Executor($this->database);
+
+        self::assertSame([['id' => 1, 'name' => 'Ann']], $this->query('SELECT * FROM users', $recovered));
+    }
+
     private function onlyRecordIdInUsers(): RecordId
     {
         foreach ($this->database->heapFile('users')->scan() as $id => $record) {

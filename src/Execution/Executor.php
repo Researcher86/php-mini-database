@@ -1000,6 +1000,17 @@ final readonly class Executor
      * (`rollback()`, `rollbackToSavepoint()`, `recover()`), and only ever
      * with an `INSERT`/`UPDATE`/`DELETE` record — see its own docblock for
      * why nothing else it might log ever reaches here.
+     *
+     * Each of the three treats "the change is already reversed" as done,
+     * not as an error, because the same record genuinely can be undone
+     * twice: `rollback()` applies its undo before a durability barrier
+     * that may fail, and a crash in that window leaves the WAL still
+     * showing an unfinished transaction for the next `recover()` to undo
+     * again — from records whose rows are already gone. Throwing there
+     * would not merely fail the rollback, it would fail every future
+     * `Executor` constructed against that database, since `recover()`
+     * runs in it: one full disk plus one crash would leave a database
+     * that could never be opened again. See DECISIONS.md.
      */
     private function undo(WalRecord $record): void
     {
@@ -1019,6 +1030,10 @@ final readonly class Executor
         $row = new Row($this->requireAfter($record));
         $recordId = $this->requireRecordId($record);
 
+        if ($heap->read($recordId) === null) {
+            return; // already undone, by a rollback that failed after this point
+        }
+
         $heap->delete($recordId);
         $this->indexMaintainer->afterDelete($table, $row, $recordId);
     }
@@ -1029,6 +1044,18 @@ final readonly class Executor
         $table = $this->database->table($tableName);
         $heap = $this->database->heapFile($tableName);
         $row = new Row($this->requireBefore($record));
+
+        // Unlike the other two, this one cannot tell "already undone"
+        // from its RecordId: the restored row comes back at a new address
+        // (see below), so the logged one says nothing about whether it is
+        // back. A unique index can answer instead - and where the table
+        // has none, a second undo pass restores the row twice, a named
+        // gap rather than a silent one (see DECISIONS.md).
+        try {
+            $this->indexMaintainer->assertUniqueForInsert($table, $row);
+        } catch (ConstraintViolationException) {
+            return;
+        }
 
         // The row's slot was freed by the delete this reverses, so it
         // comes back at whatever slot HeapFile hands out next - not
@@ -1047,6 +1074,14 @@ final readonly class Executor
         $before = new Row($this->requireBefore($record));
         $after = new Row($this->requireAfter($record));
         $recordId = $this->requireRecordId($record);
+
+        if ($heap->read($recordId) === null) {
+            // The row is gone entirely, which within one transaction's
+            // reverse-order undo means the INSERT that created it has
+            // already been undone too - there is nothing left to restore
+            // the old values into.
+            return;
+        }
 
         $newId = $heap->update($recordId, $table->serializeRow($before));
         $this->indexMaintainer->afterDelete($table, $after, $recordId);

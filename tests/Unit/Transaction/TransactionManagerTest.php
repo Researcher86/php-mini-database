@@ -338,7 +338,14 @@ final class TransactionManagerTest extends TestCase
 
     // --- Sync handler ---
 
-    public function testTheSyncHandlerRunsBeforeTheWalIsCheckpointedOnCommit(): void
+    /**
+     * The stronger guarantee: not merely "sync before checkpoint", but
+     * "sync before the COMMIT record exists at all" - recovery's only
+     * signal that a transaction is finished is that record's presence, so
+     * a sync failure must prevent it from ever being written, not just
+     * delay the checkpoint that would otherwise discard it.
+     */
+    public function testTheSyncHandlerRunsBeforeTheCommitRecordIsEvenWritten(): void
     {
         $this->transactions->setSyncHandler(static function (): void {
             throw new RuntimeException('the device is full');
@@ -354,14 +361,16 @@ final class TransactionManagerTest extends TestCase
             // Expected.
         }
 
-        // If sync() genuinely runs before checkpoint(), a sync failure
-        // must leave the WAL uncheckpointed - the whole point of running
-        // it first. A future crash still has everything it needs to redo
-        // or undo this transaction.
-        self::assertNotSame([], $this->wal->readAll());
+        $operations = array_map(static fn (WalRecord $r): WalOperation => $r->operation, $this->wal->readAll());
+        self::assertNotContains(WalOperation::COMMIT, $operations);
+
+        // Still open, from TransactionManager's own point of view too - a
+        // failed commit() must not silently finish the transaction.
+        self::assertTrue($this->transactions->inTransaction());
     }
 
-    public function testTheSyncHandlerRunsBeforeTheWalIsCheckpointedOnRollback(): void
+    /** @see testTheSyncHandlerRunsBeforeTheCommitRecordIsEvenWritten() - same guarantee, for ROLLBACK. */
+    public function testTheSyncHandlerRunsBeforeTheRollbackRecordIsEvenWritten(): void
     {
         $this->transactions->setSyncHandler(static function (): void {
             throw new RuntimeException('the device is full');
@@ -377,6 +386,34 @@ final class TransactionManagerTest extends TestCase
             // Expected.
         }
 
+        $operations = array_map(static fn (WalRecord $r): WalOperation => $r->operation, $this->wal->readAll());
+        self::assertNotContains(WalOperation::ROLLBACK, $operations);
+    }
+
+    public function testRecoverySyncsStorageBeforeCheckpointingToo(): void
+    {
+        $this->transactions->begin();
+        $this->transactions->logInsert('t', new RecordId(0, 0), ['id' => 1]);
+        // Simulate a crash: no commit() or rollback() call at all.
+
+        $fresh = new TransactionManager($this->wal, new LockManager());
+        $fresh->setUndoHandler(static function (WalRecord $record): void {
+        });
+        $fresh->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $fresh->recover();
+            self::fail('Expected the sync handler failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected.
+        }
+
+        // The undo already ran (it runs before the sync call) but the
+        // checkpoint that would have discarded the log describing it must
+        // not have: a second crash right here still has the WAL to redo
+        // recovery from, rather than a silently-lost undo and an empty log.
         self::assertNotSame([], $this->wal->readAll());
     }
 

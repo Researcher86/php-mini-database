@@ -121,19 +121,28 @@ final class TransactionManager
         return $this->current = new Transaction($id, $level);
     }
 
+    /**
+     * `$sync` runs *before* the `COMMIT` record is appended, not after —
+     * recovery's only signal that a transaction is finished is that
+     * record's presence, so a crash must never be able to show one without
+     * the data it covers already being durable. See DECISIONS.md.
+     */
     public function commit(mixed $owner = null): void
     {
         $tx = $this->requireOwnedCurrent($owner);
 
+        $this->sync?->__invoke();
         $this->wal->append(WalRecord::commit($this->wal->nextLsn(), $tx->id));
         $this->finish($tx);
     }
 
+    /** @see commit() for why `$sync` runs before the `ROLLBACK` record, not after. */
     public function rollback(mixed $owner = null): void
     {
         $tx = $this->requireOwnedCurrent($owner);
 
         $this->applyUndo($tx->allRecordsReversed());
+        $this->sync?->__invoke();
         $this->wal->append(WalRecord::rollback($this->wal->nextLsn(), $tx->id));
         $this->finish($tx);
     }
@@ -213,6 +222,12 @@ final class TransactionManager
      * undo it — that transaction is merely in progress, not abandoned.
      * Also assumes a single point of failure: it does not defend against a
      * second crash during recovery's own undo pass. See DECISIONS.md.
+     *
+     * Syncs storage once, after every abandoned transaction's undo has
+     * been applied and before the checkpoint below — the same "data
+     * durable before the WAL record that could redo/undo it is discarded"
+     * rule `commit()`/`rollback()` follow, applied here to the undo
+     * writes this method itself just made.
      */
     public function recover(): void
     {
@@ -242,6 +257,7 @@ final class TransactionManager
             $this->applyUndo($this->replayStillLiveRecords($txId, $records));
         }
 
+        $this->sync?->__invoke();
         $this->wal->checkpoint();
     }
 
@@ -304,19 +320,18 @@ final class TransactionManager
         }
     }
 
+    /**
+     * `commit()`/`rollback()` have already synced storage themselves (see
+     * their own docblocks for why that has to happen before their own WAL
+     * record, not here) — by the time either reaches this, the checkpoint
+     * below is discarding a log nothing still depends on, not the only
+     * remaining record of unsynced work.
+     */
     private function finish(Transaction $tx): void
     {
         $this->locks->releaseAll($tx->id);
         $this->current = null;
         $this->owner = null;
-
-        // Before the checkpoint below discards the only remaining record
-        // of what this transaction did: push every page it touched to the
-        // device. Without this, a page `PageManager::write()` left sitting
-        // in the OS page cache after a plain fwrite() is not actually
-        // guaranteed durable yet, and the WAL record that could have
-        // redone it is about to be gone. See DECISIONS.md.
-        $this->sync?->__invoke();
 
         // Safe only because exactly one transaction can ever be open at a
         // time in this process - once it ends, nothing depends on the log

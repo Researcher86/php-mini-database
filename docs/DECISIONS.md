@@ -77,7 +77,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | PHPStan went to level 8 by narrowing call sites, not by suppressing them | current, [why](#phpstan-level-8-narrowing-not-suppression) |
 | Benchmarks are plain PHPUnit tests in their own testsuite, not a new dependency | current, [why](#benchmarks-are-plain-phpunit-not-a-new-dependency) |
 | A transaction belongs to its owning connection, checked by identity, not merely by existing | current, [why](#a-transaction-belongs-to-its-owning-connection) |
-| commit()/rollback() sync every open heap file and index before checkpointing the WAL | current, [why](#commitrollback-sync-storage-before-checkpointing-the-wal) |
+| commit()/rollback()/recover() sync storage before their own WAL record, not merely before checkpoint | current, [why](#commitrollbackrecover-sync-storage-before-their-own-wal-record) |
 
 ## One byte format for disk and wire
 
@@ -2211,7 +2211,7 @@ itself owner-aware) directly, which is both simpler and actually correct.
 Proven against a real server in
 [ServerClientTest::testASecondConnectionCannotJoinOrCommitAnotherConnectionsOpenTransaction](../tests/Integration/ServerClientTest.php).
 
-## commit()/rollback() sync storage before checkpointing the WAL
+## commit()/rollback()/recover() sync storage before their own WAL record
 
 The same external review named a second, independent gap: `Storage\PageManager::write()`
 — what every heap and index mutation goes through — only ever `fwrite()`s
@@ -2228,15 +2228,49 @@ narrow and named; this one had no fsync anywhere on the path at all.
 
 Fixed by giving `TransactionManager` the same wiring pattern
 `setUndoHandler()` already established for a capability only `Execution\Executor`
-has: `setSyncHandler(Closure $handler)` (`Closure(): void`), called by
-`finish()` right before `checkpoint()`. `Schema\Database::syncStorage()`
-is the real handler `Executor`'s constructor wires in — it walks every
-currently-open `HeapFile`/`BTreeIndex` (both gained a `sync()` delegating
-to their own `PageManager::sync()`) and syncs each one. Optional, not
-required like the undo handler: a bare `TransactionManager` built without
-a real `Database` behind it (most of this class's own unit tests) has
-nothing to sync and no handler to configure, and `finish()` simply skips
-the call (`$this->sync?->__invoke()`) when none was set.
+has: `setSyncHandler(Closure $handler)` (`Closure(): void`).
+`Schema\Database::syncStorage()` is the real handler `Executor`'s
+constructor wires in — it walks every currently-open `HeapFile`/`BTreeIndex`
+(both gained a `sync()` delegating to their own `PageManager::sync()`) and
+syncs each one. Optional, not required like the undo handler: a bare
+`TransactionManager` built without a real `Database` behind it (most of
+this class's own unit tests) has nothing to sync and no handler to
+configure.
+
+**The first version of this fix called `sync()` inside `finish()`, right
+before `checkpoint()` — after the `COMMIT`/`ROLLBACK` record was already
+appended and `fsync()`'d.** That closed the case a normal `commit()`
+actually hits, but left a narrower window open: recovery's *only* signal
+that a transaction is finished is a `COMMIT`/`ROLLBACK` record's presence
+in the WAL (`recover()`'s own `$isComplete` check) — there is no REDO,
+only UNDO for what looks unfinished. A crash between that record's
+`fsync()` and `sync()` actually completing would leave the WAL correctly
+claiming the transaction finished while the data it covers was still only
+`fwrite()`'d, not durable — recovery would see `COMMIT`, skip the
+transaction entirely (nothing to undo, as far as it's concerned), and the
+data could still be lost. A second review pass, after the first fix, is
+what found this — verified by tracing exactly what `recover()` does with
+a `COMMIT` record it finds (skips), not merely by re-reading `finish()`.
+
+The actual fix: `commit()`/`rollback()` call `sync()` themselves, *before*
+appending their own `COMMIT`/`ROLLBACK` record — `finish()` now only
+releases locks and checkpoints, both callers having already made storage
+durable by the time they reach it. This makes "a `COMMIT`/`ROLLBACK`
+record exists in the WAL" a trustworthy invariant recovery's UNDO-only
+design depends on: by construction, that record cannot exist unless the
+data it covers already does. `rollback()` also gained a matching case —
+its own physical undo writes (`applyUndo()`) need the same treatment
+before its `ROLLBACK` record, for the same reason a crash between them
+would otherwise leave the WAL claiming "rolled back" while an undone row
+was still physically present. `recover()` itself was the third instance
+of the same shape: it applies undo writes for every abandoned transaction
+and then checkpoints directly, bypassing `finish()` entirely — now it
+syncs, once, after every undo and before that checkpoint, for the same
+reason. If a sync call throws in any of the three, the corresponding WAL
+record — `COMMIT`, `ROLLBACK`, or the checkpoint truncation — never
+happens either; the transaction stays exactly as open (or, for `recover()`,
+exactly as unrecovered) as it was, for a caller or a later restart to
+retry against.
 
 Syncing every open table and index unconditionally, not only the ones the
 finishing transaction actually touched, is a deliberate simplification:
@@ -2250,10 +2284,20 @@ change are within normal run-to-run variance; the dominant cost was
 already the WAL's own per-write `fsync()` (see "Write ordering" in
 transactions.md), which this adds to but does not multiply, since
 `fsync()` on an unwritten page is cheap and a batched transaction still
-pays for a table's pages only once, at its single `finish()`, not once
-per row.
+pays for a table's pages only once, at its single `commit()`/`rollback()`,
+not once per row.
 
-Tested by making the sync handler itself throw and asserting the WAL is
-still fully intact afterward (`TransactionManagerTest::testTheSyncHandlerRunsBeforeTheWalIsCheckpointedOnCommit`/`...OnRollback`)
-— the only way that assertion can pass is if `sync()` genuinely runs
-*before* `checkpoint()`, not merely somewhere in `finish()`.
+Tested by making the sync handler itself throw and asserting the resulting
+WAL never gained the record that would have made it look finished
+(`TransactionManagerTest::testTheSyncHandlerRunsBeforeTheCommitRecordIsEvenWritten`/
+`...RollbackRecordIsEvenWritten`/`testRecoverySyncsStorageBeforeCheckpointingToo`)
+— checking for the *record's absence*, not merely that *something* in the
+WAL survived, is what actually distinguishes this from the first,
+insufficient version of the fix; the earlier, weaker assertion would have
+passed under either ordering.
+
+Still not addressed, and out of scope for a learning project at this
+size: recovery's own undo pass is not itself crash-safe (see "Recovery
+assumes a single crash" above) — a crash *during* `recover()`'s loop,
+between two transactions' undos, is not defended against by this fix
+either, only the boundary at the very end of it.

@@ -118,14 +118,20 @@ comparison and the note in [DECISIONS.md](DECISIONS.md).
 
 The narrow crash window this ordering accepts — the exact moment between a
 heap/index mutation and its WAL record — is a stated, bounded gap, not an
-open-ended one: `TransactionManager::finish()` (reached by both `commit()`
-and `rollback()`) pushes every open heap file and index all the way to the
-device — `Schema\Database::syncStorage()`, wired in as its sync handler —
-*before* checkpointing the WAL. A page `PageManager::write()` left sitting
-in the OS page cache after a plain `fwrite()` is not durable on its own;
-without this, `checkpoint()` could discard the one WAL record able to redo
-or undo it while the page itself had still never reached disk. See
-[DECISIONS.md](DECISIONS.md#commitrollback-sync-storage-before-checkpointing-the-wal).
+open-ended one: `commit()`/`rollback()` push every open heap file and
+index all the way to the device — `Schema\Database::syncStorage()`, wired
+in as `TransactionManager`'s sync handler — *before* appending their own
+`COMMIT`/`ROLLBACK` record, not merely before the `checkpoint()` that
+follows it. A page `PageManager::write()` left sitting in the OS page
+cache after a plain `fwrite()` is not durable on its own; recovery's only
+signal that a transaction finished is that `COMMIT`/`ROLLBACK` record's
+presence (there is no REDO, only UNDO — see below), so it must never be
+able to exist without the data it covers already being durable. `recover()`
+follows the same rule for its own undo writes, syncing once after applying
+them and before its own checkpoint. See
+[DECISIONS.md](DECISIONS.md#commitrollbackrecover-sync-storage-before-their-own-wal-record)
+for the two-pass history here — the first fix synced before checkpoint but
+after the WAL record, which still left the gap above narrower but open.
 
 ## Crash recovery
 
@@ -150,9 +156,13 @@ there. `TransactionManager::replayStillLiveRecords()` reconstructs exactly
 the set of still-live changes a crashed process's own `Transaction` object
 held at the moment of the crash, and only that set is undone.
 
-`recover()` finishes by checkpointing the WAL (truncating it, since
-everything still open has now either been confirmed complete or undone).
-See [TransactionTest](../tests/Integration/TransactionTest.php) for this
+`recover()` finishes by syncing storage (its undo writes went through the
+same `PageManager::write()` path as any other mutation, so they need the
+same durability barrier `commit()`/`rollback()` apply to their own writes
+— see "Write ordering" above) and only then checkpointing the WAL
+(truncating it, since everything still open has now either been confirmed
+complete or undone, and its undo durably applied). See
+[TransactionTest](../tests/Integration/TransactionTest.php) for this
 proven against real process restarts — an uncommitted transaction undone,
 a committed one surviving, and a `ROLLBACK TO SAVEPOINT` immediately before
 a crash leaving exactly the pre-savepoint state.

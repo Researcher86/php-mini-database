@@ -1270,12 +1270,29 @@ opened the current transaction and refuses everyone else
 own), replacing a `Network\Session` heuristic (`$ownsOpenTransaction`,
 inferred by watching a flag flip) that turned out not to actually catch
 the bug it was built for. `Schema\Database::syncStorage()` is wired in as
-a new `setSyncHandler()` capability, run before every checkpoint. See
+a new `setSyncHandler()` capability. See
 [DECISIONS.md](DECISIONS.md#a-transaction-belongs-to-its-owning-connection)
-and
-[DECISIONS.md](DECISIONS.md#commitrollback-sync-storage-before-checkpointing-the-wal)
-for both in full, including why neither changes this engine's
-single-writer model.
+for the ownership fix in full, including why it does not change this
+engine's single-writer model.
+
+A second pass over the same commit, checking it against the real code
+rather than the diff alone, found the durability fix's first version was
+still incomplete: it called `sync()` inside `finish()`, right before
+`checkpoint()` — but *after* the `COMMIT`/`ROLLBACK` record itself was
+already `fsync()`'d. Since recovery's only signal a transaction is
+finished is that record's presence (there is no REDO, only UNDO), a crash
+between the record's `fsync()` and `sync()` completing would still leave
+the WAL correctly claiming "done" while the data was not yet durable —
+narrower than the original gap, but the same shape of bug one level
+in. Fixed by moving the `sync()` call into `commit()`/`rollback()`
+themselves, before they append their own record, and adding the matching
+call to `recover()` (which checkpoints directly, bypassing `finish()`
+entirely, and had never synced its own undo writes at all). See
+[DECISIONS.md](DECISIONS.md#commitrollbackrecover-sync-storage-before-their-own-wal-record)
+for the full two-pass history, including the stronger tests this second
+pass needed — checking a record's *absence*, not merely that the WAL
+wasn't empty, since the first version's tests passed under either
+ordering.
 
 **Tests:** `TransactionManagerTest`'s new "Ownership" and "Sync handler"
 sections (the latter proven by making the sync handler itself throw, and

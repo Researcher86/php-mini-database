@@ -928,6 +928,15 @@ final readonly class Executor
         // has filled the file in full - so a duplicate value found halfway
         // through leaves no index behind at all, rather than one the
         // catalog names and queries trust while it is missing rows.
+        //
+        // The scan below takes no table lock, and needs none *here*: one
+        // statement runs to completion before any other session's, since
+        // `Network\Server` is a single process driving one `EventLoop`
+        // callback at a time (see DECISIONS.md). No INSERT can land
+        // between two rows of this scan and go unindexed. That is an
+        // invariant of the execution model rather than of this method -
+        // an engine that ever ran statements concurrently would have to
+        // lock the table for the whole build.
         $this->database->createIndex(
             $statement->table,
             new IndexDefinition($statement->name, $statement->columns, $statement->unique),

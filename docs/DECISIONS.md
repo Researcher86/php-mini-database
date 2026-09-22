@@ -2531,6 +2531,22 @@ holds, and a crash (rather than an exception) midway through a build
 still leaves an orphaned `.idx.building` file that nothing reads and
 nothing yet cleans up.
 
+One more question the same pass raised, and the answer is an invariant
+rather than a fix: `CREATE INDEX` scans the whole heap without taking a
+table lock, so what stops a concurrent `INSERT` from landing between two
+rows of that scan and never reaching the index? Nothing needs to —
+`Network\Server` is one process running one `EventLoop` callback at a
+time, and `Session::handleFrame()` runs a statement to completion before
+the loop looks at another socket. There is no point *inside* a statement
+at which another session's statement can begin. Adding a table lock
+would protect against nothing this engine can do, and would not help the
+one case where the scenario is real — two server processes opened on the
+same data directory, which nothing prevents and which the whole design
+already assumes away (in-memory locks, one `TransactionManager`, one
+`LockManager`; see "`LockManager` never waits"). The assumption is
+written down at the build itself, so that an engine which ever grows
+real concurrency finds it there.
+
 `DROP INDEX`'s own ordering is the mirror of that and equally
 deliberate: the schema is updated first, the file deleted second. An
 index file is created lazily (a `CREATE TABLE` writes only

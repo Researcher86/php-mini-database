@@ -59,13 +59,15 @@ final class ExecutorExplainTest extends TestCase
     public function testASeqScanIsShownForAnUnindexedColumn(): void
     {
         $lines = $this->explain("SELECT id FROM users WHERE name = 'Ann'");
+        self::assertNotSame([], $lines);
 
-        self::assertStringContainsString('SeqScan users', $lines[array_key_last($lines)] ?? '');
+        self::assertStringContainsString('SeqScan users', $lines[array_key_last($lines)]);
     }
 
     public function testAnIndexScanIsShownForAnIndexedColumn(): void
     {
         $lines = $this->explain('SELECT id FROM users WHERE age = 30');
+        self::assertNotSame([], $lines);
 
         $scanLine = $lines[array_key_last($lines)];
         self::assertStringContainsString('IndexScan users USING idx_age', $scanLine);

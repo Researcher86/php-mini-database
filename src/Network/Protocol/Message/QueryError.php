@@ -9,6 +9,7 @@ use PhpMiniDatabase\Network\Protocol\ErrorCode;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
 use PhpMiniDatabase\Network\Protocol\WireValue;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A failed `Query`/`Execute` — PLAN.md §19's error shape: a code, a
@@ -52,7 +53,7 @@ final readonly class QueryError implements Message
             throw new ProtocolException('QUERY_ERROR message is missing its error code.');
         }
 
-        $code = ErrorCode::tryFrom(unpack('C', $bytes, 0)[1])
+        $code = ErrorCode::tryFrom(Binary::unpackInt('C', $bytes, 0))
             ?? throw new ProtocolException('QUERY_ERROR message names an unknown error code.');
 
         [$message, $offset] = self::decodeString($bytes, 1);
@@ -61,7 +62,7 @@ final readonly class QueryError implements Message
             throw new ProtocolException('QUERY_ERROR message is missing its context count.');
         }
 
-        $count = unpack('n', $bytes, $offset)[1];
+        $count = Binary::unpackInt('n', $bytes, $offset);
         $offset += 2;
         $context = [];
 

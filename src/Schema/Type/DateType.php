@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use DateTimeZone;
 use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A calendar date without a time component. The canonical value is a
@@ -67,7 +68,7 @@ final class DateType implements Type
             throw new TypeException(sprintf('%s value is missing 4 bytes in the buffer.', self::NAME));
         }
 
-        $unsigned = unpack('N', substr($bytes, $offset, 4))[1] ^ 0x80000000;
+        $unsigned = Binary::unpackInt('N', $bytes, $offset) ^ 0x80000000;
         $days = $unsigned >= 0x80000000 ? $unsigned - 0x100000000 : $unsigned;
 
         $date = DateTimeImmutable::createFromFormat(

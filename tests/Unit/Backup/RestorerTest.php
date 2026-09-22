@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Tests\Unit\Backup;
 use PhpMiniDatabase\Backup\Restorer;
 use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Execution\Executor;
+use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +46,7 @@ final class RestorerTest extends TestCase
         self::assertSame(2, $count);
 
         $result = $this->executor->run('SELECT id, name FROM users ORDER BY id');
+        self::assertInstanceOf(QueryResult::class, $result);
         $rows = iterator_to_array($result->rows, false);
         self::assertCount(2, $rows);
         self::assertSame(['id' => 1, 'name' => 'Ann'], $rows[0]->toArray());

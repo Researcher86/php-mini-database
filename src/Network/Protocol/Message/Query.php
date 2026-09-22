@@ -8,6 +8,7 @@ use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
 use PhpMiniDatabase\Network\Protocol\WireValue;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * SQL text, plus whatever `?` placeholders it names bound to — each one a
@@ -49,7 +50,7 @@ final readonly class Query implements Message
             throw new ProtocolException('QUERY message is missing its parameter count.');
         }
 
-        $count = unpack('n', $bytes, $offset)[1];
+        $count = Binary::unpackInt('n', $bytes, $offset);
         $offset += 2;
         $parameters = [];
 

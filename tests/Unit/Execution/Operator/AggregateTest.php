@@ -53,6 +53,7 @@ final class AggregateTest extends TestCase
     {
         $statement = Parser::parseOne("SELECT 1 FROM t GROUP BY dummy HAVING {$sql}");
         self::assertInstanceOf(SelectStatement::class, $statement);
+        self::assertNotNull($statement->having);
 
         return $statement->having;
     }

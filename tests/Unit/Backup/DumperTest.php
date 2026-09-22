@@ -7,12 +7,14 @@ namespace PhpMiniDatabase\Tests\Unit\Backup;
 use PhpMiniDatabase\Backup\Dumper;
 use PhpMiniDatabase\Execution\Executor;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
 final class DumperTest extends TestCase
 {
     use TemporaryDirectory;
+    use MemoryStream;
 
     private Database $database;
 
@@ -42,7 +44,7 @@ final class DumperTest extends TestCase
     /** @param list<string>|null $tables */
     private function dump(?array $tables = null): string
     {
-        $stream = fopen('php://memory', 'r+');
+        $stream = $this->memoryStream();
         $this->dumper->dump($stream, $tables);
         rewind($stream);
 

@@ -23,6 +23,17 @@ final class LoggerTest extends TestCase
         $this->tearDownTemporaryDirectory();
     }
 
+    private function readLog(string $path): string
+    {
+        $contents = file_get_contents($path);
+
+        if ($contents === false) {
+            self::fail(sprintf('Could not read "%s".', $path));
+        }
+
+        return $contents;
+    }
+
     public function testWithNoPathEverythingIsDiscarded(): void
     {
         $logger = new Logger();
@@ -39,8 +50,8 @@ final class LoggerTest extends TestCase
 
         $logger->info('server started');
 
-        self::assertStringContainsString('INFO', file_get_contents($path));
-        self::assertStringContainsString('server started', file_get_contents($path));
+        self::assertStringContainsString('INFO', $this->readLog($path));
+        self::assertStringContainsString('server started', $this->readLog($path));
     }
 
     public function testMultipleMessagesAppendRatherThanOverwrite(): void
@@ -51,7 +62,7 @@ final class LoggerTest extends TestCase
         $logger->info('first');
         $logger->info('second');
 
-        $contents = file_get_contents($path);
+        $contents = $this->readLog($path);
         self::assertStringContainsString('first', $contents);
         self::assertStringContainsString('second', $contents);
     }
@@ -64,7 +75,7 @@ final class LoggerTest extends TestCase
         $logger->info('should not appear');
         $logger->warning('should appear');
 
-        $contents = file_get_contents($path);
+        $contents = $this->readLog($path);
         self::assertStringNotContainsString('should not appear', $contents);
         self::assertStringContainsString('should appear', $contents);
     }
@@ -79,7 +90,7 @@ final class LoggerTest extends TestCase
         $logger->warning('w');
         $logger->error('e');
 
-        $contents = file_get_contents($path);
+        $contents = $this->readLog($path);
         self::assertStringContainsString('DEBUG', $contents);
         self::assertStringContainsString('INFO', $contents);
         self::assertStringContainsString('WARNING', $contents);

@@ -66,6 +66,7 @@ final class FileLock
         return $this->handle !== null;
     }
 
+    /** @param int<1, 2> $operation `LOCK_EX` or `LOCK_SH` — `LOCK_NB` is ORed in below, never passed in. */
     private function acquire(int $operation, float $timeoutSeconds, string $kind): void
     {
         if ($this->handle !== null) {

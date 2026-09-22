@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Backup;
 
+use PhpMiniDatabase\Exception\ExecutionException;
 use PhpMiniDatabase\Execution\Executor;
+use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Schema\Column;
 use PhpMiniDatabase\Schema\Constraint\CheckConstraint;
 use PhpMiniDatabase\Schema\Constraint\Constraint;
@@ -76,6 +78,11 @@ final class Dumper
         fwrite($output, $this->createTableStatement($table) . "\n\n");
 
         $result = $this->executor->run(sprintf('SELECT * FROM %s', $name));
+
+        if (!$result instanceof QueryResult) {
+            throw new ExecutionException(sprintf('SELECT * FROM %s did not return rows.', $name));
+        }
+
         $rowCount = 0;
 
         foreach ($result->rows as $row) {

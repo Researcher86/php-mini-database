@@ -29,6 +29,7 @@ final class EvaluatorTest extends TestCase
     {
         $statement = Parser::parseOne("SELECT * FROM t WHERE {$sql}");
         self::assertInstanceOf(SelectStatement::class, $statement);
+        self::assertNotNull($statement->where);
 
         return $statement->where;
     }

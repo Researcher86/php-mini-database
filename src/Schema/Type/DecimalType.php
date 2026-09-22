@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Schema\Type;
 
 use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * An exact decimal, DECIMAL(precision, scale). The canonical value a user
@@ -98,7 +99,7 @@ final class DecimalType implements Type
             throw new TypeException(sprintf('%s value is missing 8 bytes in the buffer.', $this->name()));
         }
 
-        $scaled = unpack('J', substr($bytes, $offset, 8))[1] ^ PHP_INT_MIN;
+        $scaled = Binary::unpackInt('J', $bytes, $offset) ^ PHP_INT_MIN;
         $sign = $scaled < 0 ? '-' : '';
         $scaled = abs($scaled);
 
@@ -121,11 +122,13 @@ final class DecimalType implements Type
      */
     private function split(string $value): array
     {
-        preg_match('/^([+-])?(\d+)(?:\.(\d+))?$/', $value, $m);
+        if (preg_match('/^([+-])?(\d+)(?:\.(\d+))?$/', $value, $m) !== 1) {
+            throw new TypeException(sprintf('"%s" is not a valid DECIMAL literal.', $value));
+        }
 
         $integer = ltrim($m[2], '0');
         $integer = $integer === '' ? '0' : $integer;
 
-        return [$m[1] ?? '', $integer, $m[3] ?? ''];
+        return [$m[1], $integer, $m[3] ?? ''];
     }
 }

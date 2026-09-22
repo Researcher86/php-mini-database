@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Schema\Type;
 
 use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Support\Binary;
 use Stringable;
 
 /**
@@ -71,7 +72,7 @@ final class VarcharType implements Type
             throw new TypeException(sprintf('%s value is missing its length prefix.', $this->name()));
         }
 
-        $length = unpack('N', substr($bytes, $offset, 4))[1];
+        $length = Binary::unpackInt('N', $bytes, $offset);
 
         if (strlen($bytes) < $offset + 4 + $length) {
             throw new TypeException(sprintf('%s value is missing %d bytes of payload.', $this->name(), $length));

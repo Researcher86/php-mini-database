@@ -63,7 +63,7 @@ final class ServerTransactionTest extends TestCase
     {
         $address = 'tcp://' . $this->server->localAddress();
         $client = @stream_socket_client($address, $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($client, $errorMessage);
+        self::assertNotFalse($client, (string) $errorMessage);
         stream_set_blocking($client, false);
         $this->client = $client;
     }
@@ -234,7 +234,7 @@ final class ServerTransactionTest extends TestCase
         $secondCodec = new Codec();
         $secondReader = new FrameReader();
         $secondClient = @stream_socket_client('tcp://' . $this->server->localAddress(), $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($secondClient, $errorMessage);
+        self::assertNotFalse($secondClient, (string) $errorMessage);
         stream_set_blocking($secondClient, false);
 
         fwrite($secondClient, $secondCodec->encode(new Hello(1, 'phpunit-2', '1.0'))->toBytes());
@@ -266,7 +266,7 @@ final class ServerTransactionTest extends TestCase
         $secondCodec = new Codec();
         $secondReader = new FrameReader();
         $secondClient = @stream_socket_client('tcp://' . $this->server->localAddress(), $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($secondClient, $errorMessage);
+        self::assertNotFalse($secondClient, (string) $errorMessage);
         stream_set_blocking($secondClient, false);
 
         fwrite($secondClient, $secondCodec->encode(new Hello(1, 'phpunit-2', '1.0'))->toBytes());

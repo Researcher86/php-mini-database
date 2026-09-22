@@ -993,19 +993,22 @@ final readonly class Executor
 
     private function undoInsert(WalRecord $record): void
     {
-        $table = $this->database->table($record->table);
-        $heap = $this->database->heapFile($record->table);
-        $row = new Row($record->after);
+        $tableName = $this->requireTable($record);
+        $table = $this->database->table($tableName);
+        $heap = $this->database->heapFile($tableName);
+        $row = new Row($this->requireAfter($record));
+        $recordId = $this->requireRecordId($record);
 
-        $heap->delete($record->recordId);
-        $this->indexMaintainer->afterDelete($table, $row, $record->recordId);
+        $heap->delete($recordId);
+        $this->indexMaintainer->afterDelete($table, $row, $recordId);
     }
 
     private function undoDelete(WalRecord $record): void
     {
-        $table = $this->database->table($record->table);
-        $heap = $this->database->heapFile($record->table);
-        $row = new Row($record->before);
+        $tableName = $this->requireTable($record);
+        $table = $this->database->table($tableName);
+        $heap = $this->database->heapFile($tableName);
+        $row = new Row($this->requireBefore($record));
 
         // The row's slot was freed by the delete this reverses, so it
         // comes back at whatever slot HeapFile hands out next - not
@@ -1018,13 +1021,48 @@ final readonly class Executor
 
     private function undoUpdate(WalRecord $record): void
     {
-        $table = $this->database->table($record->table);
-        $heap = $this->database->heapFile($record->table);
-        $before = new Row($record->before);
-        $after = new Row($record->after);
+        $tableName = $this->requireTable($record);
+        $table = $this->database->table($tableName);
+        $heap = $this->database->heapFile($tableName);
+        $before = new Row($this->requireBefore($record));
+        $after = new Row($this->requireAfter($record));
+        $recordId = $this->requireRecordId($record);
 
-        $newId = $heap->update($record->recordId, $table->serializeRow($before));
-        $this->indexMaintainer->afterDelete($table, $after, $record->recordId);
+        $newId = $heap->update($recordId, $table->serializeRow($before));
+        $this->indexMaintainer->afterDelete($table, $after, $recordId);
         $this->indexMaintainer->afterInsert($table, $before, $newId);
+    }
+
+    /**
+     * `WalRecord`'s `$table`/`$recordId`/`$before`/`$after` are all
+     * nullable on the class itself, since one record shape serves every
+     * WAL operation and most fields mean nothing for `BEGIN`/`COMMIT`/
+     * `ROLLBACK`/`SAVEPOINT`. `undoInsert()`/`undoDelete()`/`undoUpdate()`
+     * only ever run against a record `TransactionManager` itself created
+     * for `INSERT`/`UPDATE`/`DELETE`, which always populates the fields
+     * each of them needs — these narrow that domain guarantee into a
+     * concrete, non-null value instead of each undo method repeating the
+     * same null check.
+     */
+    private function requireTable(WalRecord $record): string
+    {
+        return $record->table ?? throw new ExecutionException('WAL record is missing its table name.');
+    }
+
+    private function requireRecordId(WalRecord $record): RecordId
+    {
+        return $record->recordId ?? throw new ExecutionException('WAL record is missing its record id.');
+    }
+
+    /** @return array<string, mixed> */
+    private function requireBefore(WalRecord $record): array
+    {
+        return $record->before ?? throw new ExecutionException('WAL record is missing its "before" values.');
+    }
+
+    /** @return array<string, mixed> */
+    private function requireAfter(WalRecord $record): array
+    {
+        return $record->after ?? throw new ExecutionException('WAL record is missing its "after" values.');
     }
 }

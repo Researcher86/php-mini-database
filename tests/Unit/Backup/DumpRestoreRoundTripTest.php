@@ -8,7 +8,10 @@ use PhpMiniDatabase\Backup\Dumper;
 use PhpMiniDatabase\Backup\Restorer;
 use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Execution\Executor;
+use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Schema\Row;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
@@ -23,6 +26,7 @@ use PHPUnit\Framework\TestCase;
 final class DumpRestoreRoundTripTest extends TestCase
 {
     use TemporaryDirectory;
+    use MemoryStream;
 
     protected function setUp(): void
     {
@@ -32,6 +36,15 @@ final class DumpRestoreRoundTripTest extends TestCase
     protected function tearDown(): void
     {
         $this->tearDownTemporaryDirectory();
+    }
+
+    /** @return list<Row> */
+    private function selectRows(Executor $executor, string $sql): array
+    {
+        $result = $executor->run($sql);
+        self::assertInstanceOf(QueryResult::class, $result);
+
+        return iterator_to_array($result->rows, false);
     }
 
     public function testASchemaWithEveryConstraintKindSurvivesADumpAndRestore(): void
@@ -52,7 +65,7 @@ final class DumpRestoreRoundTripTest extends TestCase
         );
         $sourceExecutor->run("INSERT INTO orders (id, user_id, total) VALUES (1, 1, 99.50)");
 
-        $stream = fopen('php://memory', 'r+');
+        $stream = $this->memoryStream();
         (new Dumper($source, $sourceExecutor))->dump($stream);
         rewind($stream);
         $sql = stream_get_contents($stream);
@@ -64,18 +77,18 @@ final class DumpRestoreRoundTripTest extends TestCase
 
         self::assertGreaterThan(0, $statementCount);
 
-        $users = iterator_to_array($targetExecutor->run('SELECT id, email, age FROM users ORDER BY id')->rows, false);
+        $users = $this->selectRows($targetExecutor, 'SELECT id, email, age FROM users ORDER BY id');
         self::assertSame(['id' => 1, 'email' => 'ann@example.com', 'age' => 30], $users[0]->toArray());
         self::assertSame(['id' => 2, 'email' => "o'brien@example.com", 'age' => 0], $users[1]->toArray());
 
-        $orders = iterator_to_array($targetExecutor->run('SELECT id, user_id, total FROM orders')->rows, false);
+        $orders = $this->selectRows($targetExecutor, 'SELECT id, user_id, total FROM orders');
         self::assertSame('99.50', $orders[0]->toArray()['total']);
 
         // The restored FOREIGN KEY ... ON DELETE CASCADE actually works,
         // not just parses - proving the constraint round-tripped as a
         // real, enforced constraint, not merely as matching DDL text.
         $targetExecutor->run('DELETE FROM users WHERE id = 1');
-        self::assertSame([], iterator_to_array($targetExecutor->run('SELECT id FROM orders')->rows, false));
+        self::assertSame([], $this->selectRows($targetExecutor, 'SELECT id FROM orders'));
 
         // The restored CHECK still rejects what it always did.
         $this->expectException(ConstraintViolationException::class);

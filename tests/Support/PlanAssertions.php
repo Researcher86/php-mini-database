@@ -21,6 +21,7 @@ use PhpMiniDatabase\Sql\Planner\LogicalPlan;
  */
 trait PlanAssertions
 {
+    /** @param class-string<LogicalPlan> ...$ancestors */
     private static function descend(LogicalPlan $plan, string ...$ancestors): LogicalPlan
     {
         foreach ($ancestors as $ancestor) {

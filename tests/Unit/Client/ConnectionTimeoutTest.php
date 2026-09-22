@@ -36,11 +36,15 @@ final class ConnectionTimeoutTest extends TestCase
 
     public function testAReadTimeoutFiresWhenTheServerNeverReplies(): void
     {
-        $this->listener = @stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
-        self::assertNotFalse($this->listener, $errorMessage);
+        $listener = @stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
+        self::assertNotFalse($listener, (string) $errorMessage);
+        $this->listener = $listener;
 
-        $address = stream_socket_get_name($this->listener, false);
-        $port = (int) substr($address, strrpos($address, ':') + 1);
+        $address = stream_socket_get_name($listener, false);
+        self::assertNotFalse($address);
+        $colon = strrpos($address, ':');
+        self::assertNotFalse($colon);
+        $port = (int) substr($address, $colon + 1);
 
         $config = new ClientConfig(port: $port, connectTimeoutSeconds: 1.0, readTimeoutSeconds: 0.2);
 

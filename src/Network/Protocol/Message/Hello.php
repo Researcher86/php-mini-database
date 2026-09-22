@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
+use PhpMiniDatabase\Support\Binary;
 
 /** Opens the handshake — PLAN.md §5.4. */
 final readonly class Hello implements Message
@@ -41,7 +42,7 @@ final readonly class Hello implements Message
             throw new ProtocolException('HELLO message is missing its protocol version.');
         }
 
-        $protocolVersion = unpack('n', $bytes, 0)[1];
+        $protocolVersion = Binary::unpackInt('n', $bytes, 0);
         [$clientName, $offset] = self::decodeString($bytes, 2);
         [$clientVersion, $offset] = self::decodeString($bytes, $offset);
         [$capabilities] = self::decodeStringList($bytes, $offset);

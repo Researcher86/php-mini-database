@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Network\Protocol\Message;
 
 use PhpMiniDatabase\Exception\ProtocolException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * The one string layout every `Message` payload uses for a plain text
@@ -27,7 +28,7 @@ trait WireStrings
             throw new ProtocolException('Message is missing a string length prefix.');
         }
 
-        $length = unpack('N', $bytes, $offset)[1];
+        $length = Binary::unpackInt('N', $bytes, $offset);
 
         if (strlen($bytes) < $offset + 4 + $length) {
             throw new ProtocolException(sprintf('Message is missing %d byte(s) of string payload.', $length));
@@ -55,7 +56,7 @@ trait WireStrings
             throw new ProtocolException('Message is missing a list count.');
         }
 
-        $count = unpack('n', $bytes, $offset)[1];
+        $count = Binary::unpackInt('n', $bytes, $offset);
         $offset += 2;
         $values = [];
 

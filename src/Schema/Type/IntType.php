@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Schema\Type;
 
 use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A signed 32-bit integer. Encoded as four big-endian bytes in a biased form:
@@ -64,7 +65,7 @@ final class IntType implements Type
             throw new TypeException('INT value is missing 4 bytes in the buffer.');
         }
 
-        $unsigned = unpack('N', substr($bytes, $offset, 4))[1] ^ 0x80000000;
+        $unsigned = Binary::unpackInt('N', $bytes, $offset) ^ 0x80000000;
 
         return [$unsigned >= 0x80000000 ? $unsigned - 0x100000000 : $unsigned, $offset + 4];
     }

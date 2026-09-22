@@ -2,7 +2,7 @@ includes:
     - vendor/phpstan/phpstan-phpunit/extension.neon
 
 parameters:
-    level: 6
+    level: 8
     # bin/ scripts are deliberately extensionless (run via their shebang
     # line, never `require`d) - PHPStan's directory scan only picks up
     # files matching `fileExtensions` (default: php), so a bare `bin`
@@ -12,5 +12,6 @@ parameters:
     paths:
         - src
         - tests
+        - examples
         - bin/minidb-server
         - bin/minidb

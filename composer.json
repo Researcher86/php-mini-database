@@ -29,7 +29,8 @@
         "phpunit/phpunit": "^11.5"
     },
     "scripts": {
-        "test": "phpunit",
+        "test": "phpunit --testsuite=unit",
+        "bench": "phpunit --testsuite=benchmark --display-warnings",
         "analyse": "phpstan analyse --memory-limit=1G",
         "format": "php-cs-fixer fix",
         "format:check": "php-cs-fixer check --diff"

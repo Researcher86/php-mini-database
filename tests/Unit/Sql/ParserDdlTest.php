@@ -100,6 +100,7 @@ final class ParserDdlTest extends TestCase
         );
 
         $fk = $table->columns[0]->foreignKey;
+        self::assertInstanceOf(ForeignKeyDefinition::class, $fk);
         self::assertSame(ReferentialAction::CASCADE, $fk->onDelete);
         self::assertSame(ReferentialAction::SET_NULL, $fk->onUpdate);
     }

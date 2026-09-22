@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
+use PhpMiniDatabase\Support\Binary;
 
 /** The handle `Execute`/`CloseStatement` name this prepared statement by. */
 final readonly class PrepareOk implements Message
@@ -32,6 +33,6 @@ final readonly class PrepareOk implements Message
             throw new ProtocolException('PREPARE_OK message is missing its statement id.');
         }
 
-        return new self(unpack('N', $bytes)[1]);
+        return new self(Binary::unpackInt('N', $bytes));
     }
 }

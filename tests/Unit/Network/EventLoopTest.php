@@ -11,7 +11,7 @@ final class EventLoopTest extends TestCase
 {
     private EventLoop $loop;
 
-    /** @var list<resource> */
+    /** @var array<int, resource> */
     private array $pair;
 
     protected function setUp(): void

@@ -1,4 +1,4 @@
-.PHONY: up down shell build install test analyse lint fix
+.PHONY: up down shell build install test bench analyse lint fix
 
 up:
 	docker compose up -d
@@ -20,6 +20,10 @@ install: up
 
 test: up
 	docker compose exec php composer test
+
+# slow, load-bearing timing assertions - not part of `make test`
+bench: up
+	docker compose exec php composer bench
 
 analyse: up
 	docker compose exec php composer analyse

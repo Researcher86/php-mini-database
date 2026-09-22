@@ -61,7 +61,7 @@ final class ServerPreparedStatementTest extends TestCase
     {
         $address = 'tcp://' . $this->server->localAddress();
         $client = @stream_socket_client($address, $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($client, $errorMessage);
+        self::assertNotFalse($client, (string) $errorMessage);
         stream_set_blocking($client, false);
         $this->client = $client;
     }

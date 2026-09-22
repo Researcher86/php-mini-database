@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Network\Protocol;
 
 use PhpMiniDatabase\Exception\ProtocolException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * The fixed-structure envelope every message travels in — PLAN.md §5.2:
@@ -72,10 +73,10 @@ final readonly class Frame
             throw new ProtocolException('Frame does not start with the "MDB1" magic bytes.');
         }
 
-        $version = unpack('n', $bytes, 4)[1];
-        $typeCode = unpack('C', $bytes, 6)[1];
-        $flags = unpack('C', $bytes, 7)[1];
-        $length = unpack('N', $bytes, 8)[1];
+        $version = Binary::unpackInt('n', $bytes, 4);
+        $typeCode = Binary::unpackInt('C', $bytes, 6);
+        $flags = Binary::unpackInt('C', $bytes, 7);
+        $length = Binary::unpackInt('N', $bytes, 8);
 
         if ($length > self::MAX_PAYLOAD_SIZE) {
             throw new ProtocolException(sprintf(

@@ -8,6 +8,7 @@ use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
 use PhpMiniDatabase\Network\Protocol\WireValue;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A `SELECT`'s answer, entirely materialized — `Execution\QueryResult`'s
@@ -68,7 +69,7 @@ final readonly class QueryResultMessage implements Message
             throw new ProtocolException('QUERY_RESULT message is missing its column count.');
         }
 
-        $columnCount = unpack('n', $bytes, 0)[1];
+        $columnCount = Binary::unpackInt('n', $bytes, 0);
         $offset = 2;
         $columns = [];
 
@@ -81,7 +82,7 @@ final readonly class QueryResultMessage implements Message
             throw new ProtocolException('QUERY_RESULT message is missing its row count.');
         }
 
-        $rowCount = unpack('J', $bytes, $offset)[1];
+        $rowCount = Binary::unpackInt('J', $bytes, $offset);
         $offset += 8;
         $rows = [];
 

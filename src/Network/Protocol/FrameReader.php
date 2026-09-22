@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Network\Protocol;
 
 use PhpMiniDatabase\Exception\ProtocolException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * Turns a TCP byte stream — arriving in whatever chunks the socket happens
@@ -50,7 +51,7 @@ final class FrameReader
             throw new ProtocolException('Frame does not start with the "MDB1" magic bytes.');
         }
 
-        $length = unpack('N', $this->buffer, 8)[1];
+        $length = Binary::unpackInt('N', $this->buffer, 8);
 
         if ($length > Frame::MAX_PAYLOAD_SIZE) {
             throw new ProtocolException(sprintf(

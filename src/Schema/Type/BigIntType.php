@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Schema\Type;
 
 use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A signed 64-bit integer, the natural PHP int. Encoded as eight big-endian
@@ -66,6 +67,6 @@ final class BigIntType implements Type
             throw new TypeException('BIGINT value is missing 8 bytes in the buffer.');
         }
 
-        return [unpack('J', substr($bytes, $offset, 8))[1] ^ PHP_INT_MIN, $offset + 8];
+        return [Binary::unpackInt('J', $bytes, $offset) ^ PHP_INT_MIN, $offset + 8];
     }
 }

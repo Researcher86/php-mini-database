@@ -36,6 +36,7 @@ final class ParserExpressionTest extends TestCase
     {
         $statement = Parser::parseOne("SELECT * FROM t WHERE {$expression}");
         self::assertInstanceOf(SelectStatement::class, $statement);
+        self::assertNotNull($statement->where);
 
         return $statement->where;
     }

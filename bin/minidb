@@ -16,4 +16,4 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use PhpMiniDatabase\Cli\ClientApplication;
 
-exit((new ClientApplication())->run(array_slice($_SERVER['argv'], 1)));
+exit((new ClientApplication())->run(array_values(array_slice($_SERVER['argv'], 1))));

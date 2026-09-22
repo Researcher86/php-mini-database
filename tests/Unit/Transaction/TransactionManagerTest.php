@@ -27,6 +27,14 @@ final class TransactionManagerTest extends TestCase
     /** @var list<WalRecord> */
     private array $undone = [];
 
+    /** @return array<string, mixed> */
+    private static function afterOf(WalRecord $record): array
+    {
+        self::assertNotNull($record->after);
+
+        return $record->after;
+    }
+
     protected function setUp(): void
     {
         $this->setUpTemporaryDirectory();
@@ -126,7 +134,7 @@ final class TransactionManagerTest extends TestCase
 
         $this->transactions->rollback();
 
-        self::assertSame([2, 1], array_map(static fn (WalRecord $r) => $r->after['n'], $this->undone));
+        self::assertSame([2, 1], array_map(static fn (WalRecord $r) => self::afterOf($r)['n'], $this->undone));
     }
 
     public function testRollbackChecksPointsTheLog(): void
@@ -153,7 +161,7 @@ final class TransactionManagerTest extends TestCase
 
         $this->transactions->rollbackToSavepoint('sp1');
 
-        self::assertSame([2], array_map(static fn (WalRecord $r) => $r->after['n'], $this->undone));
+        self::assertSame([2], array_map(static fn (WalRecord $r) => self::afterOf($r)['n'], $this->undone));
     }
 
     public function testTheTransactionStaysOpenAfterRollingBackToASavepoint(): void
@@ -174,7 +182,7 @@ final class TransactionManagerTest extends TestCase
         $this->transactions->logInsert('t', new RecordId(0, 1), ['n' => 2]);
         $this->transactions->rollbackToSavepoint('sp1');
 
-        self::assertSame([1, 2], array_map(static fn (WalRecord $r) => $r->after['n'], $this->undone));
+        self::assertSame([1, 2], array_map(static fn (WalRecord $r) => self::afterOf($r)['n'], $this->undone));
     }
 
     public function testRollbackToAnUnknownSavepointThrows(): void
@@ -194,7 +202,7 @@ final class TransactionManagerTest extends TestCase
 
         $this->transactions->rollback();
 
-        self::assertSame([2, 1], array_map(static fn (WalRecord $r) => $r->after['n'], $this->undone));
+        self::assertSame([2, 1], array_map(static fn (WalRecord $r) => self::afterOf($r)['n'], $this->undone));
     }
 
     public function testReleaseSavepointRequiresAnActiveTransaction(): void

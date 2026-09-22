@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
+use PhpMiniDatabase\Support\Binary;
 use PhpMiniDatabase\Transaction\IsolationLevel;
 
 /**
@@ -53,7 +54,7 @@ final readonly class Begin implements Message
             throw new ProtocolException('BEGIN message is missing its isolation level.');
         }
 
-        $level = match (unpack('C', $bytes, 1)[1]) {
+        $level = match (Binary::unpackInt('C', $bytes, 1)) {
             0 => IsolationLevel::READ_COMMITTED,
             1 => IsolationLevel::REPEATABLE_READ,
             2 => IsolationLevel::SERIALIZABLE,

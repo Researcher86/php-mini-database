@@ -91,8 +91,14 @@ final class ResultPrinter
     }
 
     /**
-     * @param list<string> $cells
-     * @param list<int>    $widths
+     * @param list<string>      $cells
+     * @param array<int, int>   $widths keyed the same way `$cells` is —
+     *                                  not typed `list<int>`, since the
+     *                                  caller builds it by mutating
+     *                                  individual offsets in a loop,
+     *                                  which PHPStan cannot itself prove
+     *                                  stays contiguous even though it
+     *                                  always does here
      */
     private function tableRow(array $cells, array $widths): string
     {

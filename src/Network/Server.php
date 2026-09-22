@@ -72,12 +72,12 @@ final class Server
     /** Binds the listening socket and starts accepting connections. Does not block. */
     public function start(): void
     {
-        $this->acceptor = new Acceptor($this->config);
-        $this->loop->onReadable($this->acceptor->socket(), function (): void {
+        $this->acceptor = $acceptor = new Acceptor($this->config);
+        $this->loop->onReadable($acceptor->socket(), function (): void {
             $this->acceptConnection();
         });
 
-        $this->logger->info(sprintf('Listening on %s.', $this->acceptor->localAddress()));
+        $this->logger->info(sprintf('Listening on %s.', $acceptor->localAddress()));
     }
 
     /** The address actually bound — resolves `ServerConfig::$port`'s `0` to the OS-assigned port. */

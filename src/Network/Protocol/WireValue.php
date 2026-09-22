@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Schema\Type\BigIntType;
 use PhpMiniDatabase\Schema\Type\DateTimeType;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A value that carries its own type on the wire, tagged with one
@@ -54,7 +55,7 @@ final class WireValue
             throw new ProtocolException('Wire value is missing its tag byte.');
         }
 
-        $tag = WireValueTag::tryFrom(unpack('C', $bytes, $offset)[1])
+        $tag = WireValueTag::tryFrom(Binary::unpackInt('C', $bytes, $offset))
             ?? throw new ProtocolException('Wire value has an unknown tag byte.');
         $offset++;
 
@@ -85,7 +86,7 @@ final class WireValue
             throw new ProtocolException('Wire FLOAT value is missing 8 bytes.');
         }
 
-        return [unpack('E', $bytes, $offset)[1], $offset + 8];
+        return [Binary::unpackFloat('E', $bytes, $offset), $offset + 8];
     }
 
     /** @return array{0: string, 1: int} */
@@ -95,7 +96,7 @@ final class WireValue
             throw new ProtocolException('Wire STRING value is missing its length prefix.');
         }
 
-        $length = unpack('N', $bytes, $offset)[1];
+        $length = Binary::unpackInt('N', $bytes, $offset);
 
         if (strlen($bytes) < $offset + 4 + $length) {
             throw new ProtocolException(sprintf('Wire STRING value is missing %d byte(s) of payload.', $length));

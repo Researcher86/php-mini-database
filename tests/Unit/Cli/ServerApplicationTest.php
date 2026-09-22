@@ -6,6 +6,7 @@ namespace PhpMiniDatabase\Tests\Unit\Cli;
 
 use PhpMiniDatabase\Cli\PidFile;
 use PhpMiniDatabase\Cli\ServerApplication;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -28,6 +29,7 @@ use RuntimeException;
 final class ServerApplicationTest extends TestCase
 {
     use TemporaryDirectory;
+    use MemoryStream;
 
     private const PORT = 15560;
 
@@ -46,8 +48,8 @@ final class ServerApplicationTest extends TestCase
     protected function setUp(): void
     {
         $this->setUpTemporaryDirectory();
-        $this->output = fopen('php://memory', 'r+');
-        $this->errorOutput = fopen('php://memory', 'r+');
+        $this->output = $this->memoryStream();
+        $this->errorOutput = $this->memoryStream();
     }
 
     protected function tearDown(): void
@@ -241,6 +243,7 @@ final class ServerApplicationTest extends TestCase
         $pidFilePath = $this->path('server.pid');
         $process = $this->launch(['--pid-file', $pidFilePath]);
         $pid = (new PidFile($pidFilePath))->read();
+        self::assertNotNull($pid);
         $this->stragglers[] = $pid;
 
         $exitCode = $this->app()->run(['stop', '--pid-file', $pidFilePath]);
@@ -275,6 +278,7 @@ final class ServerApplicationTest extends TestCase
         $pidFilePath = $this->path('server.pid');
         $this->launch(['--pid-file', $pidFilePath]);
         $pid = (new PidFile($pidFilePath))->read();
+        self::assertNotNull($pid);
         $this->stragglers[] = $pid;
 
         $exitCode = $this->app()->run(['reload', '--pid-file', $pidFilePath]);
@@ -285,7 +289,7 @@ final class ServerApplicationTest extends TestCase
         // Still running, still answering queries, after the signal.
         self::assertTrue((new PidFile($pidFilePath))->isProcessRunning());
         $probe = @stream_socket_client('tcp://127.0.0.1:' . self::PORT, $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($probe, $errorMessage);
+        self::assertNotFalse($probe, (string) $errorMessage);
         fclose($probe);
     }
 
@@ -330,7 +334,7 @@ final class ServerApplicationTest extends TestCase
         self::assertTrue($pidFile->isProcessRunning());
 
         $probe = @stream_socket_client('tcp://127.0.0.1:' . self::PORT, $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($probe, $errorMessage);
+        self::assertNotFalse($probe, (string) $errorMessage);
         fclose($probe);
 
         self::assertStringContainsString('Listening on', (string) file_get_contents($logFilePath));

@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Tests\Unit\Cli;
 use PhpMiniDatabase\Cli\ServerApplication;
 use PhpMiniDatabase\Execution\Executor;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
@@ -20,6 +21,7 @@ use PHPUnit\Framework\TestCase;
 final class ServerApplicationDumpTest extends TestCase
 {
     use TemporaryDirectory;
+    use MemoryStream;
 
     /** @var resource */
     private mixed $output;
@@ -30,8 +32,8 @@ final class ServerApplicationDumpTest extends TestCase
     protected function setUp(): void
     {
         $this->setUpTemporaryDirectory();
-        $this->output = fopen('php://memory', 'r+');
-        $this->errorOutput = fopen('php://memory', 'r+');
+        $this->output = $this->memoryStream();
+        $this->errorOutput = $this->memoryStream();
     }
 
     protected function tearDown(): void
@@ -79,6 +81,7 @@ final class ServerApplicationDumpTest extends TestCase
 
         self::assertSame(0, $exitCode);
         $sql = file_get_contents($outputPath);
+        self::assertNotFalse($sql);
         self::assertStringContainsString('CREATE TABLE users', $sql);
         self::assertStringContainsString("INSERT INTO users (id, name) VALUES (1, 'Ann');", $sql);
     }

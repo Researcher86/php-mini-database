@@ -8,6 +8,7 @@ use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
 use PhpMiniDatabase\Network\Protocol\WireValue;
+use PhpMiniDatabase\Support\Binary;
 
 /** Runs the prepared statement `$statementId` names, bound to `$parameters`. */
 final readonly class Execute implements Message
@@ -41,8 +42,8 @@ final readonly class Execute implements Message
             throw new ProtocolException('EXECUTE message is missing its statement id or parameter count.');
         }
 
-        $statementId = unpack('N', $bytes, 0)[1];
-        $count = unpack('n', $bytes, 4)[1];
+        $statementId = Binary::unpackInt('N', $bytes, 0);
+        $count = Binary::unpackInt('n', $bytes, 4);
         $offset = 6;
         $parameters = [];
 

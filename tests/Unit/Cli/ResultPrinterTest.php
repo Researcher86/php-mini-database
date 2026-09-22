@@ -7,10 +7,13 @@ namespace PhpMiniDatabase\Tests\Unit\Cli;
 use PhpMiniDatabase\Cli\OutputFormat;
 use PhpMiniDatabase\Cli\ResultPrinter;
 use PhpMiniDatabase\Client\ResultSet;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PHPUnit\Framework\TestCase;
 
 final class ResultPrinterTest extends TestCase
 {
+    use MemoryStream;
+
     private ResultPrinter $printer;
 
     protected function setUp(): void
@@ -21,7 +24,7 @@ final class ResultPrinterTest extends TestCase
     /** @return resource */
     private function stream(): mixed
     {
-        return fopen('php://memory', 'r+');
+        return $this->memoryStream();
     }
 
     private function contents(mixed $stream): string

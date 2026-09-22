@@ -1135,14 +1135,14 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 20. Testing, Optimization, Documentation
 
-- [ ] Unit tests ≥ 85%.
-- [ ] Integration tests (embedded + client-server).
-- [ ] Concurrency tests (many clients).
-- [ ] Load tests (network benchmark).
-- [ ] Profiling and optimization.
-- [ ] PHPStan level 8.
-- [ ] Documentation: SQL, protocol, architecture, security, CLI.
-- [ ] Examples in `examples/`.
+- [x] Unit tests ≥ 85%.
+- [x] Integration tests (embedded + client-server).
+- [x] Concurrency tests (many clients).
+- [x] Load tests (network benchmark).
+- [x] Profiling and optimization.
+- [x] PHPStan level 8.
+- [x] Documentation: SQL, protocol, architecture, security, CLI.
+- [x] Examples in `examples/`.
 
 **Estimate:** 7–10 days.
 
@@ -1447,7 +1447,7 @@ Client                          Server
 - [x] Milestone 17. CLI Client and REPL.
 - [x] Milestone 18. Server Administration.
 - [x] Milestone 19. Backup, Dump, Restore.
-- [ ] Milestone 20. Testing, Optimization, Documentation.
+- [x] Milestone 20. Testing, Optimization, Documentation.
 
 ---
 

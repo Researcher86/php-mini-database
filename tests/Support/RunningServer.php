@@ -67,7 +67,7 @@ trait RunningServer
         $this->serverProcess = $process;
         $this->serverPipes = $pipes;
 
-        $this->waitUntilListening('127.0.0.1', $port);
+        $this->waitUntilListening($process, '127.0.0.1', $port);
     }
 
     protected function stopServer(): void
@@ -103,10 +103,11 @@ trait RunningServer
         $this->serverPipes = [];
     }
 
-    private function waitUntilListening(string $host, int $port): void
+    /** @param resource $process */
+    private function waitUntilListening(mixed $process, string $host, int $port): void
     {
         for ($i = 0; $i < 150; $i++) {
-            $status = proc_get_status($this->serverProcess);
+            $status = proc_get_status($process);
 
             if (!$status['running']) {
                 throw new RuntimeException(sprintf(

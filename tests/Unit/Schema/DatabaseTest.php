@@ -100,7 +100,9 @@ final class DatabaseTest extends TestCase
 
         $reopened = Database::open($this->path('mydb'));
 
-        self::assertSame(['id' => 1], $reopened->table('users')->deserializeRow($reopened->heapFile('users')->read($id))->toArray());
+        $bytes = $reopened->heapFile('users')->read($id);
+        self::assertNotNull($bytes);
+        self::assertSame(['id' => 1], $reopened->table('users')->deserializeRow($bytes)->toArray());
     }
 
     public function testAddIndexMakesItAvailableThroughIndex(): void

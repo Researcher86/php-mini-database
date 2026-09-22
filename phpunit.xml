@@ -6,6 +6,10 @@
     <testsuites>
         <testsuite name="unit">
             <directory>tests</directory>
+            <exclude>tests/Benchmark</exclude>
+        </testsuite>
+        <testsuite name="benchmark">
+            <directory suffix="Bench.php">tests/Benchmark</directory>
         </testsuite>
     </testsuites>
     <source>

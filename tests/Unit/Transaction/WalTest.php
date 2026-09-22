@@ -66,6 +66,7 @@ final class WalTest extends TestCase
         $record = $this->wal->readAll()[0];
 
         self::assertSame('users', $record->table);
+        self::assertNotNull($record->recordId);
         self::assertTrue($id->equals($record->recordId));
         self::assertSame(['id' => 1, 'name' => 'alice'], $record->after);
         self::assertNull($record->before);
@@ -95,6 +96,7 @@ final class WalTest extends TestCase
 
         $record = $this->wal->readAll()[0];
 
+        self::assertNotNull($record->after);
         self::assertSame('2024-06-15 12:30:45.123456', $record->after['at']);
     }
 
@@ -105,6 +107,7 @@ final class WalTest extends TestCase
 
         $record = $this->wal->readAll()[0];
 
+        self::assertNotNull($record->after);
         self::assertSame($bytes, $record->after['data']);
     }
 

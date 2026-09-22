@@ -86,7 +86,10 @@ final class RecordSerializer
                 continue;
             }
 
-            $bitmap[$i >> 3] = $bitmap[$i >> 3] | chr(1 << ($i % 8));
+            // $i % 8 is always 0-7, so 1 << (...) is always 1-128 - the
+            // & 0xFF is a no-op numerically, only there so PHPStan can
+            // verify chr()'s int<0,255> bound itself instead of trusting it.
+            $bitmap[$i >> 3] = $bitmap[$i >> 3] | chr((1 << ($i % 8)) & 0xFF);
         }
 
         return $bitmap;

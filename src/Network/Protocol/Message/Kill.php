@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
+use PhpMiniDatabase\Support\Binary;
 
 /** Asks the server to close another connection, named by its session id. */
 final readonly class Kill implements Message
@@ -32,6 +33,6 @@ final readonly class Kill implements Message
             throw new ProtocolException('KILL message is missing its connection id.');
         }
 
-        return new self(unpack('N', $bytes)[1]);
+        return new self(Binary::unpackInt('N', $bytes));
     }
 }

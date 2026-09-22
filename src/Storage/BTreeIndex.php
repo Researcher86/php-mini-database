@@ -262,7 +262,13 @@ final class BTreeIndex
     /** @return Generator<RecordId> */
     private function scanPrefix(string $prefix): Generator
     {
-        $pageId = $this->leafPageIdFor($this->boundary($prefix, true));
+        // boundary() only returns null when its own $prefix is null -
+        // this call always passes scanPrefix()'s own non-null $prefix, so
+        // the null branch never actually triggers here (unlike in
+        // range(), which does pass values that can genuinely be null).
+        $boundary = $this->boundary($prefix, true)
+            ?? throw new StorageException('boundary() unexpectedly returned null for a non-null prefix.');
+        $pageId = $this->leafPageIdFor($boundary);
 
         while ($pageId !== null) {
             $sawMatch = false;
@@ -572,7 +578,14 @@ final class BTreeIndex
         $this->writeInternal($rightPage->id, $right);
         $this->writeInternal($pageId, $left);
 
-        return [$promoted['key'], $rightPage->id];
+        // $entry['key'] === null only ever marks the sentinel first entry
+        // (index 0) of an internal page - $mid is never 0 here (a split
+        // only runs with more than one entry), so the promoted middle
+        // entry is never that sentinel.
+        $promotedKey = $promoted['key']
+            ?? throw new StorageException('Cannot promote an internal page\'s sentinel (null-key) entry.');
+
+        return [$promotedKey, $rightPage->id];
     }
 
     /** @param list<array{key: ?string, child: int}> $entries */

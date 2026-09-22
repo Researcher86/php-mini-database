@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
+use PhpMiniDatabase\Support\Binary;
 
 /** Releases a prepared statement the server no longer needs to keep. */
 final readonly class CloseStatement implements Message
@@ -32,6 +33,6 @@ final readonly class CloseStatement implements Message
             throw new ProtocolException('CLOSE_STMT message is missing its statement id.');
         }
 
-        return new self(unpack('N', $bytes)[1]);
+        return new self(Binary::unpackInt('N', $bytes));
     }
 }

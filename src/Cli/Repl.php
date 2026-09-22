@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Cli;
 
 use Closure;
+use LogicException;
 use PhpMiniDatabase\Client\ClientException;
 use PhpMiniDatabase\Client\Connection;
 use PhpMiniDatabase\Sql\Lexer;
@@ -157,10 +158,17 @@ final class Repl
             $start = microtime(true);
 
             if ($admin?->kind === AdminCommandKind::KILL) {
-                $this->connection->kill($admin->connectionId);
+                // AdminCommand::parse() only ever builds a KILL with a
+                // real connection id (see its own regex) - this is just
+                // narrowing $connectionId's declared type (nullable,
+                // since every other kind leaves it unset) into what this
+                // branch already knows to be true.
+                $connectionId = $admin->connectionId
+                    ?? throw new LogicException('A KILL admin command is missing its connection id.');
+                $this->connection->kill($connectionId);
 
                 if (!$this->quiet) {
-                    fwrite($this->output, sprintf("Connection %d killed.\n", $admin->connectionId));
+                    fwrite($this->output, sprintf("Connection %d killed.\n", $connectionId));
                 }
 
                 return true;

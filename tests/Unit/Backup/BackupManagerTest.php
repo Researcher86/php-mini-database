@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Tests\Unit\Backup;
 use PhpMiniDatabase\Backup\BackupManager;
 use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Execution\Executor;
+use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Infrastructure\FileSystem;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
@@ -49,6 +50,7 @@ final class BackupManagerTest extends TestCase
         $restoredDatabase = Database::open($restoredDirectory);
         $restoredExecutor = new Executor($restoredDatabase);
         $result = $restoredExecutor->run('SELECT id, name FROM users');
+        self::assertInstanceOf(QueryResult::class, $result);
         $rows = iterator_to_array($result->rows, false);
 
         self::assertCount(1, $rows);

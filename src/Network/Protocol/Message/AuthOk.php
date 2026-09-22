@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Exception\ProtocolException;
 use PhpMiniDatabase\Network\Protocol\Message;
 use PhpMiniDatabase\Network\Protocol\MessageType;
+use PhpMiniDatabase\Support\Binary;
 
 /** Authentication succeeded — PLAN.md §5.4. `$serverTime` is Unix seconds. */
 final readonly class AuthOk implements Message
@@ -37,6 +38,6 @@ final readonly class AuthOk implements Message
             throw new ProtocolException('AUTH_OK message is missing its server time.');
         }
 
-        return new self($sessionId, unpack('J', $bytes, $offset)[1]);
+        return new self($sessionId, Binary::unpackInt('J', $bytes, $offset));
     }
 }

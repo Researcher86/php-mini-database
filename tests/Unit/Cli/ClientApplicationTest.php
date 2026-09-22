@@ -8,6 +8,7 @@ use PhpMiniDatabase\Cli\ClientApplication;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\Connection;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PhpMiniDatabase\Tests\Support\RunningServer;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
@@ -22,6 +23,7 @@ final class ClientApplicationTest extends TestCase
 {
     use TemporaryDirectory;
     use RunningServer;
+    use MemoryStream;
 
     private const PORT = 15540;
 
@@ -35,8 +37,8 @@ final class ClientApplicationTest extends TestCase
     {
         $this->setUpTemporaryDirectory();
         $this->startServer($this->path('mydb'), self::PORT);
-        $this->output = fopen('php://memory', 'r+');
-        $this->errorOutput = fopen('php://memory', 'r+');
+        $this->output = $this->memoryStream();
+        $this->errorOutput = $this->memoryStream();
     }
 
     protected function tearDown(): void
@@ -193,7 +195,7 @@ final class ClientApplicationTest extends TestCase
         $exitCode = $this->runCli(['import', '--port', (string) self::PORT, $dumpPath]);
         self::assertSame(0, $exitCode);
 
-        $this->output = fopen('php://memory', 'r+');
+        $this->output = $this->memoryStream();
         $this->runCli(['query', '--port', (string) self::PORT, '--json', '--quiet', 'SELECT name FROM users WHERE id = 2']);
         self::assertSame([['name' => "O'Brien"]], json_decode($this->outputText(), true));
     }
@@ -205,7 +207,7 @@ final class ClientApplicationTest extends TestCase
         $add = $this->runCli(['user', 'add', 'alice', '--password', 'secret', '--data', $dataDirectory]);
         self::assertSame(0, $add);
 
-        $this->output = fopen('php://memory', 'r+');
+        $this->output = $this->memoryStream();
         $list = $this->runCli(['user', 'list', '--data', $dataDirectory]);
         self::assertSame(0, $list);
         self::assertSame("alice\n", $this->outputText());
@@ -231,7 +233,7 @@ final class ClientApplicationTest extends TestCase
         self::assertFileExists($archivePath);
 
         $restoredDirectory = $this->path('restored');
-        $this->output = fopen('php://memory', 'r+');
+        $this->output = $this->memoryStream();
         $restoreExit = $this->runCli(['restore', '--archive', $archivePath, '--data', $restoredDirectory]);
         self::assertSame(0, $restoreExit);
 
@@ -257,7 +259,7 @@ final class ClientApplicationTest extends TestCase
 
         // $dataDirectory itself already has files in it - restoring back
         // onto itself without --force must be refused.
-        $this->errorOutput = fopen('php://memory', 'r+');
+        $this->errorOutput = $this->memoryStream();
         $exitCode = $this->runCli(['restore', '--archive', $archivePath, '--data', $dataDirectory]);
 
         self::assertSame(1, $exitCode);
@@ -300,7 +302,9 @@ final class ClientApplicationTest extends TestCase
         // about itself while it is the only session so the one row it
         // gets back is unambiguously its own id.
         $victim = Connection::connect(new ClientConfig(port: self::PORT));
-        $victimId = $victim->showConnections()->fetch()['id'];
+        $selfReport = $victim->showConnections()->fetch();
+        self::assertNotNull($selfReport);
+        $victimId = $selfReport['id'];
 
         $exitCode = $this->runCli(['kill', (string) $victimId, '--port', (string) self::PORT]);
 

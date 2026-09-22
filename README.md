@@ -21,15 +21,24 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 19 — Backup, Dump, Restore**. `Backup\Dumper`/
-`Restorer` produce and replay a full SQL dump — schema and data,
-dependency-ordered — straight from `Schema\Database`, reachable via
-`bin/minidb-server dump`/`load`. `Backup\BackupManager` makes and restores
-a tar.gz of a whole data directory (refusing to overwrite a non-empty one
-without `--force`), reachable via `bin/minidb backup`/`restore` — real
-now, no longer the stubs Phase 17 left behind. The engine itself is
-considered feature-complete; testing, optimization and documentation are
-next.
+**All 20 milestones of [PLAN.md](PLAN.md) are done.** Latest finished
+phase: **Phase 20 — Testing, Optimization, Documentation**. PHPStan runs
+at level 8 (`phpstan.neon`) across `src`, `bin`, `tests`, and `examples`
+with zero errors; line coverage is 90.5%
+(`Xdebug`, `--coverage-text`). `tests/Integration/` covers realistic,
+multi-feature scenarios end to end — embedded and client-server, crash
+recovery across real process restarts, authentication through the actual
+`bin/minidb user` CLI, and genuinely concurrent clients via `pcntl_fork()`
+— on top of the feature-by-feature `tests/Unit/` suite every earlier
+phase built. `tests/Benchmark/` (`make bench`, excluded from `make test`)
+measures insert/select/join throughput and network round-trip latency; a
+real crash-recovery bug involving `ROLLBACK TO SAVEPOINT` was found and
+fixed writing this milestone's tests (see
+[docs/DECISIONS.md](docs/DECISIONS.md#recovery-replays-through-the-same-transaction-state-machine-a-live-rollback-uses)).
+`docs/{sql,architecture,storage,transactions,security,cli}.md` now cover
+every layer alongside the wire protocol (`docs/protocol.md`, written
+earlier); `examples/{embedded,client,pool,transaction}.php` are runnable,
+verified end to end against a real server, not illustrative snippets.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in
@@ -42,6 +51,7 @@ Requires Docker. Nothing is installed on your machine.
 ```bash
 make install    # build the image and install dependencies
 make test       # run the test suite
+make bench      # run the (slow, opt-in) benchmark suite
 make analyse    # run PHPStan
 make lint       # check formatting
 make fix        # apply PHP CS Fixer
@@ -51,16 +61,30 @@ make fix        # apply PHP CS Fixer
 make shell      # drop into the container
 ```
 
+## Documentation
+
+- [docs/sql.md](docs/sql.md) — the SQL dialect: statements, expressions, types, constraints
+- [docs/architecture.md](docs/architecture.md) — how the layers fit together, text-in to rows-out
+- [docs/storage.md](docs/storage.md) — the on-disk format: pages, heap files, B-tree indexes, the catalog
+- [docs/transactions.md](docs/transactions.md) — isolation levels, locking, the WAL, crash recovery
+- [docs/protocol.md](docs/protocol.md) — the binary wire protocol
+- [docs/security.md](docs/security.md) — authentication, what is and isn't protected
+- [docs/cli.md](docs/cli.md) — `bin/minidb-server` and `bin/minidb` reference
+
 ## Layout
 
 ```
-├── bin/         CLI entry points
-├── benchmarks/  performance measurements
-├── docs/        decisions and deep dives
-├── examples/    runnable snippets
-├── src/         the database itself (Schema, Storage, Index, Query, Sql, ...)
-├── tests/       Unit, Integration, Stress
-└── var/data/    on-disk data files (gitignored content, kept as a dir)
+├── bin/            CLI entry points (minidb, minidb-server)
+├── benchmarks/     standalone, manually-run measurement scripts
+├── docs/           decisions, phase history, and the reference docs above
+├── examples/       runnable scripts (embedded, client, pool, transaction)
+├── src/            the database itself (Sql, Execution, Storage, Transaction, Network, Client, Cli, ...)
+├── tests/
+│   ├── Unit/       one feature or class at a time
+│   ├── Integration/  multi-feature scenarios, embedded and client-server
+│   ├── Benchmark/  PHPUnit-driven throughput/latency timing (`make bench`, not `make test`)
+│   └── Support/    shared test fixtures and helpers
+└── var/data/       on-disk data files (gitignored content, kept as a dir)
 ```
 ## Related projects
 

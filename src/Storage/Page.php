@@ -64,9 +64,13 @@ final class Page
         public readonly int $id,
         public readonly PageType $type,
         /**
-         * Record bytes by slot number; null marks a tombstone.
+         * Record bytes by slot number; null marks a tombstone. Not typed
+         * `list<string|null>`: `insert()` writes into an existing
+         * tombstone slot by its own (already in-bounds) index, which
+         * PHPStan cannot itself verify keeps the array contiguous even
+         * though it always does here.
          *
-         * @var list<string|null>
+         * @var array<int, string|null>
          */
         private array $records = [],
     ) {

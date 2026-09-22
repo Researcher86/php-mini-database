@@ -73,6 +73,9 @@ project is built from is [PLAN.md](../PLAN.md).
 | BackupManager uses PharData, not a shelled-out tar binary | current, [why](#backupmanager-uses-phardata-not-a-shelled-out-tar-binary) |
 | BackupManager.restore() refuses a non-empty target directory without force | current, [why](#backupmanagerrestore-refuses-a-non-empty-target-directory) |
 | SqlSplitter moved from Cli\ to Sql\ once Restorer needed it too | current, [why](#statementsplitter-moved-from-cli-to-sql) |
+| Recovery replays a crashed transaction through the same state machine a live one uses | current, [why](#recovery-replays-through-the-same-transaction-state-machine-a-live-rollback-uses) |
+| PHPStan went to level 8 by narrowing call sites, not by suppressing them | current, [why](#phpstan-level-8-narrowing-not-suppression) |
+| Benchmarks are plain PHPUnit tests in their own testsuite, not a new dependency | current, [why](#benchmarks-are-plain-phpunit-not-a-new-dependency) |
 
 ## One byte format for disk and wire
 
@@ -2021,3 +2024,118 @@ updated to the new location. A small, mechanical refactor once a second,
 genuinely different consumer existed — the same kind of move this project
 made before when `bin/minidb-user`'s logic outgrew standing alone
 (Phase 17).
+
+## Recovery replays through the same `Transaction` state machine a live rollback uses
+
+`TransactionManager::recover()` (Phase 8) originally undid a crashed
+transaction by filtering its WAL records down to every `INSERT`/`UPDATE`/
+`DELETE` and undoing all of them, in reverse — correct for the simple case
+that motivated it (a transaction with no `SAVEPOINT` at all), and wrong
+for one that isn't: a process that ran `ROLLBACK TO SAVEPOINT` before
+crashing has already undone everything logged after that savepoint, both
+on disk and in that process's own (now-gone) memory. The WAL still holds
+those original mutation records — nothing rewrites history there — so the
+old `recover()` tried to undo them a *second* time on restart, and hit
+`StorageException: Page 0 slot 1 holds no record`: the row it was trying
+to reverse had already been removed once and was simply gone.
+
+This was found writing
+[TransactionTest::testARollbackToASavepointBeforeACrashLeavesOnlyThePreSavepointWork](../tests/Integration/TransactionTest.php)
+for this milestone — a scenario ("crash immediately after a `ROLLBACK TO
+SAVEPOINT`, before the transaction ever reaches `COMMIT`") no earlier
+phase's tests happened to construct, since `TransactionManagerTest`'s own
+recovery tests (Phase 8) never combine a savepoint with an unfinished
+transaction.
+
+The fix: `recover()` no longer filters WAL records by operation type
+directly. `TransactionManager::replayStillLiveRecords()` instead feeds a
+crashed transaction's records through a fresh `Transaction` object, one
+record at a time, calling the exact same methods a live session calls —
+`record()` for each mutation, `declareSavepoint()`/`truncateToSavepoint()`/
+`releaseSavepoint()` for each savepoint operation — and only then reads
+`Transaction::allRecordsReversed()`. This reconstructs precisely the
+in-memory undo list the crashed process itself held at the moment it
+died, savepoints and all, rather than a naive "everything this
+transaction ever touched." A transaction with no savepoints replays to
+the same result the old code produced by construction; one with a
+`ROLLBACK TO SAVEPOINT` now recovers correctly instead of erroring.
+
+## PHPStan level 8, narrowing not suppression
+
+Raising `phpstan.neon`'s level from 6 to 8 (this milestone) surfaced 165
+errors across `src`, `bin`, and `tests` — none were resolved with an
+`@phpstan-ignore` comment or a loosened rule; every one is either a real
+narrowing at the call site or a docblock correction where the stricter
+level was simply more precise than the old annotation:
+
+- **`unpack()`'s `array|false` return**, repeated across ~19 files in both
+  `Network\Protocol\*` (wire decoding) and `Schema\Type\*` (disk decoding),
+  was the single largest class (48 of the 165 errors). Extracting
+  `Support\Binary::unpackInt()`/`unpackFloat()` — narrowing the `false`
+  case to a `RuntimeException` once — fixed all of them in one sweep
+  rather than repeating the same `if ($value === false) { throw ... }`
+  guard at every call site.
+- **`fopen('php://memory', 'r+')`'s `resource|false` return**, repeated
+  across 7 test files, got the same treatment: `Tests\Support\MemoryStream::memoryStream()`.
+- A `list<T>` docblock is stricter than PHPStan can actually prove once a
+  method mutates by individual offset rather than only ever appending
+  (`Storage\Page::$records`, `Cli\ResultPrinter::tableRow()`'s `$widths`,
+  `Transaction\TransactionManager::applyUndo()`'s `$records` parameter,
+  `tests/Unit/Network/EventLoopTest.php`'s `$pair` property from
+  `stream_socket_pair()`) — relaxed to `array<int, T>` at each of those
+  four sites, with a comment saying why the stricter type was correct at
+  runtime but unprovable, not a mistake being walked back.
+- Everywhere else, a genuinely nullable value (`WalRecord`'s per-operation
+  fields, `BTreeIndex::boundary()`'s generic nullability against a
+  specific call's always-non-null input, `HeapFile::read()`'s possibly-
+  missing record, `$_SERVER['argv']`'s array-vs-list mismatch in
+  `bin/minidb`/`bin/minidb-server`) was narrowed with `?? throw` or an
+  explicit check immediately before use, matching the pattern
+  `Executor::undoInsert()`/`undoDelete()`/`undoUpdate()` already
+  established for exactly this shape of problem (Phase 8's WAL record
+  fields being nullable at the class level for reasons unrelated to any
+  one call site).
+
+## Benchmarks are plain PHPUnit, not a new dependency
+
+`tests/Benchmark/{Insert,Select,Join,Network}Bench.php` (this milestone)
+are ordinary `PHPUnit\Framework\TestCase` classes, not PHPBench or a
+custom harness — no new `require-dev` dependency, reusing every fixture
+helper (`TemporaryDirectory`, `RunningServer`) the rest of the test suite
+already has. Each method times itself with `microtime(true)`, prints a
+one-line summary to stdout, and asserts only a generous floor (e.g. "at
+least 50 rows/s"), not a target — the point is catching an accidental
+algorithmic regression (an `O(n²)` where `O(n)` was intended), which a
+floor two or three orders of magnitude below realistic hardware still
+catches, without the suite flaking on a slower or busier CI machine.
+
+They are excluded from `composer test` (`phpunit.xml`'s `unit` testsuite
+excludes `tests/Benchmark`; a second `benchmark` testsuite, matched by a
+`Bench.php` suffix instead of the default `Test.php`, is what `composer
+bench` runs) so a normal test run stays fast and deterministic; a
+benchmark run is opt-in and always a little slower than the code being
+measured actually requires, real I/O included.
+
+Profiling via these benchmarks surfaced two things worth naming
+concretely rather than only asserting a floor against:
+
+- **Every WAL append `fsync()`s**, autocommit or not (`Transaction\Wal::append()`,
+  by design — see "The WAL is logical, and reclaimed only by an explicit
+  checkpoint" above). `InsertBench`'s batched-vs-autocommit comparison
+  shows this directly: wrapping many inserts in one explicit transaction
+  measurably helps (fewer `BEGIN`/`COMMIT` WAL records), but does not
+  multiply throughput the way eliminating per-row `fsync()` entirely
+  would, because each row's own mutation record is still `fsync()`'d
+  individually either way. This is durability bought deliberately, not an
+  oversight to fix here.
+- **`LEFT`/`RIGHT JOIN` never gets `HashJoin`'s O(n) treatment** —
+  `Sql\Optimizer\Rule\JoinReordering` only recognizes a plain-equality
+  `INNER JOIN` (see "Join reordering is a two-table swap by page count,
+  not a search" above and that rule's own docblock on scope), so every
+  outer join runs as `NestedLoopJoin` regardless of shape. `JoinBench`'s
+  numbers on a few-thousand-row outer join make the gap visible next to
+  the equivalent inner join, but extending hash-join eligibility to outer
+  joins is real, separate design work (matching an outer row against "no
+  match found" needs bookkeeping a plain hash-join doesn't) that this
+  milestone's "optimization" bullet is scoped to *measuring and naming*,
+  not building.

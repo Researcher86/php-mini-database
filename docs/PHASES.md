@@ -1135,3 +1135,109 @@ still *enforce* its `CHECK` and cascade its `FOREIGN KEY`, not just parse
 back as matching text; `tests/Unit/Cli/ServerApplicationDumpTest.php`
 (`dump`/`load` in process — neither touches a socket or a signal) and
 extended `ClientApplicationTest.php` for the now-real `backup`/`restore`.
+
+## Phase 20 — Testing, Optimization, Documentation ✅
+
+The last milestone, and the only one whose checklist has no single class
+to build — eight bullets covering coverage, integration/concurrency/load
+testing, `PHPStan` strictness, profiling, and the six documentation files
+PLAN.md's file tree always named but nothing had written yet. Tackled in
+that rough order, each verified independently rather than assumed done
+once the code compiled.
+
+**PHPStan level 8** (`phpstan.neon`, was level 6) came first as the most
+mechanically checkable piece: 165 errors across `src`/`bin`/`tests`, none
+resolved by suppressing or loosening a rule (see
+[DECISIONS.md](DECISIONS.md#phpstan-level-8-narrowing-not-suppression)).
+The single largest class — `unpack()`'s `array|false` return, repeated
+across 19 files — came down in one sweep by extracting `Support\Binary`;
+everything else was a real narrowing at the call site (`?? throw`, an
+`assertNotNull`/`assertInstanceOf` in a test, a `list<T>` docblock
+relaxed to `array<int, T>` where a method's actual guarantee was weaker
+than the annotation claimed).
+
+**Integration tests** (`tests/Integration/`) deliberately avoid
+duplicating what `tests/Unit/Execution/*` already proves feature by
+feature. `SqlEndToEndTest`/`ConstraintTest` run larger, realistic,
+multi-feature scenarios against one embedded `Database` (a small blog
+schema, a cascading delete that is itself blocked one level further down,
+a multi-row insert failing partway through) rather than isolating one
+constraint or clause at a time. `TransactionTest` does what no unit test
+does — closes a `Database` mid-transaction (no `COMMIT`/`ROLLBACK` ever
+called) and opens a fresh one against the same directory, proving
+`Executor`'s constructor-time recovery actually undoes an abandoned
+transaction and leaves a committed one alone, across real process-lifetime
+boundaries. `ServerClientTest` and `AuthTest` run against a real
+`bin/minidb-server` child process (`Tests\Support\RunningServer`) with
+several independent `Client\Connection`s at once, and `AuthTest` creates
+its user through `bin/minidb user add` itself (`Cli\Command\UserCommand`),
+not `UserStore` constructed by hand — the actual path a deployment uses.
+`ConcurrencyTest` uses `pcntl_fork()` for genuine OS-level concurrent
+clients (six real child processes writing 25 rows each into one shared
+table) rather than several `Connection`s taking turns in one test process,
+proving no row is lost or duplicated under real simultaneous writers.
+
+Two of `ServerClientTest`'s tests were written expecting standard
+snapshot-isolation semantics and had to be corrected against what this
+engine actually does: there is no MVCC (see
+[DECISIONS.md](DECISIONS.md#isolation-levels-are-2-phase-locking-not-mvcc)),
+so an uncommitted `READ_COMMITTED` write is visible to every other
+connection immediately, not hidden until commit, and `TransactionManager`
+allows only one open transaction *per `Database`*, not per connection —
+a second `BEGIN` elsewhere is refused before either session ever reaches
+a row-level lock conflict. Both are now assertions about the real,
+documented behavior rather than a false expectation the tests happened to
+pass by accident.
+
+**A real bug** surfaced writing `TransactionTest`'s savepoint-then-crash
+case: `TransactionManager::recover()` undid every mutation a crashed
+transaction had ever logged, without regard for a `ROLLBACK TO SAVEPOINT`
+that had already undone some of them live — a double-undo that threw
+`StorageException: Page 0 slot 1 holds no record` on restart. Fixed by
+replaying a crashed transaction's WAL records through the same
+`Transaction` state machine a live rollback uses, reconstructing exactly
+the still-live undo list the crashed process held rather than assuming
+"every mutation this transaction ever logged." See
+[DECISIONS.md](DECISIONS.md#recovery-replays-through-the-same-transaction-state-machine-a-live-rollback-uses)
+for the full root cause.
+
+**Benchmarks** (`tests/Benchmark/{Insert,Select,Join,Network}Bench.php`)
+are plain PHPUnit, in a `benchmark` testsuite `composer test` excludes and
+`composer bench` runs on its own — no new dependency, no change to CI
+speed. Profiling through them surfaced two characteristics worth naming
+rather than silently living with: every WAL append `fsync()`s regardless
+of autocommit (durability bought deliberately, not an oversight), and
+`LEFT`/`RIGHT JOIN` never gets `HashJoin`'s treatment since
+`JoinReordering` only recognizes a plain-equality `INNER JOIN` — both
+detailed in
+[DECISIONS.md](DECISIONS.md#benchmarks-are-plain-phpunit-not-a-new-dependency).
+
+**Documentation**: `docs/sql.md`, `architecture.md`, `storage.md`,
+`transactions.md`, `security.md`, `cli.md` — `docs/protocol.md` already
+existed and set the house style (real class names, honest about gaps,
+cross-linked to `DECISIONS.md` rather than re-explaining rationale
+inline) that all six now follow. `storage.md`, `security.md`, and `cli.md`
+were drafted by independent research passes, then verified line by line
+against the actual source and the `DECISIONS.md` anchors they cite before
+being accepted — one genuinely wrong claim (RIGHT JOIN having no compiled
+path, when `Executor::compileJoin()` actually reuses LEFT JOIN's handling
+by swapping sides) was caught this way before publishing.
+
+**Examples** (`examples/{embedded,client,pool,transaction}.php`) are
+runnable, not illustrative snippets — each was executed against a real
+`bin/minidb-server` (or, for `embedded.php`, a real on-disk database) and
+made idempotent (safe to run twice in a row against the same data) before
+being accepted; `client.php`'s first draft used `COALESCE(MAX(id), 0)`,
+which this engine's planner does not support (an aggregate nested inside
+another function call), caught by actually running it rather than reading
+it back.
+
+**Done when:** `composer test`, `composer analyse` (now genuinely level
+8) and `composer format:check` are all clean; coverage is 90.5% lines
+(`Xdebug`, `--coverage-text`) — above the 85% target without any test
+added purely to move the number.
+
+**Tests:** `tests/Integration/{SqlEndToEndTest,ConstraintTest,TransactionTest,ServerClientTest,AuthTest,ConcurrencyTest}.php`;
+`tests/Benchmark/{InsertBench,SelectBench,JoinBench,NetworkBench}.php`;
+plus every PHPStan-level-8 narrowing fix across `tests/Unit/*` (no test's
+assertions changed, only what the type checker can prove about them).

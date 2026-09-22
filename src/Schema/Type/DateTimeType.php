@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use DateTimeZone;
 use PhpMiniDatabase\Exception\TypeException;
+use PhpMiniDatabase\Support\Binary;
 
 /**
  * A point in time with up to microsecond precision, stored as an instant —
@@ -72,7 +73,7 @@ final class DateTimeType implements Type
             throw new TypeException(sprintf('%s value is missing 8 bytes in the buffer.', self::NAME));
         }
 
-        $micros = unpack('J', substr($bytes, $offset, 8))[1] ^ PHP_INT_MIN;
+        $micros = Binary::unpackInt('J', $bytes, $offset) ^ PHP_INT_MIN;
 
         // PHP's % and intdiv divide toward zero, so a negative micros value
         // must be normalized to floor-seconds + a positive fraction before it

@@ -57,7 +57,7 @@ final class ServerAdminTest extends TestCase
     private function connect(): mixed
     {
         $client = @stream_socket_client('tcp://' . $this->server->localAddress(), $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($client, $errorMessage);
+        self::assertNotFalse($client, (string) $errorMessage);
         stream_set_blocking($client, false);
         $this->clients[] = $client;
 
@@ -210,7 +210,7 @@ final class ServerAdminTest extends TestCase
         $this->handshake();
 
         $refused = @stream_socket_client('tcp://' . $this->server->localAddress(), $errorCode, $errorMessage, 1.0);
-        self::assertNotFalse($refused, $errorMessage);
+        self::assertNotFalse($refused, (string) $errorMessage);
         stream_set_blocking($refused, false);
         $this->clients[] = $refused;
 
@@ -226,7 +226,7 @@ final class ServerAdminTest extends TestCase
             $this->server->reload();
 
             $second = @stream_socket_client('tcp://' . $this->server->localAddress(), $errorCode, $errorMessage, 1.0);
-            self::assertNotFalse($second, $errorMessage);
+            self::assertNotFalse($second, (string) $errorMessage);
             stream_set_blocking($second, false);
             $this->clients[] = $second;
 

@@ -1138,7 +1138,10 @@ final class Parser
     private function matchSequence(TokenType ...$types): bool
     {
         foreach ($types as $ahead => $type) {
-            if (!$this->checkAhead($ahead, $type)) {
+            // $types is TokenType ...$types - $ahead is always the plain
+            // int index PHP always gives a variadic array; PHPStan just
+            // does not track that specifically through a generic foreach.
+            if (!$this->checkAhead((int) $ahead, $type)) {
                 return false;
             }
         }

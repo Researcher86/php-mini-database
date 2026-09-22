@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Tests\Unit\Cli;
 
 use Closure;
+use LogicException;
 use PhpMiniDatabase\Cli\OutputFormat;
 use PhpMiniDatabase\Cli\Repl;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Tests\Support\MemoryStream;
 use PhpMiniDatabase\Tests\Support\RunningServer;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
@@ -22,6 +24,7 @@ final class ReplTest extends TestCase
 {
     use TemporaryDirectory;
     use RunningServer;
+    use MemoryStream;
 
     private const PORT = 15541;
 
@@ -47,14 +50,20 @@ final class ReplTest extends TestCase
         $lines[] = false;
 
         return static function () use (&$lines): string|false {
-            return array_shift($lines);
+            $line = array_shift($lines);
+
+            if ($line === null) {
+                throw new LogicException('scriptedReadLine() was called more times than it had scripted lines for.');
+            }
+
+            return $line;
         };
     }
 
     /** @return resource */
     private function stream(): mixed
     {
-        return fopen('php://memory', 'r+');
+        return $this->memoryStream();
     }
 
     private function contents(mixed $stream): string
@@ -204,7 +213,9 @@ final class ReplTest extends TestCase
         // way ServerAdminTest's equivalent test can rely on - its own id
         // has to be picked out from $this->connection's own SHOW_CONNECTIONS
         // as the row that is not $this->connection's own id instead.
-        $selfId = $this->connection->showConnections()->fetch()['id'];
+        $selfReport = $this->connection->showConnections()->fetch();
+        self::assertNotNull($selfReport);
+        $selfId = $selfReport['id'];
 
         $secondConnection = Connection::connect(new ClientConfig(port: self::PORT));
 

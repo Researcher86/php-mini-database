@@ -183,9 +183,7 @@ final class TransactionManager
             $byTransaction[$record->txId][] = $record;
         }
 
-        $mutations = [WalOperation::INSERT, WalOperation::UPDATE, WalOperation::DELETE];
-
-        foreach ($byTransaction as $records) {
+        foreach ($byTransaction as $txId => $records) {
             $isComplete = array_any(
                 $records,
                 static fn (WalRecord $r): bool => $r->operation === WalOperation::COMMIT || $r->operation === WalOperation::ROLLBACK,
@@ -195,14 +193,62 @@ final class TransactionManager
                 continue;
             }
 
-            $toUndo = array_reverse(array_filter($records, static fn (WalRecord $r): bool => in_array($r->operation, $mutations, true)));
-            $this->applyUndo($toUndo);
+            $this->applyUndo($this->replayStillLiveRecords($txId, $records));
         }
 
         $this->wal->checkpoint();
     }
 
-    /** @param list<WalRecord> $records */
+    /**
+     * Rebuilds one crashed transaction's still-live change log by replaying
+     * its WAL records through the same `Transaction` state machine
+     * `savepoint()`/`rollbackToSavepoint()`/`releaseSavepoint()` drive
+     * live, rather than naively undoing every mutation the transaction
+     * ever logged: a process that managed to run `ROLLBACK TO SAVEPOINT`
+     * before crashing has already undone everything after that savepoint,
+     * both on disk and in that now-gone process's memory, so recovery
+     * must not undo it a second time — that record is still sitting in
+     * the WAL (nothing rewrites history there), but `Transaction::truncateToSavepoint()`
+     * is exactly what already drops it from a live rollback's own undo
+     * list, so replaying every record through the same calls reproduces
+     * the identical, correct set here.
+     *
+     * @param list<WalRecord> $records
+     *
+     * @return list<WalRecord>
+     */
+    private function replayStillLiveRecords(int $txId, array $records): array
+    {
+        $tx = new Transaction($txId, IsolationLevel::READ_COMMITTED);
+        $mutations = [WalOperation::INSERT, WalOperation::UPDATE, WalOperation::DELETE];
+
+        foreach ($records as $record) {
+            match (true) {
+                in_array($record->operation, $mutations, true) => $tx->record($record),
+                $record->operation === WalOperation::SAVEPOINT => $tx->declareSavepoint($this->requireSavepointName($record)),
+                $record->operation === WalOperation::ROLLBACK_TO_SAVEPOINT => $tx->truncateToSavepoint($this->requireSavepointName($record)),
+                $record->operation === WalOperation::RELEASE_SAVEPOINT => $tx->releaseSavepoint($this->requireSavepointName($record)),
+                default => null,
+            };
+        }
+
+        return $tx->allRecordsReversed();
+    }
+
+    private function requireSavepointName(WalRecord $record): string
+    {
+        return $record->savepoint ?? throw new TransactionException(sprintf(
+            'A %s record is missing its savepoint name.',
+            $record->operation->value,
+        ));
+    }
+
+    /**
+     * @param array<int, WalRecord> $records not typed `list<WalRecord>`:
+     *        `recover()`'s own `array_filter()` before this call preserves
+     *        keys, and only a plain `foreach` is needed here, so nothing
+     *        is actually lost by not requiring the keys stay contiguous
+     */
     private function applyUndo(array $records): void
     {
         $undo = $this->undo ?? throw new TransactionException('No undo handler has been configured.');

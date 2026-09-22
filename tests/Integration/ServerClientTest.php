@@ -84,6 +84,47 @@ final class ServerClientTest extends TestCase
     }
 
     /**
+     * The bug DECISIONS.md's "A transaction belongs to its owning
+     * connection" fixed: before it, a second connection's own bare
+     * statement (no `BEGIN` of its own) silently ran *inside* whatever
+     * transaction another connection had open, and that second connection
+     * could then `COMMIT`/`ROLLBACK` it - ending a transaction it never
+     * started, without ever having sent a `BEGIN` itself.
+     */
+    public function testASecondConnectionCannotJoinOrCommitAnotherConnectionsOpenTransaction(): void
+    {
+        $first = $this->connect();
+        $second = $this->connect();
+
+        $first->execute('CREATE TABLE t (id INT PRIMARY KEY)');
+        $first->beginTransaction();
+        $first->execute('INSERT INTO t (id) VALUES (1)');
+
+        try {
+            $second->execute('INSERT INTO t (id) VALUES (2)');
+            self::fail('Expected the second connection to be rejected while the first transaction is open.');
+        } catch (ClientException) {
+            // Expected - not silently joined.
+        }
+
+        try {
+            $second->commit();
+            self::fail('Expected the second connection to be rejected: it never began this transaction.');
+        } catch (ClientException) {
+            // Expected.
+        }
+
+        // The first connection's own transaction is untouched - its COMMIT
+        // still works, and only its own row made it in.
+        $first->commit();
+
+        self::assertSame([['id' => 1]], $first->query('SELECT * FROM t')->fetchAll());
+
+        $first->close();
+        $second->close();
+    }
+
+    /**
      * DECISIONS.md's "`LockManager` never waits": `TransactionManager` owns
      * exactly one current `Transaction` for the whole `Database`, so a
      * second connection's own `BEGIN` while the first is still open is

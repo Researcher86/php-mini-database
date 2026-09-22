@@ -15,6 +15,7 @@ use PhpMiniDatabase\Transaction\Wal;
 use PhpMiniDatabase\Transaction\WalOperation;
 use PhpMiniDatabase\Transaction\WalRecord;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 final class TransactionManagerTest extends TestCase
 {
@@ -118,6 +119,73 @@ final class TransactionManagerTest extends TestCase
         // take it.
         $this->locks->acquireRowLock('t', new RecordId(0, 0), 999, LockMode::EXCLUSIVE);
         $this->addToAssertionCount(1);
+    }
+
+    // --- Ownership ---
+
+    public function testAnotherOwnerCannotCommitTheOpenTransaction(): void
+    {
+        $this->transactions->begin(owner: 'alice');
+
+        $this->expectException(TransactionException::class);
+        $this->transactions->commit(owner: 'bob');
+    }
+
+    public function testAnotherOwnerCannotRollBackTheOpenTransaction(): void
+    {
+        $this->transactions->begin(owner: 'alice');
+
+        $this->expectException(TransactionException::class);
+        $this->transactions->rollback(owner: 'bob');
+    }
+
+    public function testAnotherOwnerCannotSavepointTheOpenTransaction(): void
+    {
+        $this->transactions->begin(owner: 'alice');
+
+        $this->expectException(TransactionException::class);
+        $this->transactions->savepoint('sp1', owner: 'bob');
+    }
+
+    public function testTheOwnerThatBeganItCanStillCommitIt(): void
+    {
+        $this->transactions->begin(owner: 'alice');
+        $this->transactions->commit(owner: 'alice');
+
+        self::assertFalse($this->transactions->inTransaction());
+    }
+
+    public function testIsOwnedByIsFalseWhenNothingIsOpen(): void
+    {
+        self::assertFalse($this->transactions->isOwnedBy('alice'));
+    }
+
+    public function testIsOwnedByDistinguishesTheRealOwnerFromAnyoneElse(): void
+    {
+        $this->transactions->begin(owner: 'alice');
+
+        self::assertTrue($this->transactions->isOwnedBy('alice'));
+        self::assertFalse($this->transactions->isOwnedBy('bob'));
+    }
+
+    public function testCurrentOwnedByReturnsNullForAnyoneButTheRealOwner(): void
+    {
+        $tx = $this->transactions->begin(owner: 'alice');
+
+        self::assertSame($tx, $this->transactions->currentOwnedBy('alice'));
+        self::assertNull($this->transactions->currentOwnedBy('bob'));
+    }
+
+    public function testOwnershipIsForgottenOnceTheTransactionEnds(): void
+    {
+        $this->transactions->begin(owner: 'alice');
+        $this->transactions->commit(owner: 'alice');
+
+        // Bob is not silently now "the owner of nothing" - a fresh begin()
+        // by anyone, alice included, must not be blocked by a stale owner.
+        $this->transactions->begin(owner: 'bob');
+        self::assertTrue($this->transactions->isOwnedBy('bob'));
+        self::assertFalse($this->transactions->isOwnedBy('alice'));
     }
 
     public function testRollbackWithNoActiveTransactionThrows(): void
@@ -266,5 +334,57 @@ final class TransactionManagerTest extends TestCase
         $this->transactions->recover();
 
         self::assertSame([], $this->undone);
+    }
+
+    // --- Sync handler ---
+
+    public function testTheSyncHandlerRunsBeforeTheWalIsCheckpointedOnCommit(): void
+    {
+        $this->transactions->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        $this->transactions->begin();
+        $this->transactions->logInsert('t', new RecordId(0, 0), ['id' => 1]);
+
+        try {
+            $this->transactions->commit();
+            self::fail('Expected the sync handler failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected.
+        }
+
+        // If sync() genuinely runs before checkpoint(), a sync failure
+        // must leave the WAL uncheckpointed - the whole point of running
+        // it first. A future crash still has everything it needs to redo
+        // or undo this transaction.
+        self::assertNotSame([], $this->wal->readAll());
+    }
+
+    public function testTheSyncHandlerRunsBeforeTheWalIsCheckpointedOnRollback(): void
+    {
+        $this->transactions->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        $this->transactions->begin();
+        $this->transactions->logInsert('t', new RecordId(0, 0), ['id' => 1]);
+
+        try {
+            $this->transactions->rollback();
+            self::fail('Expected the sync handler failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected.
+        }
+
+        self::assertNotSame([], $this->wal->readAll());
+    }
+
+    public function testNoSyncHandlerConfiguredIsANoOpNotAnError(): void
+    {
+        $this->transactions->begin();
+        $this->transactions->commit();
+
+        self::assertSame([], $this->wal->readAll());
     }
 }

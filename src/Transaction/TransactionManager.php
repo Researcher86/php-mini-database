@@ -16,6 +16,17 @@ use PhpMiniDatabase\Storage\RecordId;
  * caller did not ask for is exactly the kind of surprise this project
  * avoids elsewhere.
  *
+ * `$owner` is who opened the one open `Transaction` — an opaque token the
+ * caller supplies (`Execution\Executor` passes `$this`), compared only by
+ * identity, never inspected. This is not a second transaction slot: this
+ * project stays single-writer (see `begin()`), and any caller can still
+ * see whether *something* is open (`inTransaction()`). What owner tracking
+ * adds is that only the caller `begin()` recorded may `commit()`/
+ * `rollback()`/`savepoint()`/etc. that transaction, or have an autocommit
+ * statement silently run inside it — a second `Network\Session` sharing
+ * this same `Database` used to be able to do either, since nothing here
+ * ever asked which caller was asking. See DECISIONS.md.
+ *
  * Undoing a change is not this class's job: it holds the *log* of what
  * happened, but reversing a change means writing to the heap file and its
  * indexes, which only `Execution\Executor` knows how to do. `setUndoHandler()`
@@ -24,15 +35,22 @@ use PhpMiniDatabase\Storage\RecordId;
  * otherwise be a circular dependency (`Executor` needs a
  * `TransactionManager` to dispatch `BEGIN`/`COMMIT`/…, and this class needs
  * `Executor`'s row-mutation logic to undo anything) without either class
- * depending on the other's concrete type.
+ * depending on the other's concrete type. `setSyncHandler()` is the same
+ * pattern for a second capability only `Schema\Database` has: pushing
+ * every page a transaction touched all the way to the device before its
+ * WAL record is checkpointed away. See DECISIONS.md.
  */
 final class TransactionManager
 {
     private ?Transaction $current = null;
 
+    private mixed $owner = null;
+
     private int $nextTransactionId = 1;
 
     private ?Closure $undo = null;
+
+    private ?Closure $sync = null;
 
     private bool $recovered = false;
 
@@ -48,6 +66,20 @@ final class TransactionManager
         $this->undo = $handler;
     }
 
+    /**
+     * @param Closure(): void $handler called once, at the end of every
+     *        `commit()`/`rollback()`, right before the WAL is checkpointed
+     *        — see `Schema\Database::syncStorage()`, the real handler
+     *        `Execution\Executor` wires in. Optional: a `TransactionManager`
+     *        built without a real `Database` behind it (most of this
+     *        class's own tests) has nothing to sync and no handler to
+     *        configure.
+     */
+    public function setSyncHandler(Closure $handler): void
+    {
+        $this->sync = $handler;
+    }
+
     public function current(): ?Transaction
     {
         return $this->current;
@@ -58,12 +90,24 @@ final class TransactionManager
         return $this->current !== null;
     }
 
+    /** Whether $owner is the caller `begin()` recorded for the currently open transaction — false if nothing is open at all. */
+    public function isOwnedBy(mixed $owner): bool
+    {
+        return $this->current !== null && $this->owner === $owner;
+    }
+
+    /** The open transaction, but only if $owner is the one that began it — null otherwise, including when nothing is open. */
+    public function currentOwnedBy(mixed $owner): ?Transaction
+    {
+        return $this->isOwnedBy($owner) ? $this->current : null;
+    }
+
     public function locks(): LockManager
     {
         return $this->locks;
     }
 
-    public function begin(IsolationLevel $level = IsolationLevel::READ_COMMITTED): Transaction
+    public function begin(IsolationLevel $level = IsolationLevel::READ_COMMITTED, mixed $owner = null): Transaction
     {
         if ($this->current !== null) {
             throw new TransactionException('A transaction is already active; COMMIT or ROLLBACK it first.');
@@ -72,46 +116,48 @@ final class TransactionManager
         $id = $this->nextTransactionId++;
         $this->wal->append(WalRecord::begin($this->wal->nextLsn(), $id));
 
+        $this->owner = $owner;
+
         return $this->current = new Transaction($id, $level);
     }
 
-    public function commit(): void
+    public function commit(mixed $owner = null): void
     {
-        $tx = $this->requireCurrent();
+        $tx = $this->requireOwnedCurrent($owner);
 
         $this->wal->append(WalRecord::commit($this->wal->nextLsn(), $tx->id));
         $this->finish($tx);
     }
 
-    public function rollback(): void
+    public function rollback(mixed $owner = null): void
     {
-        $tx = $this->requireCurrent();
+        $tx = $this->requireOwnedCurrent($owner);
 
         $this->applyUndo($tx->allRecordsReversed());
         $this->wal->append(WalRecord::rollback($this->wal->nextLsn(), $tx->id));
         $this->finish($tx);
     }
 
-    public function savepoint(string $name): void
+    public function savepoint(string $name, mixed $owner = null): void
     {
-        $tx = $this->requireCurrent();
+        $tx = $this->requireOwnedCurrent($owner);
 
         $tx->declareSavepoint($name);
         $this->wal->append(WalRecord::savepoint($this->wal->nextLsn(), $tx->id, $name));
     }
 
-    public function rollbackToSavepoint(string $name): void
+    public function rollbackToSavepoint(string $name, mixed $owner = null): void
     {
-        $tx = $this->requireCurrent();
+        $tx = $this->requireOwnedCurrent($owner);
 
         $this->applyUndo($tx->recordsSince($name));
         $tx->truncateToSavepoint($name);
         $this->wal->append(WalRecord::rollbackToSavepoint($this->wal->nextLsn(), $tx->id, $name));
     }
 
-    public function releaseSavepoint(string $name): void
+    public function releaseSavepoint(string $name, mixed $owner = null): void
     {
-        $tx = $this->requireCurrent();
+        $tx = $this->requireOwnedCurrent($owner);
 
         $tx->releaseSavepoint($name);
         $this->wal->append(WalRecord::releaseSavepoint($this->wal->nextLsn(), $tx->id, $name));
@@ -262,6 +308,15 @@ final class TransactionManager
     {
         $this->locks->releaseAll($tx->id);
         $this->current = null;
+        $this->owner = null;
+
+        // Before the checkpoint below discards the only remaining record
+        // of what this transaction did: push every page it touched to the
+        // device. Without this, a page `PageManager::write()` left sitting
+        // in the OS page cache after a plain fwrite() is not actually
+        // guaranteed durable yet, and the WAL record that could have
+        // redone it is about to be gone. See DECISIONS.md.
+        $this->sync?->__invoke();
 
         // Safe only because exactly one transaction can ever be open at a
         // time in this process - once it ends, nothing depends on the log
@@ -269,8 +324,27 @@ final class TransactionManager
         $this->wal->checkpoint();
     }
 
+    /**
+     * `logInsert()`/`logUpdate()`/`logDelete()`'s own check: no ownership
+     * verification, since they only ever run from inside `Execution\Executor::withTransaction()`'s
+     * closure, which has already established the caller either began this
+     * transaction itself or already owned it before `$work()` ran.
+     */
     private function requireCurrent(): Transaction
     {
         return $this->current ?? throw new TransactionException('No transaction is active.');
+    }
+
+    private function requireOwnedCurrent(mixed $owner): Transaction
+    {
+        $tx = $this->requireCurrent();
+
+        if ($this->owner !== $owner) {
+            throw new TransactionException(
+                'Another connection has an open transaction; only the connection that started it may COMMIT, ROLLBACK, or manage its savepoints.',
+            );
+        }
+
+        return $tx;
     }
 }

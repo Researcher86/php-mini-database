@@ -1241,3 +1241,44 @@ added purely to move the number.
 `tests/Benchmark/{InsertBench,SelectBench,JoinBench,NetworkBench}.php`;
 plus every PHPStan-level-8 narrowing fix across `tests/Unit/*` (no test's
 assertions changed, only what the type checker can prove about them).
+
+## Post-plan: two transaction-safety gaps found in review
+
+All 20 milestones done, but the plan never had a milestone for "have
+someone else read the finished thing" — an external review of the engine
+raised two concerns about `Transaction\*`, checked against the real code
+rather than taken at face value (one claim from the same review, about
+`BTreeIndex` range boundaries for `VARCHAR`, turned out not to be a
+correctness bug on inspection — `IndexSelection`'s `Filter` re-validates
+every row an `IndexScan` returns, proven by actually running the query).
+
+The two that held up were real, and worse in practice than first
+described. A second `Network\Session` sharing the same `Schema\Database`
+as one with an open transaction could not only fail to open its *own*
+`BEGIN` (already true, already tested) but could have a bare statement of
+its own run silently *inside* the first session's transaction, and could
+`COMMIT`/`ROLLBACK` it outright — reproduced directly against a real
+`bin/minidb-server`, not just read off the code. Separately,
+`Storage\PageManager::write()` never `fsync()`'d a page on the ordinary
+write path, and `TransactionManager::finish()` checkpointed (truncated)
+the WAL right after a `COMMIT` regardless — a crash in that window could
+lose data a client had already been told was committed.
+
+Both fixed: `TransactionManager` now tracks which caller's `begin()`
+opened the current transaction and refuses everyone else
+(`commit()`/`rollback()`/`savepoint()`/an autocommit statement of their
+own), replacing a `Network\Session` heuristic (`$ownsOpenTransaction`,
+inferred by watching a flag flip) that turned out not to actually catch
+the bug it was built for. `Schema\Database::syncStorage()` is wired in as
+a new `setSyncHandler()` capability, run before every checkpoint. See
+[DECISIONS.md](DECISIONS.md#a-transaction-belongs-to-its-owning-connection)
+and
+[DECISIONS.md](DECISIONS.md#commitrollback-sync-storage-before-checkpointing-the-wal)
+for both in full, including why neither changes this engine's
+single-writer model.
+
+**Tests:** `TransactionManagerTest`'s new "Ownership" and "Sync handler"
+sections (the latter proven by making the sync handler itself throw, and
+asserting the WAL survives — the only way that can pass is if `sync()`
+genuinely runs before `checkpoint()`); `ServerClientTest::testASecondConnectionCannotJoinOrCommitAnotherConnectionsOpenTransaction`
+against a real server.

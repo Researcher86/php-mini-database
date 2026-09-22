@@ -194,6 +194,35 @@ final class Database
         return $this->transactions ??= new TransactionManager($this->wal(), $this->locks());
     }
 
+    /**
+     * Pushes every currently-open heap file and index all the way to the
+     * device — `Executor` wires this in as `TransactionManager`'s sync
+     * handler, called at the end of every `COMMIT`/`ROLLBACK`, right before
+     * the WAL is checkpointed. Without it, `PageManager::write()`'s plain
+     * `fwrite()` leaves a mutated page only as durable as the OS's own page
+     * cache decides to make it — the WAL record for that change can already
+     * be gone (checkpointed) by the time the page itself actually reaches
+     * disk. See DECISIONS.md.
+     *
+     * Syncs every open table and index unconditionally, not only the ones
+     * this particular transaction touched: tracking a per-transaction dirty
+     * set would need `HeapFile`/`BTreeIndex` to report which pages they
+     * wrote, machinery this project's `PageManager` does not have (see "No
+     * buffer pool yet" in DECISIONS.md) — an `fsync()` on a handful of
+     * already-open files this engine's scale keeps open anyway is the
+     * simpler, obviously-correct trade.
+     */
+    public function syncStorage(): void
+    {
+        foreach ($this->heapFiles as $heap) {
+            $heap->sync();
+        }
+
+        foreach ($this->indexes as $index) {
+            $index->sync();
+        }
+    }
+
     public function close(): void
     {
         foreach ($this->heapFiles as $heap) {

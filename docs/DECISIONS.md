@@ -76,6 +76,8 @@ project is built from is [PLAN.md](../PLAN.md).
 | Recovery replays a crashed transaction through the same state machine a live one uses | current, [why](#recovery-replays-through-the-same-transaction-state-machine-a-live-rollback-uses) |
 | PHPStan went to level 8 by narrowing call sites, not by suppressing them | current, [why](#phpstan-level-8-narrowing-not-suppression) |
 | Benchmarks are plain PHPUnit tests in their own testsuite, not a new dependency | current, [why](#benchmarks-are-plain-phpunit-not-a-new-dependency) |
+| A transaction belongs to its owning connection, checked by identity, not merely by existing | current, [why](#a-transaction-belongs-to-its-owning-connection) |
+| commit()/rollback() sync every open heap file and index before checkpointing the WAL | current, [why](#commitrollback-sync-storage-before-checkpointing-the-wal) |
 
 ## One byte format for disk and wire
 
@@ -2139,3 +2141,119 @@ concretely rather than only asserting a floor against:
   match found" needs bookkeeping a plain hash-join doesn't) that this
   milestone's "optimization" bullet is scoped to *measuring and naming*,
   not building.
+
+## A transaction belongs to its owning connection
+
+An external review of the finished engine raised a concern about
+`TransactionManager`'s single-current-transaction design ("Isolation
+levels are 2-phase locking, not MVCC" above, and "`Database`, not
+`Executor`, owns transaction and lock state"): that a second connection
+could act on a transaction it did not open. Checking it against a real
+`bin/minidb-server` found the actual bug is worse than "cannot open its
+own" (already refused, and already tested — `ServerClientTest::testOnlyOneConnectionAtATimeCanHaveAnOpenTransaction`).
+Reproduced directly:
+
+```
+A: BEGIN; INSERT id=1 (uncommitted)
+B: INSERT id=2 (no BEGIN of its own)   -> SUCCEEDED, silently inside A's transaction
+B: COMMIT (never opened one)            -> SUCCEEDED, committing both rows
+A: COMMIT                               -> FAILED: "No transaction is active"
+```
+
+The root cause: `Executor::withTransaction()` (the autocommit wrapper
+around every bare `INSERT`/`UPDATE`/`DELETE`) decided whether to open and
+close its own transaction purely from `TransactionManager::inTransaction()`
+— true the instant *anything at all* is open, regardless of who opened it.
+A bare statement on connection B, running while A's `BEGIN` was still
+open, found `inTransaction()` true, treated itself as "not autocommit",
+and ran directly inside whatever was current — A's transaction — without
+ever calling `begin()`. `commit()`/`rollback()`/`savepoint()`/
+`rollbackToSavepoint()`/`releaseSavepoint()` had the same shape of gap one
+level up: each only checked *whether* a transaction was open
+(`requireCurrent()`), never *who* opened it, so B's explicit `COMMIT`
+ended A's transaction outright.
+
+`Network\Session` already had a partial defense —
+`$ownsOpenTransaction`, inferred by watching `Executor::inTransaction()`
+flip false→true across one statement — but its own docblock's assumption
+("a false→true transition can only be this session's own successful
+`BEGIN`, since a second one is refused outright while another is already
+open") is exactly what the autocommit-join case above breaks: B's
+statement causes no flip at all (it was already `true`, from A), so B's
+own `$ownsOpenTransaction` correctly stayed `false` — but nothing then
+stopped B's *own* later `COMMIT` from succeeding anyway, since that path
+never consulted `$ownsOpenTransaction` in the first place. A heuristic
+layered on top of the real gap could narrow it, not close it.
+
+The fix adds real ownership to `TransactionManager`: `begin()` takes an
+opaque `$owner` token (`Execution\Executor` passes `$this`, compared only
+by identity) and remembers it alongside `$current`; `commit()`/
+`rollback()`/`savepoint()`/`rollbackToSavepoint()`/`releaseSavepoint()`
+all take the same token and refuse (`requireOwnedCurrent()`) if it does
+not match. `withTransaction()` checks ownership up front too — `isOwnedBy($this)`
+— and rejects a bare statement outright if another connection's
+transaction is open, rather than silently joining it. `lockForRead()`
+and `currentTransactionId()` switched from `current()` to the new
+`currentOwnedBy($this)` for the same reason: a `SELECT` from a connection
+that has no transaction of its own must not inherit whatever isolation
+level *someone else's* open transaction happens to carry.
+
+This is not a new concurrency model — `Database` is still single-writer,
+still exactly one transaction open at a time (see "Isolation levels are
+2-phase locking, not MVCC" and "`LockManager` never waits" above); a
+second `BEGIN` while one is open is refused exactly as before, by anyone.
+What changed is narrower and was the actual bug: only the connection that
+opened the one open transaction may act on it, and everyone else's own
+bare statements run genuinely autocommit regardless of what someone else
+has open. `Network\Session`'s `$ownsOpenTransaction`/`trackTransactionOwnership()`
+heuristic is gone — `close()` now asks `Executor::inTransaction()` (now
+itself owner-aware) directly, which is both simpler and actually correct.
+Proven against a real server in
+[ServerClientTest::testASecondConnectionCannotJoinOrCommitAnotherConnectionsOpenTransaction](../tests/Integration/ServerClientTest.php).
+
+## commit()/rollback() sync storage before checkpointing the WAL
+
+The same external review named a second, independent gap: `Storage\PageManager::write()`
+— what every heap and index mutation goes through — only ever `fwrite()`s
+a page; `sync()` (`fflush()` + `fsync()`) existed but was called from
+nowhere except `Storage\HeapFile::vacuum()`. `TransactionManager::finish()`
+(reached by both `commit()` and `rollback()`) checkpointed — truncated —
+the WAL immediately after, with nothing in between confirming the pages
+that transaction wrote had actually reached the device rather than the
+OS's page cache. A crash in that window (checkpoint done, pages not yet
+flushed by the OS) would lose data a client had already been told was
+committed, with no WAL record left to redo it from — worse than "A row is
+mutated before its WAL record is appended" above, since that gap is
+narrow and named; this one had no fsync anywhere on the path at all.
+
+Fixed by giving `TransactionManager` the same wiring pattern
+`setUndoHandler()` already established for a capability only `Execution\Executor`
+has: `setSyncHandler(Closure $handler)` (`Closure(): void`), called by
+`finish()` right before `checkpoint()`. `Schema\Database::syncStorage()`
+is the real handler `Executor`'s constructor wires in — it walks every
+currently-open `HeapFile`/`BTreeIndex` (both gained a `sync()` delegating
+to their own `PageManager::sync()`) and syncs each one. Optional, not
+required like the undo handler: a bare `TransactionManager` built without
+a real `Database` behind it (most of this class's own unit tests) has
+nothing to sync and no handler to configure, and `finish()` simply skips
+the call (`$this->sync?->__invoke()`) when none was set.
+
+Syncing every open table and index unconditionally, not only the ones the
+finishing transaction actually touched, is a deliberate simplification:
+tracking a per-transaction dirty set would need `HeapFile`/`BTreeIndex` to
+report which pages they wrote, machinery `PageManager` does not have (see
+"No buffer pool yet"). At this project's scale — a handful of tables and
+indexes open at once, kept open for the life of the process either way —
+an `fsync()` on all of them is the simpler, obviously-correct trade, not
+a measured bottleneck. `InsertBench`'s numbers before and after this
+change are within normal run-to-run variance; the dominant cost was
+already the WAL's own per-write `fsync()` (see "Write ordering" in
+transactions.md), which this adds to but does not multiply, since
+`fsync()` on an unwritten page is cheap and a batched transaction still
+pays for a table's pages only once, at its single `finish()`, not once
+per row.
+
+Tested by making the sync handler itself throw and asserting the WAL is
+still fully intact afterward (`TransactionManagerTest::testTheSyncHandlerRunsBeforeTheWalIsCheckpointedOnCommit`/`...OnRollback`)
+— the only way that assertion can pass is if `sync()` genuinely runs
+*before* `checkpoint()`, not merely somewhere in `finish()`.

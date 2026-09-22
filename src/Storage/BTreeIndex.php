@@ -185,6 +185,12 @@ final class BTreeIndex
         }
     }
 
+    /** Pushes every page written so far all the way to the device — see `Transaction\TransactionManager`'s sync handler. */
+    public function sync(): void
+    {
+        $this->pages->sync();
+    }
+
     public function close(): void
     {
         $this->pages->close();

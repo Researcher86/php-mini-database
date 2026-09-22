@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Execution;
 use Closure;
 use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Exception\ExecutionException;
+use PhpMiniDatabase\Exception\TransactionException;
 use PhpMiniDatabase\Execution\Expression\EvaluationContext;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
 use PhpMiniDatabase\Execution\Expression\QualifiedRowContext;
@@ -153,6 +154,7 @@ final readonly class Executor
         $this->locks = $database->locks();
         $this->transactions = $database->transactions();
         $this->transactions->setUndoHandler($this->undo(...));
+        $this->transactions->setSyncHandler($database->syncStorage(...));
         $this->transactions->recover();
         $this->planner = new Planner($database);
         $this->optimizer = new Optimizer();
@@ -165,15 +167,16 @@ final readonly class Executor
     }
 
     /**
-     * Whether *some* transaction is currently open — system-wide, not
-     * per-caller, since `Database` allows only one at a time (see
-     * DECISIONS.md, Phase 8). `Network\Session` uses this to notice when
-     * its own statement is the one that opened or closed it, not to ask
-     * whether it personally owns whatever is open.
+     * Whether *this* `Executor` is the one that opened the one transaction
+     * `Database` allows open at a time (see DECISIONS.md, Phase 8) — not
+     * merely whether something is open at all, which another `Executor`
+     * sharing the same `Database` could make true independent of this one.
+     * `Network\Session` relies on exactly this distinction to know whether
+     * *its own* connection is the one that must roll back on disconnect.
      */
     public function inTransaction(): bool
     {
-        return $this->transactions->inTransaction();
+        return $this->transactions->isOwnedBy($this);
     }
 
     /** @param list<mixed> $parameters */
@@ -374,18 +377,22 @@ final readonly class Executor
 
     /**
      * `REPEATABLE_READ`/`SERIALIZABLE`'s read-locking. A no-op outside an
-     * explicit transaction, or under `READ_COMMITTED` inside one: an
-     * isolation level's guarantee is about what a *later* statement in the
-     * same transaction sees, and an autocommit `SELECT` has no later
-     * statement of its own to protect. `SERIALIZABLE` additionally takes a
-     * shared table lock on a full scan, to block another transaction's
-     * `INSERT` from creating a phantom row this transaction would have
-     * matched on a re-scan; an `IndexScan` never needs it, since a value
-     * outside its range could never have matched anyway.
+     * explicit transaction *of this `Executor`'s own*, or under
+     * `READ_COMMITTED` inside one: an isolation level's guarantee is about
+     * what a *later* statement in the same transaction sees, and an
+     * autocommit `SELECT` has no later statement of its own to protect —
+     * including one that happens to run while a *different* connection's
+     * transaction is open, which must not borrow that connection's
+     * isolation level for a read it never asked to be part of.
+     * `SERIALIZABLE` additionally takes a shared table lock on a full scan,
+     * to block another transaction's `INSERT` from creating a phantom row
+     * this transaction would have matched on a re-scan; an `IndexScan`
+     * never needs it, since a value outside its range could never have
+     * matched anyway.
      */
     private function lockForRead(Operator $pipeline, string $table, bool $isFullScan): Operator
     {
-        $tx = $this->transactions->current();
+        $tx = $this->transactions->currentOwnedBy($this);
 
         if ($tx === null || $tx->isolationLevel === IsolationLevel::READ_COMMITTED) {
             return $pipeline;
@@ -833,6 +840,13 @@ final readonly class Executor
      * multi-row `INSERT` statement-level atomicity for the first time: every
      * row it writes now commits together, or none of them survive.
      *
+     * A transaction some *other* `Executor` opened is not this one to join:
+     * before this check existed, a bare statement here found
+     * `$this->transactions->inTransaction()` true (someone else's `BEGIN`)
+     * and treated itself as non-autocommit, silently running inside that
+     * other transaction — reachable, and able to write rows, without ever
+     * calling `BEGIN` itself. See DECISIONS.md.
+     *
      * @template T
      *
      * @param Closure(): T $work
@@ -841,24 +855,30 @@ final readonly class Executor
      */
     private function withTransaction(Closure $work): mixed
     {
+        if ($this->transactions->inTransaction() && !$this->transactions->isOwnedBy($this)) {
+            throw new TransactionException(
+                'Another connection has an open transaction; try again once it finishes.',
+            );
+        }
+
         $autocommit = !$this->transactions->inTransaction();
 
         if ($autocommit) {
-            $this->transactions->begin();
+            $this->transactions->begin(owner: $this);
         }
 
         try {
             $result = $work();
         } catch (Throwable $e) {
             if ($autocommit) {
-                $this->transactions->rollback();
+                $this->transactions->rollback(owner: $this);
             }
 
             throw $e;
         }
 
         if ($autocommit) {
-            $this->transactions->commit();
+            $this->transactions->commit(owner: $this);
         }
 
         return $result;
@@ -866,7 +886,7 @@ final readonly class Executor
 
     private function currentTransactionId(): int
     {
-        $tx = $this->transactions->current() ?? throw new ExecutionException('No transaction is active.');
+        $tx = $this->transactions->currentOwnedBy($this) ?? throw new ExecutionException('No transaction is active.');
 
         return $tx->id;
     }
@@ -932,42 +952,42 @@ final readonly class Executor
 
     private function executeBegin(BeginStatement $statement): null
     {
-        $this->transactions->begin($statement->isolationLevel ?? IsolationLevel::READ_COMMITTED);
+        $this->transactions->begin($statement->isolationLevel ?? IsolationLevel::READ_COMMITTED, owner: $this);
 
         return null;
     }
 
     private function executeCommit(): null
     {
-        $this->transactions->commit();
+        $this->transactions->commit(owner: $this);
 
         return null;
     }
 
     private function executeRollback(): null
     {
-        $this->transactions->rollback();
+        $this->transactions->rollback(owner: $this);
 
         return null;
     }
 
     private function executeSavepoint(SavepointStatement $statement): null
     {
-        $this->transactions->savepoint($statement->name);
+        $this->transactions->savepoint($statement->name, owner: $this);
 
         return null;
     }
 
     private function executeReleaseSavepoint(ReleaseSavepointStatement $statement): null
     {
-        $this->transactions->releaseSavepoint($statement->name);
+        $this->transactions->releaseSavepoint($statement->name, owner: $this);
 
         return null;
     }
 
     private function executeRollbackToSavepoint(RollbackToSavepointStatement $statement): null
     {
-        $this->transactions->rollbackToSavepoint($statement->name);
+        $this->transactions->rollbackToSavepoint($statement->name, owner: $this);
 
         return null;
     }

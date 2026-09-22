@@ -40,6 +40,14 @@ every layer alongside the wire protocol (`docs/protocol.md`, written
 earlier); `examples/{embedded,client,pool,transaction}.php` are runnable,
 verified end to end against a real server, not illustrative snippets.
 
+Since then, an external review of the finished engine surfaced two real
+transaction-safety gaps — a second connection could silently join and
+even `COMMIT` another connection's open transaction, and `COMMIT` did not
+wait for a transaction's pages to actually reach disk before discarding
+the WAL record that could have redone them — both reproduced against a
+real server and fixed; see
+[docs/PHASES.md](docs/PHASES.md#post-plan-two-transaction-safety-gaps-found-in-review).
+
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in
 [docs/DECISIONS.md](docs/DECISIONS.md).

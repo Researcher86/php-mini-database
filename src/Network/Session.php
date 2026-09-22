@@ -69,16 +69,16 @@ use Throwable;
  * other path here already calls, rather than duplicating `BEGIN`'s
  * behavior a second time.
  *
- * `$ownsOpenTransaction` is what makes a client's disconnect mid-transaction
- * safe: `Schema\Database` allows only one open transaction system-wide
- * (Phase 8's single-writer model), so a session that opens one and then
- * disconnects without `COMMIT`/`ROLLBACK` would otherwise leave it open
- * forever, locking out every other session's `BEGIN` for good. `close()`
- * rolls it back first when this session is the one that opened it — judged
- * by watching `Executor::inTransaction()` flip false→true across this
- * session's own statement, not by trusting the statement type alone, since
- * `BEGIN`/`COMMIT`/`ROLLBACK` reach `Executor` exactly the same way whether
- * they arrived as a typed message or as plain SQL text through `Query`.
+ * `close()`'s `Executor::inTransaction()` check is what makes a client's
+ * disconnect mid-transaction safe: `Schema\Database` allows only one open
+ * transaction system-wide (Phase 8's single-writer model), so a session
+ * that opens one and then disconnects without `COMMIT`/`ROLLBACK` would
+ * otherwise leave it open forever, locking out every other session's
+ * `BEGIN` for good. `inTransaction()` answers *this* session's own
+ * question — whether its own `Executor` is the one that opened whatever
+ * transaction is currently open, not merely whether one is open at all —
+ * so `close()` only rolls back a transaction this session actually owns,
+ * never one left open by whichever other connection does.
  *
  * `Prepare`/`Execute`/`CloseStatement` (Milestone 14): `$preparedStatements`
  * caches `Sql\Ast\Statement`, not raw SQL — `PREPARE` parses once via
@@ -136,8 +136,6 @@ final class Session
     private array $preparedStatements = [];
 
     private int $nextStatementId = 1;
-
-    private bool $ownsOpenTransaction = false;
 
     private ?string $username = null;
 
@@ -456,7 +454,6 @@ final class Session
     /** @param callable(): (QueryResult|int|null) $run */
     private function runAndRespond(callable $run): void
     {
-        $wasInTransaction = $this->executor->inTransaction();
         $this->metrics->recordQuery();
 
         try {
@@ -465,28 +462,6 @@ final class Session
         } catch (Throwable $e) {
             $this->metrics->recordError();
             $this->send($this->resultEncoder->encodeError($e));
-        }
-
-        $this->trackTransactionOwnership($wasInTransaction);
-    }
-
-    /**
-     * Notices when *this* session's own statement — just run above,
-     * whatever it was — is what opened or closed the one transaction
-     * `Database` allows at a time: a false→true transition can only be
-     * this session's own successful `BEGIN`, since a second one is refused
-     * outright while another is already open (see `Executor::inTransaction()`'s
-     * docblock); any transition to `false` means nothing is open for
-     * anyone to abandon any more.
-     */
-    private function trackTransactionOwnership(bool $wasInTransaction): void
-    {
-        $isInTransaction = $this->executor->inTransaction();
-
-        if ($isInTransaction && !$wasInTransaction) {
-            $this->ownsOpenTransaction = true;
-        } elseif (!$isInTransaction) {
-            $this->ownsOpenTransaction = false;
         }
     }
 
@@ -516,7 +491,7 @@ final class Session
             return;
         }
 
-        if ($this->ownsOpenTransaction) {
+        if ($this->executor->inTransaction()) {
             try {
                 $this->executor->execute(new RollbackStatement());
             } catch (Throwable $e) {
@@ -526,8 +501,6 @@ final class Session
                     $e->getMessage(),
                 ));
             }
-
-            $this->ownsOpenTransaction = false;
         }
 
         $this->closed = true;

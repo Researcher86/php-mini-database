@@ -7,7 +7,7 @@ and owned per-`Schema\Database` (see
 The SQL surface is documented in [sql.md](sql.md#statements); this page is
 what actually happens underneath it.
 
-## One transaction at a time
+## One transaction at a time, and it belongs to whoever opened it
 
 `Transaction\TransactionManager` holds exactly one `Transaction` as
 "current" for the whole `Schema\Database` it belongs to — not one per
@@ -19,6 +19,21 @@ This is a direct consequence of `LockManager`'s own design
 ([DECISIONS.md](DECISIONS.md)): it never waits, so a second transaction can
 only ever conflict with the first by being refused outright, and refusing
 the second `BEGIN` itself is simplest possible version of that rule.
+
+Being the only transaction open server-wide is not the same as being open
+to whoever happens to be asking. `TransactionManager` also records *which*
+caller's `begin()` opened it (an opaque owner token — `Execution\Executor`
+passes `$this`), and `commit()`/`rollback()`/`savepoint()`/`rollbackToSavepoint()`/
+`releaseSavepoint()` all check it: a connection other than the one that
+opened the current transaction cannot end it, checkpoint it, or manage its
+savepoints, and cannot have a bare autocommit statement of its own silently
+run inside it either — `Executor::withTransaction()` rejects that case
+outright, the same "refuse rather than wait or guess" rule `LockManager`
+already follows. See
+[DECISIONS.md](DECISIONS.md#a-transaction-belongs-to-its-owning-connection)
+for the bug this closed and
+[ServerClientTest::testASecondConnectionCannotJoinOrCommitAnotherConnectionsOpenTransaction](../tests/Integration/ServerClientTest.php)
+for it proven against a real server.
 
 Statements outside an explicit `BEGIN` run autocommit — each one is its own
 implicit transaction, logged and finished (`TransactionManager::finish()`)
@@ -100,6 +115,17 @@ instant it is appended, autocommit or not. This is also this engine's
 dominant cost for single-row autocommit writes; see
 [InsertBench](../tests/Benchmark/InsertBench.php)'s "batched vs. autocommit"
 comparison and the note in [DECISIONS.md](DECISIONS.md).
+
+The narrow crash window this ordering accepts — the exact moment between a
+heap/index mutation and its WAL record — is a stated, bounded gap, not an
+open-ended one: `TransactionManager::finish()` (reached by both `commit()`
+and `rollback()`) pushes every open heap file and index all the way to the
+device — `Schema\Database::syncStorage()`, wired in as its sync handler —
+*before* checkpointing the WAL. A page `PageManager::write()` left sitting
+in the OS page cache after a plain `fwrite()` is not durable on its own;
+without this, `checkpoint()` could discard the one WAL record able to redo
+or undo it while the page itself had still never reached disk. See
+[DECISIONS.md](DECISIONS.md#commitrollback-sync-storage-before-checkpointing-the-wal).
 
 ## Crash recovery
 

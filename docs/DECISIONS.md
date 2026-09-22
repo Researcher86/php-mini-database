@@ -2531,6 +2531,20 @@ holds, and a crash (rather than an exception) midway through a build
 still leaves an orphaned `.idx.building` file that nothing reads and
 nothing yet cleans up.
 
+`DROP INDEX`'s own ordering is the mirror of that and equally
+deliberate: the schema is updated first, the file deleted second. An
+index file is created lazily (a `CREATE TABLE` writes only
+`schema.json`; a `PRIMARY KEY`'s index file appears on first use), so
+"the schema names it, the file is not there" is an ordinary state
+`BTreeIndex` answers by initializing an empty tree — which means a
+failure between the two steps must leave the schema ahead, not behind.
+An orphaned `.idx` that nothing names is inert, and the next `CREATE
+INDEX` of that name overwrites it; the reverse leaves every query on
+that column answering from an empty tree, silently returning nothing.
+Verified rather than assumed: deleting a live index file by hand and
+reopening makes `SELECT ... WHERE name = 'Ann'` return zero rows for a
+row that is plainly still in the table.
+
 One durability boundary underneath all of this is worth naming, since
 `Infrastructure\AtomicWriter` is what every catalog write goes through
 and its guarantee stops one level short. It writes a temporary file,

@@ -193,6 +193,19 @@ final class Database
      * would mean a later `CREATE INDEX` reusing the same name reopens a
      * file `BTreeIndex` still sees as already initialized, and silently
      * serves whatever stale tree was in it.
+     *
+     * The schema is updated *first* and the file removed second, which is
+     * the deliberate direction rather than the convenient one. An index
+     * file is created lazily — `CREATE TABLE` writes only `schema.json`,
+     * and a `PRIMARY KEY`'s index file appears on its first use — so
+     * "named by the schema, no file yet" is an ordinary state that
+     * `BTreeIndex` answers by initializing an empty tree. A failure
+     * between the two steps therefore has to leave the *schema* ahead: an
+     * orphaned `.idx` nothing names is inert garbage the next `CREATE
+     * INDEX` overwrites, while the reverse — the file gone, the schema
+     * still naming it — is indistinguishable from an index not built
+     * yet, and every query using it would come back empty instead of
+     * wrong-looking.
      */
     public function dropIndex(string $table, string $indexName): void
     {

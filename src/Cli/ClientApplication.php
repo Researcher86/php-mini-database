@@ -46,7 +46,7 @@ use PhpMiniDatabase\Client\ResultSet;
  */
 final class ClientApplication
 {
-    private const BOOLEAN_FLAGS = ['json', 'csv', 'vertical', 'quiet'];
+    private const BOOLEAN_FLAGS = ['json', 'csv', 'vertical', 'quiet', 'force'];
 
     private readonly ResultPrinter $printer;
 
@@ -88,8 +88,8 @@ final class ClientApplication
             'status' => $this->runAdminQuery($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showStatus()),
             'connections' => $this->runAdminQuery($config, $format, $quiet, static fn (Connection $c): ResultSet => $c->showConnections()),
             'kill' => $this->kill($config, $args),
-            'backup' => (new BackupCommand())->run($this->errorOutput),
-            'restore' => (new RestoreCommand())->run($this->errorOutput),
+            'backup' => (new BackupCommand())->run($options, $this->output, $this->errorOutput),
+            'restore' => (new RestoreCommand())->run($options, $flags, $this->output, $this->errorOutput),
             default => $this->usage(),
         };
     }

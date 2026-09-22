@@ -4,21 +4,50 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Cli\Command;
 
+use PhpMiniDatabase\Backup\BackupManager;
+use Throwable;
+
 /**
- * `bin/minidb backup` — named on Milestone 17's own checklist, but its
- * actual mechanism (`Backup\BackupManager`, tar.gz backups) is Milestone
- * 19's job, not this one's. Recognized here as a real subcommand rather
- * than falling into "unknown command", but honest that there is nothing
- * behind it yet, rather than improvising a backup format this project's
- * own plan gives a different milestone to design. See DECISIONS.md.
+ * `bin/minidb backup --data <dir> --output <archive.tar.gz>` — PLAN.md
+ * §9.2/§11 Milestone 19: a physical, tar.gz copy of a whole data
+ * directory via `Backup\BackupManager`.
+ *
+ * This is a local filesystem operation, the same as `Cli\Command\UserCommand`
+ * — it never opens a `Client\Connection`, since there is nothing a
+ * network round trip would add over reading the files directly, and no
+ * wire message exists (or should exist) for "send me your data directory
+ * as a tarball." A caller runs this on a machine that can already see the
+ * server's data directory, exactly the assumption `user add/remove/list`
+ * already makes. See DECISIONS.md.
  */
 final class BackupCommand
 {
-    /** @param resource $errorOutput */
-    public function run(mixed $errorOutput): int
+    /**
+     * @param array<string, list<string>> $options
+     * @param resource                    $output
+     * @param resource                    $errorOutput
+     */
+    public function run(array $options, mixed $output, mixed $errorOutput): int
     {
-        fwrite($errorOutput, "backup is not implemented yet - see PLAN.md Milestone 19 (Backup, Dump, Restore).\n");
+        $dataDirectory = $options['data'][0] ?? null;
+        $archivePath = $options['output'][0] ?? null;
 
-        return 1;
+        if ($dataDirectory === null || $archivePath === null) {
+            fwrite($errorOutput, "backup requires --data <dir> and --output <archive.tar.gz>.\n");
+
+            return 1;
+        }
+
+        try {
+            (new BackupManager())->backup($dataDirectory, $archivePath);
+        } catch (Throwable $e) {
+            fwrite($errorOutput, $e->getMessage() . "\n");
+
+            return 1;
+        }
+
+        fwrite($output, sprintf("Backed up \"%s\" to \"%s\".\n", $dataDirectory, $archivePath));
+
+        return 0;
     }
 }

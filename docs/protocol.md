@@ -89,9 +89,12 @@ implements this" on an interface) — `Codec::decode()` dispatches to the
 right one directly, by `MessageType`, the same way `Sql\Parser::statement()`
 dispatches on a `TokenType`.
 
-`COPY_IN`/`COPY_OUT`'s row format is still open — nothing before Milestone
-19 (Backup, Dump, Restore) needs it designed. `SHOW_STATUS`/`SHOW_CONNECTIONS`/
-`KILL` are settled as of Milestone 18 — see below.
+`COPY_IN`/`COPY_OUT`'s row format is still open — Milestone 19 (Backup,
+Dump, Restore) turned out not to need them after all (`Backup\Dumper`/
+`Restorer` work embedded, straight through `Schema\Database`, with no
+wire traffic at all — see DECISIONS.md), so no milestone currently claims
+designing this pair. `SHOW_STATUS`/`SHOW_CONNECTIONS`/`KILL` are settled
+as of Milestone 18 — see below.
 
 ## Codec
 
@@ -330,8 +333,9 @@ DECISIONS.md.
 ## What is deliberately not here yet
 
 - **Chunked result streaming.** See `QUERY_RESULT` above.
-- **`COPY_IN`/`COPY_OUT`'s row format** — deferred to Milestone 19
-  (Backup, Dump, Restore), which gives it a reason to exist.
+- **`COPY_IN`/`COPY_OUT`'s row format** — still nothing needs it designed;
+  Milestone 19 (Backup, Dump, Restore) turned out not to be that reason
+  after all (see DECISIONS.md).
 - **Idle and query timeouts.** `ServerConfig::$idleTimeoutSeconds`/
   `$queryTimeoutSeconds` are recorded but not enforced — `EventLoop` has no
   per-socket elapsed-time tracking yet. A session's automatic rollback on

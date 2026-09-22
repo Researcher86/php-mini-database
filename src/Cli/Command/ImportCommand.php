@@ -4,16 +4,16 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Cli\Command;
 
-use PhpMiniDatabase\Cli\SqlSplitter;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\ClientException;
 use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Sql\StatementSplitter;
 use Throwable;
 
 /**
  * `bin/minidb import ... dump.sql` — PLAN.md §9.2. Splits the file into
- * individual statements with `SqlSplitter` (the wire protocol's `Query`
- * only ever carries one at a time) and runs them through one connection,
+ * individual statements with `Sql\StatementSplitter` (the wire protocol's
+ * `Query` only ever carries one at a time) and runs them through one connection,
  * in order, stopping at the first failure — the same "stop, do not guess
  * how to keep going" default `mysql < dump.sql` has without `--force`.
  */
@@ -34,7 +34,7 @@ final class ImportCommand
         }
 
         try {
-            $statements = SqlSplitter::split($sql);
+            $statements = StatementSplitter::split($sql);
         } catch (Throwable $e) {
             fwrite($errorOutput, sprintf('Could not parse "%s": %s' . "\n", $path, $e->getMessage()));
 

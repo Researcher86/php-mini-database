@@ -8,6 +8,7 @@ use Closure;
 use PhpMiniDatabase\Client\ClientException;
 use PhpMiniDatabase\Client\Connection;
 use PhpMiniDatabase\Sql\Lexer;
+use PhpMiniDatabase\Sql\StatementSplitter;
 use PhpMiniDatabase\Sql\TokenType;
 use Throwable;
 
@@ -37,8 +38,8 @@ use Throwable;
  * simply do not end in `;` yet), which this reads as "read another line"
  * rather than an error, the same as a real SQL shell's multi-line input.
  * One buffered line may still hold more than one statement
- * (`SELECT 1; SELECT 2;`) — `SqlSplitter` is what splits it, the same
- * class `Command\ImportCommand` uses for a dump file. Each resulting
+ * (`SELECT 1; SELECT 2;`) — `Sql\StatementSplitter` is what splits it,
+ * the same class `Command\ImportCommand` uses for a dump file. Each resulting
  * statement is checked against `AdminCommand::parse()` first — PLAN.md
  * §10.4's `SHOW STATUS`/`SHOW CONNECTIONS`/`KILL <id>`, recognized as
  * plain text rather than real SQL grammar (see that class's own
@@ -138,7 +139,7 @@ final class Repl
     /** Runs every statement found in `$buffer`. Returns `false` if the REPL should stop. */
     private function runBuffered(string $buffer): bool
     {
-        foreach (SqlSplitter::split($buffer) as $statement) {
+        foreach (StatementSplitter::split($buffer) as $statement) {
             if (!$this->runOne($statement)) {
                 return false;
             }

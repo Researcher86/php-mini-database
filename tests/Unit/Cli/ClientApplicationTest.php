@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Tests\Unit\Cli;
 use PhpMiniDatabase\Cli\ClientApplication;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\Connection;
+use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Tests\Support\RunningServer;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
@@ -218,14 +219,49 @@ final class ClientApplicationTest extends TestCase
         self::assertStringContainsString('requires --data', $this->errorText());
     }
 
-    public function testBackupAndRestoreAreHonestStubs(): void
+    public function testBackupAndRestoreRoundTripADataDirectory(): void
     {
-        self::assertSame(1, $this->runCli(['backup']));
-        self::assertStringContainsString('Milestone 19', $this->errorText());
+        $dataDirectory = $this->path('mydb');
+        $this->runCli(['query', '--port', (string) self::PORT, 'CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(50))']);
+        $this->runCli(['query', '--port', (string) self::PORT, "INSERT INTO users (id, name) VALUES (1, 'Ann')"]);
 
+        $archivePath = $this->path('backup.tar.gz');
+        $backupExit = $this->runCli(['backup', '--data', $dataDirectory, '--output', $archivePath]);
+        self::assertSame(0, $backupExit);
+        self::assertFileExists($archivePath);
+
+        $restoredDirectory = $this->path('restored');
+        $this->output = fopen('php://memory', 'r+');
+        $restoreExit = $this->runCli(['restore', '--archive', $archivePath, '--data', $restoredDirectory]);
+        self::assertSame(0, $restoreExit);
+
+        $restoredDatabase = Database::open($restoredDirectory);
+        self::assertTrue($restoredDatabase->hasTable('users'));
+        $restoredDatabase->close();
+    }
+
+    public function testBackupWithoutRequiredFlagsFails(): void
+    {
+        $exitCode = $this->runCli(['backup']);
+
+        self::assertSame(1, $exitCode);
+        self::assertStringContainsString('requires --data', $this->errorText());
+    }
+
+    public function testRestoreRefusesANonEmptyDirectoryWithoutForce(): void
+    {
+        $dataDirectory = $this->path('mydb');
+        $this->runCli(['query', '--port', (string) self::PORT, 'CREATE TABLE t (id INT PRIMARY KEY)']);
+        $archivePath = $this->path('backup.tar.gz');
+        $this->runCli(['backup', '--data', $dataDirectory, '--output', $archivePath]);
+
+        // $dataDirectory itself already has files in it - restoring back
+        // onto itself without --force must be refused.
         $this->errorOutput = fopen('php://memory', 'r+');
-        self::assertSame(1, $this->runCli(['restore']));
-        self::assertStringContainsString('Milestone 19', $this->errorText());
+        $exitCode = $this->runCli(['restore', '--archive', $archivePath, '--data', $dataDirectory]);
+
+        self::assertSame(1, $exitCode);
+        self::assertNotSame('', $this->errorText());
     }
 
     public function testAnUnknownCommandPrintsUsage(): void

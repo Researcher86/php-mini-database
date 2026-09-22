@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Cli\Command;
 
-use DateTimeImmutable;
+use PhpMiniDatabase\Backup\SqlLiteral;
 use PhpMiniDatabase\Client\ClientConfig;
 use PhpMiniDatabase\Client\ClientException;
 use PhpMiniDatabase\Client\Connection;
-use RuntimeException;
 
 /**
  * `bin/minidb export --table <name>... [--output dump.sql]` — PLAN.md
@@ -87,20 +86,8 @@ final class ExportCommand
         $columnList = implode(', ', $columns);
 
         foreach ($result as $row) {
-            $values = implode(', ', array_map($this->literal(...), array_values($row)));
+            $values = implode(', ', array_map(SqlLiteral::format(...), array_values($row)));
             fwrite($output, sprintf("INSERT INTO %s (%s) VALUES (%s);\n", $table, $columnList, $values));
         }
-    }
-
-    private function literal(mixed $value): string
-    {
-        return match (true) {
-            $value === null => 'NULL',
-            is_bool($value) => $value ? 'TRUE' : 'FALSE',
-            is_int($value) || is_float($value) => (string) $value,
-            $value instanceof DateTimeImmutable => "'" . $value->format('Y-m-d H:i:s') . "'",
-            is_string($value) => "'" . str_replace("'", "''", $value) . "'",
-            default => throw new RuntimeException(sprintf('Cannot format a %s as a SQL literal.', get_debug_type($value))),
-        };
     }
 }

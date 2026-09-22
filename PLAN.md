@@ -83,7 +83,7 @@
 - [x] `minidb-server` — start the server.
 - [x] `minidb` — CLI client with REPL.
 - [x] Import/export SQL dump.
-- [ ] Backup/restore.
+- [x] Backup/restore.
 
 #### Other
 - [x] `EXPLAIN` query plan.
@@ -1123,11 +1123,11 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ### Milestone 19. Backup, Dump, Restore
 
-- [ ] `Dumper`: SQL dump of schema and data.
-- [ ] `Restorer`.
-- [ ] `BackupManager`: tar.gz backups.
-- [ ] Works via server and embedded.
-- [ ] Roundtrip tests.
+- [x] `Dumper`: SQL dump of schema and data.
+- [x] `Restorer`.
+- [x] `BackupManager`: tar.gz backups.
+- [x] Works via server and embedded.
+- [x] Roundtrip tests.
 
 **Estimate:** 3–4 days.
 
@@ -1446,7 +1446,7 @@ Client                          Server
 - [x] Milestone 16. Client Library.
 - [x] Milestone 17. CLI Client and REPL.
 - [x] Milestone 18. Server Administration.
-- [ ] Milestone 19. Backup, Dump, Restore.
+- [x] Milestone 19. Backup, Dump, Restore.
 - [ ] Milestone 20. Testing, Optimization, Documentation.
 
 ---

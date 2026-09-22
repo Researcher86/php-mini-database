@@ -68,6 +68,11 @@ project is built from is [PLAN.md](../PLAN.md).
 | bin/minidb-server's PID-file lifecycle never talks to the server over the wire | current, [why](#bin-minidb-servers-pid-file-lifecycle-never-talks-to-the-server) |
 | SIGHUP reload is scoped to max_connections only, since nothing else can reload without a config file | current, [why](#sighup-reload-is-scoped-to-max_connections-only) |
 | --daemon refuses to run without a real --log-file | current, [why](#daemon-refuses-to-run-without-a-real---log-file) |
+| Dumper/Restorer/BackupManager are embedded-only, not network operations | current, [why](#dumperrestorerbackupmanager-are-embedded-only) |
+| Dumper orders tables by foreign-key dependency, best-effort | current, [why](#dumper-orders-tables-by-foreign-key-dependency-best-effort) |
+| BackupManager uses PharData, not a shelled-out tar binary | current, [why](#backupmanager-uses-phardata-not-a-shelled-out-tar-binary) |
+| BackupManager.restore() refuses a non-empty target directory without force | current, [why](#backupmanagerrestore-refuses-a-non-empty-target-directory) |
+| SqlSplitter moved from Cli\ to Sql\ once Restorer needed it too | current, [why](#statementsplitter-moved-from-cli-to-sql) |
 
 ## One byte format for disk and wire
 
@@ -1906,3 +1911,113 @@ streams (or left at `Logger`'s own default, which is `php://stderr`).
 A caller who wants a silent daemon can still point `--log-file` at
 `/dev/null` explicitly — this only refuses the case where losing every
 log line was probably not the intent.
+
+## Dumper/Restorer/BackupManager are embedded-only
+
+PLAN.md §11 Milestone 19's checklist says "Works via server and
+embedded" without spelling out what that means for classes that talk in
+SQL text and tar archives, not wire messages. The literal reading —
+`Dumper`/`Restorer` also work over a live `Client\Connection` — turns out
+not to be buildable as anything more than what `Cli\Command\ExportCommand`/
+`ImportCommand` (Phase 17) already are: there is no `SHOW TABLES`, so a
+network-mode `Dumper` could not discover tables on its own, and no way to
+ask a remote server for a table's schema, so it could not emit `CREATE
+TABLE` either — exactly the two things an embedded `Dumper` can do that
+the network path cannot (see [import/export are scoped to what the
+protocol supports](#importexport-are-scoped-to-what-the-protocol-supports),
+the same gap, again).
+
+Read instead as "the mechanism is embedded — it works whether invoked
+*through* `bin/minidb-server`'s own CLI, or directly, embedded, in a
+user's own PHP script" (`new Dumper($database, $executor)`), both
+readings are satisfied by the same three classes, with no protocol work
+at all: `Dumper`/`Restorer` operate on `Schema\Database`/`Execution\Executor`
+directly, and `bin/minidb-server dump`/`load` are just a thin CLI wrapper
+around exactly that embedded API, the same relationship `bin/minidb-server start`
+already has to `Network\Server`.
+
+`bin/minidb backup`/`restore` (recognized, stubbed since Phase 17) are
+real now too, using `BackupManager` — and stay local filesystem
+operations under the network client for the same reason `user add/remove/list`
+already is one: a caller who can see the server's data directory runs
+them directly, and there is nothing a round trip through `Client\Connection`
+would add over reading the files (or, for `user`, `users.json`) in place.
+
+## Dumper orders tables by foreign-key dependency, best-effort
+
+A dump's `CREATE TABLE` statements (and, for the same reason, its
+`INSERT`s) have to create parent tables before children that reference
+them, or a `Restorer` replaying the dump from scratch would fail —
+`Schema\Database::tableNames()` lists tables alphabetically (confirmed
+directly: "orders" sorts before "users" even though "users" must be
+created first when "orders" references it), not in any dependency-aware
+order.
+
+`Dumper::orderedByDependency()` does a small, direct topological sort:
+repeatedly picks a table whose foreign keys all point at tables already
+ordered (or at itself — a self-reference is never a blocker), and stops
+making progress a round early rather than looping forever the moment
+nothing is eligible — which only happens for a genuine cycle, or a
+foreign key pointing outside the set of tables being dumped. Either case
+falls back to appending whatever tables are left in their original order,
+the same honesty `Execution\Executor`'s own cascade handling already has
+about not detecting a cycle (Phase 10) rather than a claim of solving it.
+
+Not handled at all: a self-referencing table (`employees.manager_id ->
+employees.id`) whose *rows*, not just its table definition, point
+forward — a report inserted before their not-yet-restored manager. Fixing
+that would need either deferred constraint checking or a two-pass
+insert-then-fix-up dump, neither of which this phase builds; a named,
+narrow gap rather than a silent one.
+
+## BackupManager uses PharData, not a shelled-out tar binary
+
+A tar.gz archive of a whole data directory could be built either by
+shelling out to a real `tar` binary (`proc_open`/`exec`) or through
+`ext-phar`'s `PharData` class, which can build and read `.tar`/`.tar.gz`
+archives directly in PHP. `PharData` was chosen, consistent with this
+project's general preference for a PHP-native mechanism over an external
+process where one already exists in the runtime — `stream_socket_*`
+instead of a network tool, `pcntl`/`posix` instead of shelling out to
+process-management commands (Phase 18). A `tar` dependency would also be
+a new, unstated requirement on the deployment environment; `ext-phar` is
+already part of a standard PHP build.
+
+One real wrinkle, checked directly rather than assumed: `phar.readonly`
+(`On` by default) does *not* block `PharData` the way it blocks a plain
+executable `.phar` — verified by building and extracting a `.tar.gz`
+archive with the default `php.ini` unchanged. No php.ini change is
+required to use this class.
+
+## BackupManager.restore() refuses a non-empty target directory
+
+`PharData::extractTo($dataDirectory, null, true)`'s own overwrite
+behavior merges an archive's files into whatever is already in the
+target directory — for two arbitrary files, an unsurprising thing to
+want; for a *database's* data directory specifically, silently
+interleaving two different databases' catalogs, tables and WAL files
+would leave neither one intact, with no error to say so.
+
+`restore()` checks first: a non-empty target directory raises
+`Exception\StorageException` unless the caller explicitly passes `force:
+true`. `bin/minidb restore` surfaces this as its own `--force` flag
+rather than always passing `force: true` — a caller has to mean it before
+extracting over whatever is already there.
+
+## StatementSplitter moved from Cli\ to Sql\
+
+`Cli\SqlSplitter` (Phase 17) existed to split a dump file or a REPL line
+into individual statements, since `Message\Query`/`Execution\Executor::run()`
+only ever handle one at a time — used by `Cli\Command\ImportCommand` and
+`Cli\Repl`. `Backup\Restorer` (this phase) needs exactly the same
+splitting to replay a `Dumper`-produced dump, and `Backup\` has no
+business depending on `Cli\` — a CLI-namespaced class existing purely to
+be reused by a non-CLI one would have the dependency arrow pointing the
+wrong way.
+
+Moved to `Sql\StatementSplitter` instead (same logic, `Lexer::tokenize()`
+already being a `Sql\` concern), with `Cli\Repl` and `Cli\Command\ImportCommand`
+updated to the new location. A small, mechanical refactor once a second,
+genuinely different consumer existed — the same kind of move this project
+made before when `bin/minidb-user`'s logic outgrew standing alone
+(Phase 17).

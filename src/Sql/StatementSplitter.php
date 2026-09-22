@@ -2,29 +2,30 @@
 
 declare(strict_types=1);
 
-namespace PhpMiniDatabase\Cli;
-
-use PhpMiniDatabase\Sql\Lexer;
-use PhpMiniDatabase\Sql\TokenType;
+namespace PhpMiniDatabase\Sql;
 
 /**
  * A dump file's or a REPL line's raw SQL text, split into individual
  * statements on top-level `;` — needed because `Message\Query`, and
  * therefore `Client\Connection::query()`, only ever carries one statement
- * at a time (`Execution\Executor::run()` calls `Sql\Parser::parseOne()`,
- * singular): `Command\ImportCommand` and `Cli\Repl` both have to do this
- * splitting themselves before sending anything.
+ * at a time (`Execution\Executor::run()` calls `Parser::parseOne()`,
+ * singular): `Cli\Command\ImportCommand`, `Cli\Repl` and `Backup\Restorer`
+ * all have to do this splitting themselves before running anything.
  *
  * A naive `explode(';', $sql)` would break on a `;` inside a string
  * literal (`INSERT INTO t VALUES ('a;b')`) or a comment. This reuses
- * `Sql\Lexer::tokenize()` instead — already quote- and comment-aware,
- * since the parser needs exactly that — and finds statement boundaries
- * from the *tokens*' own positions rather than re-deriving that logic.
- * A run of only comments/whitespace between two semicolons (or after the
- * last one) produces no token at all, so it is correctly dropped rather
- * than becoming an empty statement `Sql\Parser::parseOne()` would reject.
+ * `Lexer::tokenize()` instead — already quote- and comment-aware, since
+ * the parser needs exactly that — and finds statement boundaries from the
+ * *tokens*' own positions rather than re-deriving that logic. A run of
+ * only comments/whitespace between two semicolons (or after the last one)
+ * produces no token at all, so it is correctly dropped rather than
+ * becoming an empty statement `Parser::parseOne()` would reject.
+ *
+ * Lives under `Sql\`, not `Cli\`, since Milestone 19's `Backup\Restorer`
+ * needs it too and is not a CLI concern — moved here from `Cli\SqlSplitter`
+ * once a second, non-CLI consumer existed. See DECISIONS.md.
  */
-final class SqlSplitter
+final class StatementSplitter
 {
     /** @return list<string> */
     public static function split(string $sql): array

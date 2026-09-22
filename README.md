@@ -21,13 +21,15 @@ phase; each phase is a single commit.
 
 ## Status
 
-Latest finished phase: **Phase 18 — Server Administration**. `SHOW STATUS`,
-`SHOW CONNECTIONS` and `KILL <id>` work over the wire and from `bin/minidb`
-(`status`/`connections`/`kill`, and as plain text in the shell). `bin/minidb-server`
-now has a real `start`/`stop`/`status`/`reload` lifecycle: a PID file,
-`--daemon` (refusing to run without a real log file to write to once
-detached), and `SIGHUP`/`SIGTERM` handled cleanly. Backup, dump and
-restore are next.
+Latest finished phase: **Phase 19 — Backup, Dump, Restore**. `Backup\Dumper`/
+`Restorer` produce and replay a full SQL dump — schema and data,
+dependency-ordered — straight from `Schema\Database`, reachable via
+`bin/minidb-server dump`/`load`. `Backup\BackupManager` makes and restores
+a tar.gz of a whole data directory (refusing to overwrite a non-empty one
+without `--force`), reachable via `bin/minidb backup`/`restore` — real
+now, no longer the stubs Phase 17 left behind. The engine itself is
+considered feature-complete; testing, optimization and documentation are
+next.
 
 The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
 and the reasoning behind the designs that survived is in

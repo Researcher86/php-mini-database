@@ -1060,3 +1060,78 @@ Two boxes ticked in passing, not new to this phase: PLAN.md §2.1's CLI
 checklist had `minidb-server` unchecked despite working since Phase 12,
 and `EXPLAIN` unchecked despite working since Phase 9 — both re-verified
 against the current code and ticked now.
+
+## Phase 19 — Backup, Dump, Restore ✅
+
+Two independent pairs, both under `src/Backup/`, matching PLAN.md §4's
+exact class names: `Dumper`/`Restorer` (a logical, SQL-level backup) and
+`BackupManager` (a physical, tar.gz one). Neither talks to the network —
+"works via server and embedded" turned out to mean the mechanism itself
+is embedded (`Dumper`/`Restorer` read `Schema\Database` directly, `BackupManager`
+archives a data directory's files directly), reachable either from a
+user's own PHP script or from `bin/minidb-server`'s own CLI, not that
+either works over `Client\Connection` too. This is exactly what lets
+`Dumper` do the one thing `Cli\Command\ExportCommand` (Phase 17,
+network-mode) cannot: discover every table on its own
+(`Schema\Database::tableNames()`) and emit `CREATE TABLE` alongside
+`INSERT`, not only data. See DECISIONS.md.
+
+`Dumper` orders tables by foreign-key dependency (parents before
+children) on a best-effort basis — a cycle, or a reference outside the
+tables being dumped, falls back to whatever order it was given rather
+than looping forever, the same honesty `Execution\Executor`'s own cascade
+handling already has about not detecting a cycle (Phase 10).
+`Table::indexes()` includes the index a `PRIMARY KEY`/`UNIQUE` constraint
+automatically gets alongside any genuinely separate one — re-emitting
+those as `CREATE INDEX` would create the same index twice on restore, so
+`Dumper` filters them out by matching names against the constraint that
+spawned them. `Backup\SqlLiteral` (a plain value → SQL literal formatter)
+is shared with `Cli\Command\ExportCommand`, which used to have its own
+private copy of exactly the same logic. `Sql\StatementSplitter` — what
+`Restorer` needs to split a dump into individual statements, the same way
+`Cli\Command\ImportCommand`/`Cli\Repl` already do — moved from
+`Cli\SqlSplitter` once a second, non-CLI consumer existed; a `Cli\`-only
+name no longer fit.
+
+`BackupManager` uses `PharData` (`ext-phar`) for the tar.gz archive
+itself — no shelling out to a `tar` binary — verified directly to work
+regardless of `phar.readonly` (that ini setting only restricts
+*executable* `.phar` files). `backup()` writes beside the requested path
+and `rename()`s into place last, the same atomicity `Infrastructure\AtomicWriter`
+already uses for the same reason. `restore()` refuses a non-empty target
+directory unless told `$force`, so a caller cannot accidentally mix two
+databases' files together in one directory.
+
+`bin/minidb-server` gains `dump`/`load` (the SQL pair, avoiding a name
+collision with the tar.gz pair's own `restore`) and `bin/minidb`'s
+`backup`/`restore` — recognized-but-stubbed since Phase 17 — are real now,
+using `BackupManager`. Both stay local filesystem operations, the same
+category `user add/remove/list` already is: a caller with visibility into
+a data directory runs them directly, no `Client\Connection` involved.
+
+A real, if narrow, bug surfaced while testing `BackupManager`: a brand
+new data directory with no tables yet (`Database::open()` then `close()`,
+nothing ever created) makes `PharData::buildFromDirectory()` add zero
+entries, and `PharData` then silently never writes the `.tar.gz` file to
+disk at all — no exception, just a missing file `backup()`'s own
+`unlink()`/`rename()` calls would then fail against. Fixed by adding one
+harmless placeholder entry when the built archive is empty; the restored
+copy loses that placeholder-shaped directory structure on extraction, but
+`Database::open()` recreates whatever it needs from nothing regardless,
+so nothing real is lost.
+
+**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+
+**Tests:** `tests/Unit/Backup/DumperTest.php` (column/constraint/index
+rendering, dependency ordering, an explicit table filter, a table with no
+rows); `RestorerTest.php` (schema + data restored, comments skipped, the
+first failing statement stopping the rest); `BackupManagerTest.php` (a
+real round trip, the missing-source/missing-archive errors, the
+empty-database edge case, the non-empty-target refusal and its `$force`
+override); `SqlLiteralTest.php`; `DumpRestoreRoundTripTest.php` — the
+"Roundtrip tests" PLAN.md's own checklist names explicitly, a schema
+using every constraint kind `Dumper` renders, restored and then proven to
+still *enforce* its `CHECK` and cascade its `FOREIGN KEY`, not just parse
+back as matching text; `tests/Unit/Cli/ServerApplicationDumpTest.php`
+(`dump`/`load` in process — neither touches a socket or a signal) and
+extended `ClientApplicationTest.php` for the now-real `backup`/`restore`.

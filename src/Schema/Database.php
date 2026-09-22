@@ -149,8 +149,18 @@ final class Database
      */
     public function createIndex(string $table, IndexDefinition $definition, Closure $fill): void
     {
+        // Built first, and before anything is written: `Schema\Table`'s
+        // constructor is what refuses a second index of the same name, and
+        // it has to refuse it while the existing `.idx` is still untouched.
+        // Renaming a freshly built file over one that a *different*
+        // declaration still names would leave the catalog describing one
+        // column and the file holding another's keys - which the planner
+        // cannot tell apart, so queries would simply answer from the wrong
+        // tree.
+        $published = $this->table($table)->withIndex($definition);
+
         if (count($definition->columns()) !== 1) {
-            $this->addIndex($table, $definition);
+            $this->catalog->updateTable($published);
 
             return;
         }
@@ -159,7 +169,7 @@ final class Database
         $temporary = $path . '.building';
         $this->files->delete($temporary);
 
-        $columnType = $this->table($table)->column($definition->columns()[0])->type;
+        $columnType = $published->column($definition->columns()[0])->type;
         $index = BTreeIndex::open($temporary, $columnType, $definition->unique);
 
         try {
@@ -174,7 +184,7 @@ final class Database
 
         $index->close();
         $this->files->rename($temporary, $path);
-        $this->addIndex($table, $definition);
+        $this->catalog->updateTable($published);
     }
 
     /**

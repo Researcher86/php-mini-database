@@ -1408,9 +1408,24 @@ table holds. `Database::createIndex()` now fills a temporary file,
 `fsync()`s it, renames it into place, and updates the catalog last;
 a failure leaves neither file nor declaration.
 
-**Tests:** `ExecutorIndexTest::testATableRecreatedUnderTheSameNameGetsItsOwnFiles`
-(checked across a real reopen) and `::testAFailedUniqueIndexBuildLeavesNoIndexBehind`,
-each verified to fail against the code as it was.
+The next pass found the same shape a third time, in the fix itself: a
+`CREATE INDEX` under a name already taken renamed its finished file onto
+the *existing* index's path before anything checked the name, destroying
+a working index on the way to reporting the error — schema saying `idx`
+covers `name`, file holding `email`'s keys, and a `SELECT` on `name`
+coming back empty after a reopen. The future schema is built, and so
+validated, before anything is written now.
 
-**Done when:** `composer test` (1023), `composer analyse` (level 8) and
+**Tests:** `ExecutorIndexTest::testATableRecreatedUnderTheSameNameGetsItsOwnFiles`
+(checked across a real reopen), `::testAFailedUniqueIndexBuildLeavesNoIndexBehind`
+and `::testCreatingAnIndexUnderATakenNameLeavesTheExistingOneIntact`, each
+verified to fail against the code as it was.
+
+**Also named, not fixed:** `Infrastructure\AtomicWriter` `fsync()`s the
+file it writes but cannot `fsync()` the directory the rename publishes it
+in — PHP gives no descriptor on a directory — so a power loss right after
+a catalog write can come back to the previous version of it. Atomicity is
+unaffected; durability of the newest write is what is not guaranteed.
+
+**Done when:** `composer test` (1024), `composer analyse` (level 8) and
 `composer format:check` all clean.

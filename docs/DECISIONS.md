@@ -2514,7 +2514,34 @@ it makes the ordering match `IndexMaintainer`'s own rule for ordinary
 writes: check first, write second, never leave the schema describing
 something the files do not.
 
+A third case of the same shape came out of the next review pass: a
+`CREATE INDEX` under a name already taken. The build renames its finished
+file onto the *existing* index's path, so a name check left until the
+catalog update destroyed a working index on the way to reporting the
+error — the schema still said `idx` covered `name` while the file now
+held `email`'s keys, which nothing can tell apart afterwards, since the
+planner trusts the schema and simply answers from the wrong tree (a
+`SELECT ... WHERE name = ...` came back empty after a reopen). The future
+schema is now built, and therefore validated, before anything is written:
+`Schema\Table`'s own constructor is what refuses the duplicate name, and
+it now does so while the existing file is still untouched.
+
 Neither makes DDL transactional — "DDL is not transactional" above still
 holds, and a crash (rather than an exception) midway through a build
 still leaves an orphaned `.idx.building` file that nothing reads and
 nothing yet cleans up.
+
+One durability boundary underneath all of this is worth naming, since
+`Infrastructure\AtomicWriter` is what every catalog write goes through
+and its guarantee stops one level short. It writes a temporary file,
+`fsync()`s it, and renames it over the target — atomic, so no reader ever
+sees a half-written `schema.json`. What it cannot do from PHP is
+`fsync()` the *directory* afterwards, which is what makes the new
+directory entry itself durable: that needs a descriptor on the directory,
+and `fopen()` does not provide one. So a power loss right after a
+successful write can, on some filesystems, come back to the old name
+still pointing at the old inode. Atomicity holds either way; it is the
+*latest* write that is not guaranteed to survive. Closing it would mean
+reaching for `ext-ffi` to call `open(2)`/`fsync(2)` directly — real
+machinery for a window this project's own single-crash model already
+leaves open elsewhere.

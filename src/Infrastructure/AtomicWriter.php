@@ -23,6 +23,16 @@ use PhpMiniDatabase\Exception\StorageException;
  * The temporary is created in the *same directory* as the target on purpose.
  * rename() is only atomic within a filesystem, and the system temp directory
  * is often a different one.
+ *
+ * One layer below that is not covered, and cannot be from PHP: the
+ * *directory entry* the rename creates is itself only durable once the
+ * directory is `fsync()`'d, which needs a file descriptor on the directory
+ * — something `fopen()` will not give you. So a power loss immediately
+ * after a successful `write()` can, on some filesystems, come back to the
+ * old name still pointing at the old inode, even though the new file's
+ * contents were flushed. Atomicity holds either way (never a half-written
+ * file); what is not guaranteed is that the *latest* write survives. Named
+ * here rather than papered over — see DECISIONS.md.
  */
 final readonly class AtomicWriter
 {

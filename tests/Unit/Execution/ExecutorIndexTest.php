@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Tests\Unit\Execution;
 
 use PhpMiniDatabase\Exception\ConstraintViolationException;
+use PhpMiniDatabase\Exception\SchemaException;
 use PhpMiniDatabase\Execution\Executor;
 use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Schema\Database;
@@ -264,6 +265,44 @@ final class ExecutorIndexTest extends TestCase
         self::assertSame(
             [['id' => 1, 'email' => 'a@x.com'], ['id' => 2, 'email' => 'a@x.com']],
             $this->query("SELECT * FROM users WHERE email = 'a@x.com'"),
+        );
+    }
+
+    /**
+     * A second `CREATE INDEX` under a name already taken must be refused
+     * before it touches anything. The build writes a temporary file and
+     * renames it into place, and that rename lands on the *existing*
+     * index's path — so a name check left until the catalog update would
+     * have destroyed a working index on its way to reporting the error,
+     * leaving the schema describing one column and the file holding
+     * another's keys. Nothing can tell those apart afterwards: the planner
+     * trusts the schema and answers from the wrong tree.
+     */
+    public function testCreatingAnIndexUnderATakenNameLeavesTheExistingOneIntact(): void
+    {
+        $this->executor->run('CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(50), email VARCHAR(50))');
+        $this->exec("INSERT INTO users (id, name, email) VALUES (1, 'Ann', 'a@x.com'), (2, 'Bea', 'b@x.com')");
+        $this->executor->run('CREATE INDEX idx ON users (name)');
+
+        try {
+            $this->executor->run('CREATE INDEX idx ON users (email)');
+            self::fail('Expected the duplicate index name to be refused.');
+        } catch (SchemaException) {
+            // Expected.
+        }
+
+        // Checked after a reopen: in this process the old index object is
+        // still cached and would keep answering from the file it opened,
+        // whatever replaced it on disk.
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $reopened = new Executor($this->database);
+
+        $result = $reopened->run("SELECT id FROM users WHERE name = 'Ann'");
+        self::assertInstanceOf(QueryResult::class, $result);
+        self::assertSame(
+            [['id' => 1]],
+            array_map(static fn (Row $row): array => $row->toArray(), iterator_to_array($result->rows, false)),
         );
     }
 

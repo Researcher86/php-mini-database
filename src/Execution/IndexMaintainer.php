@@ -128,7 +128,17 @@ final readonly class IndexMaintainer
         }
     }
 
-    /** Whether this exact (value, id) pair is in the index — not merely whether the value is. */
+    /**
+     * Whether this exact (value, id) pair is in the index — not merely
+     * whether the value is, since a non-unique index legitimately holds
+     * the same value many times.
+     *
+     * Walks every id that value carries, so a value shared by very many
+     * rows makes this proportionally slower. It runs only on the undo
+     * path, where correctness is what matters and the alternative — a
+     * `contains(value, id)` descent inside `BTreeIndex` — would add an
+     * entry point that nothing else needs.
+     */
     private function isIndexed(Table $table, IndexDefinition $definition, Row $row, RecordId $id): bool
     {
         $value = $row->get($definition->columns()[0]);

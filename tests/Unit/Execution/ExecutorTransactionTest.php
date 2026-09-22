@@ -449,7 +449,7 @@ final class ExecutorTransactionTest extends TestCase
      * then the index half of it is rewound to exactly what a crash
      * between the two writes would have left.
      */
-    public function testRecoveryRepairsAnIndexLeftBehindByAnUndoThatCrashedMidway(): void
+    public function testRecoveryRepairsAnIndexLeftBehindByAHalfAppliedUndo(): void
     {
         $this->executor->run('CREATE INDEX idx_users_name ON users (name)');
         $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
@@ -485,11 +485,12 @@ final class ExecutorTransactionTest extends TestCase
     }
 
     /**
-     * The same shape for an undone `INSERT`, where the index is unique:
-     * an entry that outlives the row it pointed at is not merely untidy,
-     * it rejects the next legitimate row to use that value.
+     * The same shape — and the same reconstruction rather than a real
+     * crash — for an undone `INSERT`, where the index is unique: an entry
+     * that outlives the row it pointed at is not merely untidy, it
+     * rejects the next legitimate row to use that value.
      */
-    public function testRecoveryRemovesAnIndexEntryLeftBehindByAnUndoThatCrashedMidway(): void
+    public function testRecoveryRemovesAnIndexEntryLeftBehindByAHalfAppliedUndo(): void
     {
         $this->executor->run('CREATE UNIQUE INDEX idx_users_name ON users (name)');
 

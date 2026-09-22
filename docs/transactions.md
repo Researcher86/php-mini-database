@@ -167,7 +167,22 @@ proven against real process restarts — an uncommitted transaction undone,
 a committed one surviving, and a `ROLLBACK TO SAVEPOINT` immediately before
 a crash leaving exactly the pre-savepoint state.
 
-Recovery is single-point-of-failure by design: it does not defend against
-a second crash during its own undo pass. A production WAL would make undo
-itself idempotent/replayable; this one assumes recovery, once started,
-finishes.
+Undo is idempotent — each of `Executor`'s `undoInsert()`/`undoUpdate()`/
+`undoDelete()` asks whether the change it reverses is already reversed,
+in the heap *and* in the indexes, and does only what is left. So a crash
+inside an undo pass, recovery's own included, leaves work the next pass
+finishes rather than a state it chokes on; the WAL is still intact at
+that point, because the checkpoint that discards it comes last.
+
+Two honest limits on that. The first is below this layer: a page write is
+assumed to have either happened or not. There is no double-write buffer
+and no full-page images in the WAL, so a power loss that tears a single
+8 KiB page mid-write is outside what any of the above can repair. The
+second is in the testing: no test here kills a process at an arbitrary
+instruction. The undo-repair tests
+([ExecutorTransactionTest](../tests/Unit/Execution/ExecutorTransactionTest.php))
+reconstruct the state a half-applied undo leaves and then run recovery
+against it, which exercises exactly the code path that matters but is
+not the same thing as real fault injection — that would need deterministic
+failure points inside the undo, or a child process killed at a chosen
+moment.

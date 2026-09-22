@@ -32,7 +32,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | Isolation levels are 2-phase locking, not MVCC | current, [why](#isolation-levels-are-2-phase-locking-not-mvcc) |
 | A row is mutated before its WAL record is appended | current, [why](#a-row-is-mutated-before-its-wal-record-is-appended) |
 | Undo is logical replay, wired in through a Closure | current, [why](#undo-is-logical-replay-wired-in-through-a-closure) |
-| Recovery assumes a single crash | current, [why](#recovery-assumes-a-single-crash) |
+| Recovery assumes a single crash | superseded, [why](#recovery-assumes-a-single-crash) — see [Undoing an already-undone change is success](#undoing-an-already-undone-change-is-success-not-an-error) |
 | `Database`, not `Executor`, owns transaction and lock state | current, [why](#database-not-executor-owns-transaction-and-lock-state) |
 | DDL is not transactional | current, [why](#ddl-is-not-transactional) |
 | A `LogicalPlan` node carries its own physical decision; there is no separate physical plan | current, [why](#a-logicalplan-node-carries-its-own-physical-decision) |
@@ -999,6 +999,20 @@ that this project's test harness cannot even reliably reproduce, let alone
 one a learning project's own use ever exercises. The single-failure
 assumption is stated here rather than left for a future reader to
 discover by tracing what `recover()` does not check.
+
+**Superseded.** The second of those two options turned out to be the
+cheap one, and a later review found the assumption was not merely
+untested but actively harmful: a failed `sync()` followed by a crash
+left a database that could never be opened again, since `recover()` runs
+in `Executor`'s constructor and threw on rows a previous pass had
+already undone. Undo is idempotent now, heap and index alike — see
+"[Undoing an already-undone change is success, not an error](#undoing-an-already-undone-change-is-success-not-an-error)"
+— so a crash *inside* an undo pass, recovery's own included, leaves work
+the next pass simply finishes. What is still assumed is narrower and
+lower down: that a page write either happened or did not. This engine
+has no double-write buffer and logs no full-page images, so a power loss
+that tears a single 8 KiB page mid-write is outside what any of the
+above can repair.
 
 ## `Database`, not `Executor`, owns transaction and lock state
 

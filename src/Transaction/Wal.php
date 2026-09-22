@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Transaction;
 
 use DateTimeImmutable;
+use JsonException;
 use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Infrastructure\FileSystem;
 use PhpMiniDatabase\Storage\RecordId;
@@ -70,19 +71,44 @@ final class Wal
         }
     }
 
-    /** @return list<WalRecord> every record currently in the log, in LSN order */
+    /**
+     * Every record currently in the log, in LSN order.
+     *
+     * A malformed *last* line ends the log rather than failing the read:
+     * this file is append-only and every complete `append()` is `fsync()`'d,
+     * so the only way to produce one is a write that a crash cut in half —
+     * and a record that never finished being written is, correctly, not
+     * part of the log. Anywhere else a malformed line is real corruption
+     * and still throws. Without this, a torn final write would leave a WAL
+     * that `Wal::open()` cannot read, and therefore a database that can
+     * never be opened again.
+     *
+     * @return list<WalRecord>
+     */
     public function readAll(): array
     {
-        $contents = $this->files->read($this->path);
+        $lines = array_values(array_filter(
+            explode("\n", $this->files->read($this->path)),
+            static fn (string $line): bool => trim($line) !== '',
+        ));
+
         $records = [];
 
-        foreach (explode("\n", $contents) as $line) {
-            if (trim($line) === '') {
-                continue;
+        foreach ($lines as $index => $line) {
+            try {
+                /** @var array<string, mixed> $decoded */
+                $decoded = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+            } catch (JsonException $e) {
+                if ($index === count($lines) - 1) {
+                    break;
+                }
+
+                throw new StorageException(
+                    sprintf('The WAL at "%s" is corrupt at record %d.', $this->path, $index + 1),
+                    previous: $e,
+                );
             }
 
-            /** @var array<string, mixed> $decoded */
-            $decoded = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
             $records[] = $this->decodeRecord($decoded);
         }
 
@@ -97,7 +123,13 @@ final class Wal
      */
     public function checkpoint(): void
     {
-        if (!ftruncate($this->handle, 0) || fseek($this->handle, 0) !== 0) {
+        // `fsync()` for the same reason `append()` does it: until the
+        // truncation reaches the device, the records it dropped are still
+        // there, and the next `append()` writes over them from offset 0 -
+        // leaving, if a crash lands in between, new records followed by
+        // the tail of older ones. Every line of that mixture parses, so
+        // nothing would notice.
+        if (!ftruncate($this->handle, 0) || fseek($this->handle, 0) !== 0 || !fflush($this->handle) || !fsync($this->handle)) {
             throw new StorageException(sprintf('Cannot checkpoint the WAL at "%s".', $this->path));
         }
     }

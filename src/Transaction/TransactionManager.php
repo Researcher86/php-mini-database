@@ -233,8 +233,14 @@ final class TransactionManager
      * unconditionally, and a second `Executor` built against a `Database`
      * that already has a transaction open must not have this walk in and
      * undo it — that transaction is merely in progress, not abandoned.
-     * Also assumes a single point of failure: it does not defend against a
-     * second crash during recovery's own undo pass. See DECISIONS.md.
+     * A crash during this pass is survivable, which it did not used to
+     * be: the checkpoint that discards the log comes last, so the WAL
+     * still describes the whole transaction, and every undo step asks
+     * what is left to do rather than assuming it runs once (see
+     * `Execution\Executor::undo()`). The next pass finishes what this
+     * one started. What is still assumed sits below this class: that a
+     * page write either happened or did not — there are no full-page
+     * images here to repair one torn in half. See DECISIONS.md.
      *
      * Syncs storage once, after every abandoned transaction's undo has
      * been applied and before the checkpoint below — the same "data

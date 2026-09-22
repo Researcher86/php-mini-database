@@ -885,6 +885,22 @@ already makes: `HeapFile` reclaims space only at an explicit `VACUUM`,
 workload shows it matters is preferred here over building for a shape of
 growth this project does not yet have.
 
+Two properties the log needs for that truncation to be safe, both added
+once a reviewer asked what happens if a crash lands *inside* the
+checkpoint. The truncation is `fsync()`'d, like every append: until it
+reaches the device the records it dropped are still there, and the next
+`append()` writes over them from offset 0 — leaving, if a crash lands in
+between, new records followed by the tail of older ones, every line of
+which parses, so nothing would notice. And `readAll()` treats a
+malformed *last* line as the end of the log rather than a failure: the
+file is append-only and every complete record is `fsync()`'d, so the only
+way to produce one is a write a crash cut in half, and a record that
+never finished being written is correctly not part of the log. A
+malformed line anywhere else is real corruption and still throws. Before
+that, a torn final write left a WAL `Wal::open()` could not read — and
+so a database that could never be opened again, the same failure class
+as the undo bugs above.
+
 ## `LockManager` never waits
 
 `LockManager::acquire()` either grants a lock immediately or throws

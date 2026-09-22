@@ -174,6 +174,12 @@ inside an undo pass, recovery's own included, leaves work the next pass
 finishes rather than a state it chokes on; the WAL is still intact at
 that point, because the checkpoint that discards it comes last.
 
+The WAL itself is held to the same standard: its checkpoint truncation is
+`fsync()`'d rather than left for the OS to schedule, and a record whose
+write a crash cut in half ends the log on the next read instead of
+failing it — see
+[DECISIONS.md](DECISIONS.md#the-wal-is-logical-and-reclaimed-only-by-an-explicit-checkpoint).
+
 Two honest limits on that. The first is below this layer: a page write is
 assumed to have either happened or not. There is no double-write buffer
 and no full-page images in the WAL, so a power loss that tears a single

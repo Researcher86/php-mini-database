@@ -6,6 +6,7 @@ namespace PhpMiniDatabase\Tests\Unit\Transaction;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Storage\RecordId;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PhpMiniDatabase\Transaction\Wal;
@@ -152,5 +153,39 @@ final class WalTest extends TestCase
         $this->wal = Wal::open($this->path('wal.log'));
 
         self::assertSame(3, $this->wal->nextLsn());
+    }
+
+    /**
+     * A record whose write a crash cut in half is not part of the log —
+     * every complete `append()` is `fsync()`'d, so a malformed *last*
+     * line can only be one that never finished being written. Failing the
+     * read instead would leave a WAL that cannot be opened, and therefore
+     * a database that can never be opened again.
+     */
+    public function testATornFinalRecordEndsTheLogRatherThanFailingTheRead(): void
+    {
+        $this->wal->append(WalRecord::begin(1, 1));
+        $this->wal->close();
+
+        file_put_contents($this->path('wal.log'), '{"lsn":2,"tx":1,"op":"INS', FILE_APPEND);
+
+        $this->wal = Wal::open($this->path('wal.log'));
+        $records = $this->wal->readAll();
+
+        self::assertCount(1, $records);
+        self::assertSame(WalOperation::BEGIN, $records[0]->operation);
+    }
+
+    /** A malformed line that is *not* the last one is real corruption, and still says so. */
+    public function testAMalformedRecordBeforeTheEndIsReportedAsCorruption(): void
+    {
+        file_put_contents(
+            $this->path('corrupt.log'),
+            "{\"lsn\":1,\"tx\":1,\"op\":\"BE\n{\"lsn\":2,\"tx\":1,\"op\":\"COMMIT\"}\n",
+        );
+
+        // open() reads the log itself, to work out the next LSN.
+        $this->expectException(StorageException::class);
+        Wal::open($this->path('corrupt.log'));
     }
 }

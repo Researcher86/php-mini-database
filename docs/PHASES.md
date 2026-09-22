@@ -1369,10 +1369,13 @@ turned out to be that the database becomes *permanently unopenable*:
 `recover()` undoes the same records a second time, throws on rows that
 are already gone, and since it runs inside `Executor`'s constructor,
 every future `Executor` against that directory throws with it. Fixed by
-making undo idempotent — `undoInsert()`/`undoUpdate()` treat a
-already-absent row as done, `undoDelete()` asks a unique index whether
-the row is already back — with both crash-window cases now covered by
-tests that fail without the guards. See
+making undo idempotent — each of the three returns early when the change
+it reverses is already reversed — and, once a further pass showed the
+first version of that guard could silently skip a real `UPDATE` undo
+(`Storage\HeapFile::restore()` now puts a deleted row back at the id it
+left from, so every undo addresses its row the same way), by four
+crash-window and rollback cases covered by tests that each fail without
+their guard. See
 [DECISIONS.md](DECISIONS.md#undoing-an-already-undone-change-is-success-not-an-error).
 
 **Done when:** `composer test` (1014), `composer analyse` (level 8) and

@@ -350,6 +350,92 @@ final class ExecutorTransactionTest extends TestCase
         self::assertSame([['id' => 1, 'name' => 'Ann']], $this->query('SELECT * FROM users', $recovered));
     }
 
+    /**
+     * `UPDATE` then `DELETE` on the same row, rolled back. Undo runs in
+     * reverse, so the `DELETE` is undone first — and if that put the row
+     * back at a *new* `RecordId`, the `UPDATE` undo right after it would
+     * address a slot that no longer holds anything and quietly do nothing,
+     * leaving the updated value instead of the original. The first row
+     * here exists only to free a lower slot inside the transaction, which
+     * is what an ordinary `insert()` would have reused in preference to
+     * the one the deleted row actually left.
+     */
+    public function testRollingBackAnUpdateFollowedByADeleteRestoresTheOriginalValue(): void
+    {
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $this->executor->run("INSERT INTO users (id, name) VALUES (2, 'Bea')");
+
+        $this->executor->run('BEGIN');
+        $this->executor->run('DELETE FROM users WHERE id = 1');
+        $this->executor->run("UPDATE users SET name = 'Bob' WHERE id = 2");
+        $this->executor->run('DELETE FROM users WHERE id = 2');
+        $this->executor->run('ROLLBACK');
+
+        self::assertSame(
+            [['id' => 1, 'name' => 'Ann'], ['id' => 2, 'name' => 'Bea']],
+            $this->query('SELECT * FROM users ORDER BY id'),
+        );
+    }
+
+    /** The same shape, but the rollback is the one recovery performs after a crash. */
+    public function testRecoveringAnUpdateFollowedByADeleteRestoresTheOriginalValue(): void
+    {
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $this->executor->run("INSERT INTO users (id, name) VALUES (2, 'Bea')");
+
+        $this->executor->run('BEGIN');
+        $this->executor->run('DELETE FROM users WHERE id = 1');
+        $this->executor->run("UPDATE users SET name = 'Bob' WHERE id = 2");
+        $this->executor->run('DELETE FROM users WHERE id = 2');
+        // Simulate a crash: neither COMMIT nor ROLLBACK ever runs.
+
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $recovered = new Executor($this->database);
+
+        self::assertSame(
+            [['id' => 1, 'name' => 'Ann'], ['id' => 2, 'name' => 'Bea']],
+            $this->query('SELECT * FROM users ORDER BY id', $recovered),
+        );
+    }
+
+    /**
+     * An undone `UPDATE` of an *indexed* column, replayed. The first pass
+     * removes the new value's index entry and adds the old one back; a
+     * second pass must not try to remove the new value's entry again,
+     * which is no longer there — `BTreeIndex::delete()` throws on a key
+     * it cannot find, and that would make recovery fail rather than be
+     * harmlessly repeated.
+     */
+    public function testReplayingAnUndoneUpdateOfAnIndexedColumnIsHarmless(): void
+    {
+        $this->executor->run('CREATE INDEX idx_users_name ON users (name)');
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+
+        $this->executor->run('BEGIN');
+        $this->executor->run("UPDATE users SET name = 'Bob' WHERE id = 1");
+
+        $this->database->transactions()->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $this->executor->run('ROLLBACK');
+            self::fail('Expected the sync failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected - the undo is applied, the ROLLBACK record is not.
+        }
+
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $recovered = new Executor($this->database);
+
+        self::assertSame(
+            [['id' => 1, 'name' => 'Ann']],
+            $this->query("SELECT * FROM users WHERE name = 'Ann'", $recovered),
+        );
+    }
+
     private function onlyRecordIdInUsers(): RecordId
     {
         foreach ($this->database->heapFile('users')->scan() as $id => $record) {

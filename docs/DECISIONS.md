@@ -2359,24 +2359,45 @@ left a database that could never be opened again — reproduced end to end
 before changing anything.
 
 The fix is the property the reviewer named as the real requirement:
-undo is idempotent, so replaying it is harmless. `undoInsert()` and
-`undoUpdate()` return early when `HeapFile::read()` says the row is
-already gone — for an insert that *is* the undone state, and for an
-update it means the insert that created the row has been undone too, so
-there is nothing left to restore values into. `undoDelete()` cannot ask
-the same question, because restoring a deleted row gives it a *new*
-`RecordId` (see its own comment) and the logged one therefore says
-nothing about whether it is back; it asks a unique index instead, by
-reusing `IndexMaintainer::assertUniqueForInsert()` and treating its
-refusal as "already restored".
+undo is idempotent, so replaying it is harmless. Each of the three asks
+whether the change it reverses is already reversed, and returns if it
+is — `undoInsert()` when `HeapFile::read()` finds the row already gone,
+`undoUpdate()` when the row is gone *or* already holds its `before`
+bytes, `undoDelete()` when the row is already back at its own id with
+exactly those bytes.
 
-Two things this deliberately does not do. It does not make undo
-idempotent for a table with no unique constraint at all: there, a second
-undo pass genuinely can restore a deleted row twice, because nothing in
-the data can distinguish a restored row from a legitimately identical
-one — a named gap, and the narrower one that is left. And it does not
-add compensation records to the WAL (ARIES-style CLRs), which is how a
-production engine makes undo progress itself durable rather than
-inferring it from the data; that is a different WAL protocol, and this
-project's single-crash model (see "Recovery assumes a single crash")
-stays as stated.
+That last one only works because of a second change, which the next
+review pass forced. Undoing a `DELETE` used to re-insert the row
+wherever `HeapFile::insert()` placed it next, on the reasoning that a
+`RecordId` is an address rather than the row's identity. It is both:
+undo runs in reverse, so an `UPDATE` logged *before* that `DELETE` in
+the same transaction is undone immediately *after* it — and addresses
+the row by the id it had. Relocating the row on the way back left that
+`UPDATE` undo addressing an empty slot, where the new "already undone"
+guard then made it do nothing at all:
+
+```sql
+INSERT INTO users VALUES (1, 'Ann'), (2, 'Bea');   -- committed
+BEGIN;
+  DELETE FROM users WHERE id = 1;   -- frees a lower slot
+  UPDATE users SET name = 'Bob' WHERE id = 2;
+  DELETE FROM users WHERE id = 2;
+ROLLBACK;                            -- left id=2 as 'Bob', not 'Bea'
+```
+
+No crash needed — an ordinary `ROLLBACK`, silently wrong. (Before the
+guard existed the same case threw instead, which is louder but no more
+correct.) `Storage\Page::restore()`/`HeapFile::restore()` now put a
+deleted row back at the id it left from, falling back to a plain insert
+only if that slot is no longer free — which, with one writer and undo
+running in reverse, nothing in this engine currently causes. With the
+address preserved, every undo identifies its row the same way, and
+`undoDelete()` no longer needs the unique index it briefly used to guess
+with (so the "table with no unique constraint" gap that approach left
+behind is gone too).
+
+What this still does not do is add compensation records to the WAL
+(ARIES-style CLRs), which is how a production engine makes undo progress
+itself durable rather than inferring it from the data. That is a
+different WAL protocol, and this project's single-crash model (see
+"Recovery assumes a single crash") stays as stated.

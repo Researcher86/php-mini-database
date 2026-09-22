@@ -1044,25 +1044,21 @@ final readonly class Executor
         $table = $this->database->table($tableName);
         $heap = $this->database->heapFile($tableName);
         $row = new Row($this->requireBefore($record));
+        $recordId = $this->requireRecordId($record);
+        $bytes = $table->serializeRow($row);
 
-        // Unlike the other two, this one cannot tell "already undone"
-        // from its RecordId: the restored row comes back at a new address
-        // (see below), so the logged one says nothing about whether it is
-        // back. A unique index can answer instead - and where the table
-        // has none, a second undo pass restores the row twice, a named
-        // gap rather than a silent one (see DECISIONS.md).
-        try {
-            $this->indexMaintainer->assertUniqueForInsert($table, $row);
-        } catch (ConstraintViolationException) {
-            return;
+        if ($heap->read($recordId) === $bytes) {
+            return; // already restored, by an undo pass that failed after this point
         }
 
-        // The row's slot was freed by the delete this reverses, so it
-        // comes back at whatever slot HeapFile hands out next - not
-        // necessarily the one it left. RecordId is an address, not the
-        // row's identity, so this loses nothing the row's own columns
-        // did not already carry.
-        $newId = $heap->insert($table->serializeRow($row));
+        // Back at the id it left from, not wherever insert() would put it
+        // next: an `UPDATE` logged earlier in the same transaction is
+        // undone immediately after this and addresses the row by exactly
+        // that id. HeapFile::restore() falls back to a fresh insert (and
+        // so a new id) only if the slot is no longer free - which, with
+        // one writer and undo running in reverse, nothing in this engine
+        // currently causes.
+        $newId = $heap->restore($recordId, $bytes);
         $this->indexMaintainer->afterInsert($table, $row, $newId);
     }
 
@@ -1075,7 +1071,10 @@ final readonly class Executor
         $after = new Row($this->requireAfter($record));
         $recordId = $this->requireRecordId($record);
 
-        if ($heap->read($recordId) === null) {
+        $beforeBytes = $table->serializeRow($before);
+        $current = $heap->read($recordId);
+
+        if ($current === null) {
             // The row is gone entirely, which within one transaction's
             // reverse-order undo means the INSERT that created it has
             // already been undone too - there is nothing left to restore
@@ -1083,7 +1082,16 @@ final readonly class Executor
             return;
         }
 
-        $newId = $heap->update($recordId, $table->serializeRow($before));
+        if ($current === $beforeBytes) {
+            // Already restored. Returning here rather than rewriting the
+            // same bytes is what keeps the index work below idempotent
+            // too: it removes the *after* key, which a previous pass has
+            // already removed, and BTreeIndex::delete() throws on a key
+            // that is not there.
+            return;
+        }
+
+        $newId = $heap->update($recordId, $beforeBytes);
         $this->indexMaintainer->afterDelete($table, $after, $recordId);
         $this->indexMaintainer->afterInsert($table, $before, $newId);
     }

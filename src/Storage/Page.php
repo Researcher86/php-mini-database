@@ -211,6 +211,33 @@ final class Page
         return true;
     }
 
+    /**
+     * Puts a record back into one specific slot, rather than wherever
+     * `insert()` would place it next — what undoing a `DELETE` needs, so
+     * a row returns at the `RecordId` it left from and anything else
+     * still pointing at that address (an `UPDATE` logged earlier in the
+     * same transaction, undone right after) still finds it.
+     *
+     * Returns false when the slot is no longer free or the record no
+     * longer fits, leaving the caller to fall back to a plain `insert()`.
+     * The slot already exists, so unlike `insert()` this needs no room
+     * for a new directory entry.
+     */
+    public function restore(int $slot, string $record): bool
+    {
+        if (($this->records[$slot] ?? null) !== null || !array_key_exists($slot, $this->records)) {
+            return false;
+        }
+
+        if (strlen($record) > $this->freeSpace()) {
+            return false;
+        }
+
+        $this->records[$slot] = $record;
+
+        return true;
+    }
+
     public function delete(int $slot): void
     {
         if (($this->records[$slot] ?? null) === null) {

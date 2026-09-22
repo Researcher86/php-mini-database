@@ -112,6 +112,29 @@ final class HeapFile
         return $this->insert($record);
     }
 
+    /**
+     * Puts a deleted record back at the id it had, if that slot is still
+     * free and it still fits — see `Page::restore()`. Falls back to an
+     * ordinary `insert()`, and therefore a new id, when it cannot;
+     * `Execution\Executor::undoDelete()` is the caller that cares.
+     */
+    public function restore(RecordId $id, string $record): RecordId
+    {
+        if ($id->pageId >= $this->pages->pageCount()) {
+            return $this->insert($record);
+        }
+
+        $page = $this->pages->read($id->pageId);
+
+        if (!$page->restore($id->slot, $record)) {
+            return $this->insert($record);
+        }
+
+        $this->pages->write($page);
+
+        return $id;
+    }
+
     public function delete(RecordId $id): void
     {
         $page = $this->pages->read($id->pageId);

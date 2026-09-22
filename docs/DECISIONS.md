@@ -2396,8 +2396,46 @@ address preserved, every undo identifies its row the same way, and
 with (so the "table with no unique constraint" gap that approach left
 behind is gone too).
 
+A third pass over the same code found the guards were still reading only
+half the picture. An undo writes the heap and then its indexes, with no
+barrier between them, so a crash can land there — and a replay that asks
+the *heap* whether the work is done then answers "yes" and skips the
+index repair. Reconstructed directly, the result is a row that a full
+scan finds and an indexed lookup does not, permanently:
+
+```
+BEGIN; UPDATE users SET name = 'Bob' WHERE id = 1;   -- name is indexed
+ROLLBACK
+  -> heap: 'Bob' -> 'Ann'
+  -> index: 'Bob' entry removed
+  -> crash before the 'Ann' entry is added
+restart
+  -> recover() replays the undo, sees the heap already holding 'Ann'
+  -> returns, index never repaired
+SELECT * FROM users WHERE name = 'Ann'   -- [] via the index, one row via a scan
+```
+
+So the index half is idempotent now too, not skipped:
+`IndexMaintainer::ensureIndexed()`/`ensureNotIndexed()` ask whether this
+exact (value, id) pair is present before adding or removing it, and the
+undo methods run them unconditionally — only the *heap* write is skipped
+when it is already done. `BTreeIndex` itself stays strict (a `delete()`
+of a key that is not there is still an error), because outside undo that
+strictness is a useful invariant check; it is undo, and only undo, that
+legitimately repeats itself.
+
+Two invariants this rests on, worth stating since nothing enforces them
+mechanically. `HeapFile::restore()` falls back to a fresh id when the
+original slot is no longer free — which within one transaction's
+reverse-order undo cannot happen, because anything that took that slot
+was written later by the same (single) writer and is therefore undone
+first. And recovery undoes one transaction's records as a unit, so no
+other transaction's undo interleaves with them.
+
 What this still does not do is add compensation records to the WAL
 (ARIES-style CLRs), which is how a production engine makes undo progress
 itself durable rather than inferring it from the data. That is a
 different WAL protocol, and this project's single-crash model (see
-"Recovery assumes a single crash") stays as stated.
+"Recovery assumes a single crash") stays as stated — what has changed is
+that a single crash, wherever it lands inside an undo, now leaves
+something a replay can finish.

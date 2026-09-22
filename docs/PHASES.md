@@ -1375,7 +1375,10 @@ first version of that guard could silently skip a real `UPDATE` undo
 (`Storage\HeapFile::restore()` now puts a deleted row back at the id it
 left from, so every undo addresses its row the same way), by four
 crash-window and rollback cases covered by tests that each fail without
-their guard. See
+their guard — and, once a third pass showed those guards read only the
+heap and so skipped repairing an index left half-undone by a crash, by
+`IndexMaintainer::ensureIndexed()`/`ensureNotIndexed()`, which make the
+index half of undo idempotent as well. See
 [DECISIONS.md](DECISIONS.md#undoing-an-already-undone-change-is-success-not-an-error).
 
 **Done when:** `composer test` (1014), `composer analyse` (level 8) and

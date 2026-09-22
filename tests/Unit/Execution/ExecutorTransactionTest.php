@@ -436,6 +436,93 @@ final class ExecutorTransactionTest extends TestCase
         );
     }
 
+    /**
+     * An undo writes the heap and then its indexes, with no barrier in
+     * between, so a crash can land there and leave a row that reads as
+     * fully undone while its index entries still describe the change.
+     * The replay must repair the index rather than look at the heap,
+     * conclude the work is done, and leave the two disagreeing forever —
+     * the row would then be invisible to any query the planner answers
+     * from that index, while a full scan still finds it.
+     *
+     * The torn state is reconstructed directly here: the undo runs, and
+     * then the index half of it is rewound to exactly what a crash
+     * between the two writes would have left.
+     */
+    public function testRecoveryRepairsAnIndexLeftBehindByAnUndoThatCrashedMidway(): void
+    {
+        $this->executor->run('CREATE INDEX idx_users_name ON users (name)');
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $recordId = $this->onlyRecordIdInUsers();
+
+        $this->executor->run('BEGIN');
+        $this->executor->run("UPDATE users SET name = 'Bob' WHERE id = 1");
+
+        $this->database->transactions()->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $this->executor->run('ROLLBACK');
+            self::fail('Expected the sync failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected - and the undo itself has run in full by now.
+        }
+
+        $index = $this->database->index('users', 'idx_users_name');
+        $index->delete('Ann', $recordId);
+        $index->insert('Bob', $recordId);
+
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $recovered = new Executor($this->database);
+
+        // Answered through the index, which is the half that was broken.
+        self::assertSame(
+            [['id' => 1, 'name' => 'Ann']],
+            $this->query("SELECT * FROM users WHERE name = 'Ann'", $recovered),
+        );
+    }
+
+    /**
+     * The same shape for an undone `INSERT`, where the index is unique:
+     * an entry that outlives the row it pointed at is not merely untidy,
+     * it rejects the next legitimate row to use that value.
+     */
+    public function testRecoveryRemovesAnIndexEntryLeftBehindByAnUndoThatCrashedMidway(): void
+    {
+        $this->executor->run('CREATE UNIQUE INDEX idx_users_name ON users (name)');
+
+        $this->executor->run('BEGIN');
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $recordId = $this->onlyRecordIdInUsers();
+
+        $this->database->transactions()->setSyncHandler(static function (): void {
+            throw new RuntimeException('the device is full');
+        });
+
+        try {
+            $this->executor->run('ROLLBACK');
+            self::fail('Expected the sync failure to propagate.');
+        } catch (RuntimeException) {
+            // Expected.
+        }
+
+        // Rewind the index half: the entry the undo removed is back, as a
+        // crash between the heap delete and the index delete would leave it.
+        $this->database->index('users', 'idx_users_name')->insert('Ann', $recordId);
+
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $recovered = new Executor($this->database);
+
+        // The rolled-back row is gone, so this name is free again - which
+        // a leftover entry in a unique index would deny.
+        $recovered->run("INSERT INTO users (id, name) VALUES (2, 'Ann')");
+
+        self::assertSame([['id' => 2, 'name' => 'Ann']], $this->query('SELECT * FROM users', $recovered));
+    }
+
     private function onlyRecordIdInUsers(): RecordId
     {
         foreach ($this->database->heapFile('users')->scan() as $id => $record) {

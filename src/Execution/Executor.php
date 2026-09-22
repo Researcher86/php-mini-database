@@ -1030,12 +1030,11 @@ final readonly class Executor
         $row = new Row($this->requireAfter($record));
         $recordId = $this->requireRecordId($record);
 
-        if ($heap->read($recordId) === null) {
-            return; // already undone, by a rollback that failed after this point
+        if ($heap->read($recordId) !== null) {
+            $heap->delete($recordId);
         }
 
-        $heap->delete($recordId);
-        $this->indexMaintainer->afterDelete($table, $row, $recordId);
+        $this->indexMaintainer->ensureNotIndexed($table, $row, $recordId);
     }
 
     private function undoDelete(WalRecord $record): void
@@ -1047,10 +1046,6 @@ final readonly class Executor
         $recordId = $this->requireRecordId($record);
         $bytes = $table->serializeRow($row);
 
-        if ($heap->read($recordId) === $bytes) {
-            return; // already restored, by an undo pass that failed after this point
-        }
-
         // Back at the id it left from, not wherever insert() would put it
         // next: an `UPDATE` logged earlier in the same transaction is
         // undone immediately after this and addresses the row by exactly
@@ -1058,8 +1053,11 @@ final readonly class Executor
         // so a new id) only if the slot is no longer free - which, with
         // one writer and undo running in reverse, nothing in this engine
         // currently causes.
-        $newId = $heap->restore($recordId, $bytes);
-        $this->indexMaintainer->afterInsert($table, $row, $newId);
+        $newId = $heap->read($recordId) === $bytes
+            ? $recordId                                  // already restored
+            : $heap->restore($recordId, $bytes);
+
+        $this->indexMaintainer->ensureIndexed($table, $row, $newId);
     }
 
     private function undoUpdate(WalRecord $record): void
@@ -1082,18 +1080,16 @@ final readonly class Executor
             return;
         }
 
-        if ($current === $beforeBytes) {
-            // Already restored. Returning here rather than rewriting the
-            // same bytes is what keeps the index work below idempotent
-            // too: it removes the *after* key, which a previous pass has
-            // already removed, and BTreeIndex::delete() throws on a key
-            // that is not there.
-            return;
-        }
+        $newId = $current === $beforeBytes
+            ? $recordId                                        // heap half already undone
+            : $heap->update($recordId, $beforeBytes);
 
-        $newId = $heap->update($recordId, $beforeBytes);
-        $this->indexMaintainer->afterDelete($table, $after, $recordId);
-        $this->indexMaintainer->afterInsert($table, $before, $newId);
+        // Run regardless of whether the heap needed changing: a crash
+        // between the write above and these two leaves a row that reads
+        // as fully undone while its index entries are not, and only a
+        // replay that repairs the index anyway can put that right.
+        $this->indexMaintainer->ensureNotIndexed($table, $after, $recordId);
+        $this->indexMaintainer->ensureIndexed($table, $before, $newId);
     }
 
     /**

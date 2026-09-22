@@ -96,6 +96,52 @@ final readonly class IndexMaintainer
         }
     }
 
+    /**
+     * `afterInsert()`, for an undo pass that may run more than once over
+     * the same change: "make sure this row is indexed at this id" rather
+     * than "add this entry". A crash between an undo's heap write and its
+     * index write leaves the two disagreeing, and the replay that repairs
+     * it must not trip over the half that did land — `BTreeIndex::insert()`
+     * refuses a duplicate on a unique index, and `delete()` throws on a
+     * key that is not there. See `Execution\Executor::undo()`.
+     */
+    public function ensureIndexed(Table $table, Row $row, RecordId $id): void
+    {
+        foreach ($this->singleColumnIndexes($table) as $definition) {
+            if ($this->isIndexed($table, $definition, $row, $id)) {
+                continue;
+            }
+
+            $this->database->index($table->name, $definition->name)->insert($row->get($definition->columns()[0]), $id);
+        }
+    }
+
+    /** @see ensureIndexed() — the same, for `afterDelete()`. */
+    public function ensureNotIndexed(Table $table, Row $row, RecordId $id): void
+    {
+        foreach ($this->singleColumnIndexes($table) as $definition) {
+            if (!$this->isIndexed($table, $definition, $row, $id)) {
+                continue;
+            }
+
+            $this->database->index($table->name, $definition->name)->delete($row->get($definition->columns()[0]), $id);
+        }
+    }
+
+    /** Whether this exact (value, id) pair is in the index — not merely whether the value is. */
+    private function isIndexed(Table $table, IndexDefinition $definition, Row $row, RecordId $id): bool
+    {
+        $value = $row->get($definition->columns()[0]);
+
+        foreach ($this->database->index($table->name, $definition->name)->search($value) as $found) {
+            if ($found->equals($id)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function firstMatch(Table $table, IndexDefinition $definition, Row $row): ?RecordId
     {
         $value = $row->get($definition->columns()[0]);

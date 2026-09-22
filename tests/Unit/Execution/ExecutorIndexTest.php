@@ -234,4 +234,67 @@ final class ExecutorIndexTest extends TestCase
 
         self::assertSame([['id' => 1, 'name' => 'alice']], $this->query("SELECT * FROM users WHERE name = 'alice'"));
     }
+
+    /**
+     * A `CREATE UNIQUE INDEX` that the existing rows refuse must leave no
+     * index at all. Publishing the declaration first and filling the file
+     * afterwards left one the catalog named and the planner trusted while
+     * it held only the rows the build reached before failing — so a later
+     * `SELECT` on that column answered from it, silently missing the rest.
+     */
+    public function testAFailedUniqueIndexBuildLeavesNoIndexBehind(): void
+    {
+        $this->executor->run('CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(50))');
+        $this->exec("INSERT INTO users (id, email) VALUES (1, 'a@x.com'), (2, 'a@x.com')");
+
+        try {
+            $this->executor->run('CREATE UNIQUE INDEX idx_email ON users (email)');
+            self::fail('Expected the duplicate value to be refused.');
+        } catch (ConstraintViolationException) {
+            // Expected.
+        }
+
+        self::assertSame(
+            ['PRIMARY'],
+            array_map(static fn ($definition): string => $definition->name, $this->database->table('users')->indexes()),
+        );
+
+        // Answered by a scan now that no index claims to cover the column,
+        // and so complete - both rows, not just the one the build reached.
+        self::assertSame(
+            [['id' => 1, 'email' => 'a@x.com'], ['id' => 2, 'email' => 'a@x.com']],
+            $this->query("SELECT * FROM users WHERE email = 'a@x.com'"),
+        );
+    }
+
+    /**
+     * Dropping a table has to drop the open handles onto its files too. An
+     * open handle to an unlinked file keeps working on Unix, so a cached
+     * one would quietly serve the next table of the same name — writing
+     * its rows into a file that vanishes with the process.
+     */
+    public function testATableRecreatedUnderTheSameNameGetsItsOwnFiles(): void
+    {
+        $this->executor->run('CREATE TABLE users (id INT PRIMARY KEY)');
+        $this->exec('INSERT INTO users (id) VALUES (1)');
+
+        $this->executor->run('DROP TABLE users');
+        $this->executor->run('CREATE TABLE users (id INT PRIMARY KEY)');
+        $this->exec('INSERT INTO users (id) VALUES (2)');
+
+        self::assertSame([['id' => 2]], $this->query('SELECT * FROM users'));
+
+        // And the row is really on disk, not only in a handle this process
+        // happens to still hold.
+        $this->database->close();
+        $this->database = Database::open($this->path('mydb'));
+        $reopened = new Executor($this->database);
+
+        $result = $reopened->run('SELECT * FROM users');
+        self::assertInstanceOf(QueryResult::class, $result);
+        self::assertSame(
+            [['id' => 2]],
+            array_map(static fn (Row $row): array => $row->toArray(), iterator_to_array($result->rows, false)),
+        );
+    }
 }

@@ -77,6 +77,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | PHPStan went to level 8 by narrowing call sites, not by suppressing them | current, [why](#phpstan-level-8-narrowing-not-suppression) |
 | Benchmarks are plain PHPUnit tests in their own testsuite, not a new dependency | current, [why](#benchmarks-are-plain-phpunit-not-a-new-dependency) |
 | A transaction belongs to its owning connection, checked by identity, not merely by existing | current, [why](#a-transaction-belongs-to-its-owning-connection) |
+| DDL closes the handles it invalidates, and builds an index before the catalog names it | current, [why](#ddl-closes-what-it-invalidates-and-builds-before-it-publishes) |
 | commit()/rollback()/recover() sync storage before their own WAL record, not merely before checkpoint | current, [why](#commitrollbackrecover-sync-storage-before-their-own-wal-record) |
 | A failed ROLLBACK stays retryable: the undo log is emptied as soon as it is applied | current, [why](#a-failed-rollback-stays-retryable) |
 | Undoing an already-undone change is success, not an error | current, [why](#undoing-an-already-undone-change-is-success-not-an-error) |
@@ -2469,3 +2470,51 @@ different WAL protocol, and this project's single-crash model (see
 "Recovery assumes a single crash") stays as stated — what has changed is
 that a single crash, wherever it lands inside an undo, now leaves
 something a replay can finish.
+
+## DDL closes what it invalidates, and builds before it publishes
+
+A full read of the finished engine found the two places where DDL and the
+open-file cache disagreed. Both were outside the WAL/recovery work the
+preceding entries are about, and both were silent.
+
+`Database` opens a table's `heap.dat` once and keeps it (see the class
+docblock), and `dropTable()` used to remove the directory without
+touching that cache. On Unix an open handle to an unlinked file keeps
+working perfectly — it just addresses an inode nothing else can reach —
+so the next `CREATE TABLE` of the same name got the *old* `HeapFile`
+back, and every row written into it went to a file that vanished with
+the process:
+
+```sql
+CREATE TABLE users (id INT PRIMARY KEY);
+INSERT INTO users VALUES (1);
+DROP TABLE users;
+CREATE TABLE users (id INT PRIMARY KEY);
+INSERT INTO users VALUES (2);
+SELECT * FROM users;   -- 1 and 2, from a table that should hold only 2
+                       -- and, after reopening the database, nothing at all
+```
+
+`dropTable()` now closes and forgets the table's heap file and every
+index of it. `dropIndex()` already did the equivalent for its own file;
+this is the same rule applied where it was missing.
+
+The second: `CREATE INDEX` declared the index in the catalog *first* and
+filled the file afterwards. A duplicate value found halfway through a
+`CREATE UNIQUE INDEX` therefore left the schema naming an index that
+held only the rows the build had reached — and `Sql\Optimizer\Rule\IndexSelection`
+trusts the schema, so a later `SELECT` on that column answered from the
+half-built index and silently returned fewer rows than the table holds.
+`Schema\Database::createIndex()` now fills a temporary file, `fsync()`s
+it, renames it into place, and only then updates the catalog; a failure
+anywhere in the build deletes the temporary and leaves no declaration at
+all. This is the same "build complete, then publish" shape
+`Infrastructure\AtomicWriter` and `HeapFile::vacuum()` already use, and
+it makes the ordering match `IndexMaintainer`'s own rule for ordinary
+writes: check first, write second, never leave the schema describing
+something the files do not.
+
+Neither makes DDL transactional — "DDL is not transactional" above still
+holds, and a crash (rather than an exception) midway through a build
+still leaves an orphaned `.idx.building` file that nothing reads and
+nothing yet cleans up.

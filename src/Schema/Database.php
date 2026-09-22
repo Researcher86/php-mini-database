@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Schema;
 
+use Closure;
 use PhpMiniDatabase\Exception\SchemaException;
 use PhpMiniDatabase\Infrastructure\FileSystem;
 use PhpMiniDatabase\Infrastructure\Path;
@@ -13,6 +14,7 @@ use PhpMiniDatabase\Storage\HeapFile;
 use PhpMiniDatabase\Transaction\LockManager;
 use PhpMiniDatabase\Transaction\TransactionManager;
 use PhpMiniDatabase\Transaction\Wal;
+use Throwable;
 
 /**
  * The database as a caller sees it: a directory on disk, the tables in it,
@@ -68,6 +70,35 @@ final class Database
     public function dropTable(string $name): void
     {
         $this->catalog->dropTable($name);
+
+        // Before anything can open the name again. An open handle to a
+        // file whose directory entry is gone stays perfectly usable on
+        // Unix - it just points at an inode nothing else can reach - so a
+        // cached HeapFile left behind here would quietly serve the *next*
+        // `CREATE TABLE` of the same name, writing rows into a file that
+        // disappears with the process.
+        $this->closeCachedFilesFor($name);
+    }
+
+    /**
+     * Drops this table's open heap file and indexes from the cache, after
+     * something has made the files they hold open unreachable or stale.
+     */
+    private function closeCachedFilesFor(string $table): void
+    {
+        if (isset($this->heapFiles[$table])) {
+            $this->heapFiles[$table]->close();
+            unset($this->heapFiles[$table]);
+        }
+
+        $prefix = $this->indexCacheKey($table, '');
+
+        foreach ($this->indexes as $key => $index) {
+            if (str_starts_with($key, $prefix)) {
+                $index->close();
+                unset($this->indexes[$key]);
+            }
+        }
     }
 
     public function hasTable(string $name): bool
@@ -100,6 +131,50 @@ final class Database
     public function addIndex(string $table, IndexDefinition $index): void
     {
         $this->catalog->updateTable($this->table($table)->withIndex($index));
+    }
+
+    /**
+     * `CREATE INDEX`: fills a brand new index and only then lets the
+     * catalog name it. $fill receives an index backed by a temporary
+     * file, which is renamed into place once it has been built in full
+     * and pushed to the device — so the schema never advertises an index
+     * that a failure partway through (a duplicate value, a full disk)
+     * left half-populated, which queries would then answer from, silently
+     * missing every row the build never reached.
+     *
+     * A composite index has no backing file at all (see DECISIONS.md), so
+     * there is nothing to build and the declaration is all there is.
+     *
+     * @param Closure(BTreeIndex): void $fill
+     */
+    public function createIndex(string $table, IndexDefinition $definition, Closure $fill): void
+    {
+        if (count($definition->columns()) !== 1) {
+            $this->addIndex($table, $definition);
+
+            return;
+        }
+
+        $path = $this->indexPath($table, $definition->name);
+        $temporary = $path . '.building';
+        $this->files->delete($temporary);
+
+        $columnType = $this->table($table)->column($definition->columns()[0])->type;
+        $index = BTreeIndex::open($temporary, $columnType, $definition->unique);
+
+        try {
+            $fill($index);
+            $index->sync();
+        } catch (Throwable $e) {
+            $index->close();
+            $this->files->delete($temporary);
+
+            throw $e;
+        }
+
+        $index->close();
+        $this->files->rename($temporary, $path);
+        $this->addIndex($table, $definition);
     }
 
     /**

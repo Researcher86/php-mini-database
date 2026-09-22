@@ -66,6 +66,7 @@ use PhpMiniDatabase\Sql\Planner\Plan\Scan as PlanScan;
 use PhpMiniDatabase\Sql\Planner\Plan\Sort as PlanSort;
 use PhpMiniDatabase\Sql\Planner\PlannedQuery;
 use PhpMiniDatabase\Sql\Planner\Planner;
+use PhpMiniDatabase\Storage\BTreeIndex;
 use PhpMiniDatabase\Storage\RecordId;
 use PhpMiniDatabase\Transaction\IsolationLevel;
 use PhpMiniDatabase\Transaction\LockManager;
@@ -919,22 +920,23 @@ final readonly class Executor
 
     private function executeCreateIndex(CreateIndexStatement $statement): null
     {
-        $this->database->addIndex(
+        $table = $this->database->table($statement->table);
+        $column = $statement->columns[0] ?? null;
+        $heap = $this->database->heapFile($statement->table);
+
+        // Database::createIndex() publishes the declaration only once this
+        // has filled the file in full - so a duplicate value found halfway
+        // through leaves no index behind at all, rather than one the
+        // catalog names and queries trust while it is missing rows.
+        $this->database->createIndex(
             $statement->table,
             new IndexDefinition($statement->name, $statement->columns, $statement->unique),
+            static function (BTreeIndex $index) use ($table, $column, $heap): void {
+                foreach ($heap->scan() as $id => $record) {
+                    $index->insert($table->deserializeRow($record)->get((string) $column), $id);
+                }
+            },
         );
-
-        if (count($statement->columns) !== 1) {
-            return null; // recorded, but see BTreeIndex/DECISIONS.md: composite indexes have no backing file yet
-        }
-
-        $table = $this->database->table($statement->table);
-        $column = $statement->columns[0];
-        $index = $this->database->index($statement->table, $statement->name);
-
-        foreach ($this->database->heapFile($statement->table)->scan() as $id => $record) {
-            $index->insert($table->deserializeRow($record)->get($column), $id);
-        }
 
         return null;
     }

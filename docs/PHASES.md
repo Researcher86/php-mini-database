@@ -1385,3 +1385,32 @@ index half of undo idempotent as well. See
 `composer format:check` all clean, `make bench` unchanged within noise,
 and every CLI subcommand plus all four `examples/` scripts re-run by hand
 against a real server.
+
+## Post-plan: two DDL bugs a full read turned up
+
+A whole-project audit, this time outside the WAL/recovery cluster the
+previous entries circle, found the two places where DDL and `Schema\Database`'s
+open-file cache disagreed — both silent, both data-losing.
+
+`DROP TABLE` removed the directory but left the table's `HeapFile` open
+and cached. An open handle to an unlinked file keeps working on Unix, so
+the next `CREATE TABLE` of the same name was handed the old one back:
+every row written afterwards went into a file that disappears with the
+process, and the same `SELECT` answered differently before and after a
+restart. `DROP TABLE` now closes and forgets the table's heap file and
+indexes, which `DROP INDEX` already did for its own.
+
+`CREATE INDEX` named the index in the catalog before filling it, so a
+`CREATE UNIQUE INDEX` that the existing rows refuse left a declaration
+the planner trusts over a file holding only the rows the build reached —
+and queries on that column then silently returned fewer rows than the
+table holds. `Database::createIndex()` now fills a temporary file,
+`fsync()`s it, renames it into place, and updates the catalog last;
+a failure leaves neither file nor declaration.
+
+**Tests:** `ExecutorIndexTest::testATableRecreatedUnderTheSameNameGetsItsOwnFiles`
+(checked across a real reopen) and `::testAFailedUniqueIndexBuildLeavesNoIndexBehind`,
+each verified to fail against the code as it was.
+
+**Done when:** `composer test` (1023), `composer analyse` (level 8) and
+`composer format:check` all clean.

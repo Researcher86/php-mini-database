@@ -1,5 +1,18 @@
 # Implementation Plan for `php-mini-database` (Relational DBMS with TCP Server)
 
+> **Status: complete.** All 20 milestones (§22) are done. This document is
+> kept as written — every `§N.M` reference throughout `src/`, `tests/`, and
+> `docs/*.md` cites a section number here, so nothing is renumbered or
+> removed now that the plan is finished. It is no longer the best
+> description of the system, though: for what was actually built and why,
+> see [docs/architecture.md](docs/architecture.md) (layers),
+> [docs/sql.md](docs/sql.md)/[docs/storage.md](docs/storage.md)/[docs/transactions.md](docs/transactions.md)/[docs/protocol.md](docs/protocol.md)/[docs/security.md](docs/security.md)/[docs/cli.md](docs/cli.md)
+> (each layer's real, code-verified reference — some details below turned
+> out differently once built), [docs/PHASES.md](docs/PHASES.md) (the order
+> things were actually built in), and [docs/DECISIONS.md](docs/DECISIONS.md)
+> (why, including every place the built system diverges from what is
+> sketched below).
+
 ## 0. Brief Description
 
 `php-mini-database` is an embeddable and client-server relational database in PHP. The server listens on a TCP port, accepts client connections over its own binary protocol, executes SQL queries, and returns results. The library can be used both in embedded mode (in-process) and in client-server mode.

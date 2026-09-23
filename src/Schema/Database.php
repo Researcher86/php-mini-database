@@ -6,6 +6,8 @@ namespace PhpMiniDatabase\Schema;
 
 use Closure;
 use PhpMiniDatabase\Exception\SchemaException;
+use PhpMiniDatabase\Exception\StorageException;
+use PhpMiniDatabase\Infrastructure\FileLock;
 use PhpMiniDatabase\Infrastructure\FileSystem;
 use PhpMiniDatabase\Infrastructure\Path;
 use PhpMiniDatabase\Storage\BTreeIndex;
@@ -53,13 +55,42 @@ final class Database
 
     private function __construct(
         private readonly Catalog $catalog,
+        private readonly FileLock $lock,
         private readonly FileSystem $files = new FileSystem(),
     ) {
     }
 
-    public static function open(string $dataDirectory): self
+    /**
+     * Opening takes an exclusive lock on the directory, and `close()` is
+     * what gives it back. Everything this class owns — the page counts
+     * inside each `Storage\PageManager`, the `LockManager`, the one
+     * `TransactionManager` — is per-object state describing shared files,
+     * so a second process on the same directory does not contend with this
+     * one: it allocates the same page numbers and writes whole pages back
+     * over rows the first process just put there, losing them with nothing
+     * raised anywhere. That single-process assumption is what the rest of
+     * the engine is built on (see DECISIONS.md, "One process, one event
+     * loop"); this lock is what makes violating it say so instead of
+     * quietly dropping rows. A second writer belongs behind
+     * `bin/minidb-server`, which serialises every session into one process.
+     */
+    public static function open(string $dataDirectory, float $lockTimeoutSeconds = 5.0): self
     {
-        return new self(Catalog::open($dataDirectory));
+        // Catalog::open() first: it is what creates the directory the lock
+        // file has to live in.
+        $catalog = Catalog::open($dataDirectory);
+        $lock = new FileLock(Path::join($dataDirectory, 'db.lock'));
+
+        try {
+            $lock->acquireExclusive($lockTimeoutSeconds);
+        } catch (StorageException $e) {
+            throw new StorageException(sprintf(
+                'Data directory "%s" is already open in another process. Only one process at a time may open a database; route other writers through bin/minidb-server.',
+                $dataDirectory,
+            ), previous: $e);
+        }
+
+        return new self($catalog, $lock);
     }
 
     public function createTable(Table $table): void
@@ -337,6 +368,8 @@ final class Database
         $this->wal = null;
         $this->transactions = null;
         $this->locks = null;
+
+        $this->lock->release();
     }
 
     private function indexDefinition(string $table, string $indexName): IndexDefinition

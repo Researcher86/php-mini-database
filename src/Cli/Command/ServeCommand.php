@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Cli\Command;
 
 use PhpMiniDatabase\Cli\PidFile;
+use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Infrastructure\Logger;
 use PhpMiniDatabase\Infrastructure\LogLevel;
 use PhpMiniDatabase\Network\Server;
@@ -67,14 +68,26 @@ final class ServeCommand
             }
         }
 
+        $logLevel = LogLevel::tryFrom(strtolower($this->resolve($options, 'log-level', 'MINIDB_LOG_LEVEL', 'info'))) ?? LogLevel::INFO;
+
+        // Constructing the Server opens the data directory, which another
+        // server on that same directory holds locked - a different failure
+        // from the pid-file check above (that one only sees a server
+        // sharing this pid file), and the operator wants to read it, not a
+        // stack trace.
+        try {
+            $server = new Server($this->buildConfig($options), new Logger($logFile, $logLevel));
+        } catch (StorageException $e) {
+            fwrite($errorOutput, $e->getMessage() . "\n");
+
+            return 1;
+        }
+
         // After daemonize(), never before: the parent exits immediately,
         // so a pid written above the fork would name a process that no
         // longer exists - and stop/status/reload have nothing but this
         // file to go on.
         $pidFile?->write((int) getmypid());
-
-        $logLevel = LogLevel::tryFrom(strtolower($this->resolve($options, 'log-level', 'MINIDB_LOG_LEVEL', 'info'))) ?? LogLevel::INFO;
-        $server = new Server($this->buildConfig($options), new Logger($logFile, $logLevel));
 
         try {
             $server->start();

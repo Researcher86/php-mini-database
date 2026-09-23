@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Tests\Unit\Schema;
 
 use PhpMiniDatabase\Exception\SchemaException;
+use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Schema\Column;
 use PhpMiniDatabase\Schema\Constraint\PrimaryKey;
 use PhpMiniDatabase\Schema\Database;
@@ -39,6 +40,39 @@ final class DatabaseTest extends TestCase
         $db = Database::open($this->path('mydb'));
 
         self::assertSame([], $db->tableNames());
+    }
+
+    /**
+     * Two `Database` objects on one directory are two independent caches of
+     * the same pages — each `PageManager` holds its own page count and
+     * read-modify-writes whole pages — so both can hand out the same page
+     * number and overwrite each other's rows, losing them with no error
+     * anywhere. `flock()` contends per open file description, so this holds
+     * a second process off exactly as it holds off a second object here.
+     */
+    public function testASecondOpenOfTheSameDataDirectoryIsRefused(): void
+    {
+        $first = Database::open($this->path('mydb'));
+
+        $this->expectException(StorageException::class);
+        $this->expectExceptionMessageMatches('/already open in another process/');
+
+        try {
+            Database::open($this->path('mydb'), lockTimeoutSeconds: 0.05);
+        } finally {
+            $first->close();
+        }
+    }
+
+    public function testClosingADatabaseHandsTheDirectoryToTheNextOpener(): void
+    {
+        $first = Database::open($this->path('mydb'));
+        $first->createTable(new Table('users', [new Column('id', new IntType())]));
+        $first->close();
+
+        $second = Database::open($this->path('mydb'), lockTimeoutSeconds: 0.05);
+
+        self::assertSame(['users'], $second->tableNames());
     }
 
     public function testTablesCanBeCreatedFoundAndDropped(): void

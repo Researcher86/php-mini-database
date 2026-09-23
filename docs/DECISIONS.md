@@ -81,6 +81,8 @@ project is built from is [PLAN.md](../PLAN.md).
 | commit()/rollback()/recover() sync storage before their own WAL record, not merely before checkpoint | current, [why](#commitrollbackrecover-sync-storage-before-their-own-wal-record) |
 | A failed ROLLBACK stays retryable: the undo log is emptied as soon as it is applied | current, [why](#a-failed-rollback-stays-retryable) |
 | Undoing an already-undone change is success, not an error | current, [why](#undoing-an-already-undone-change-is-success-not-an-error) |
+| One process per data directory, enforced by a lock | current, [why](#one-process-per-data-directory-enforced-by-a-lock) |
+| A prefix scan may not stop at the first leaf without a match | current, [why](#a-prefix-scan-may-not-stop-at-the-first-leaf-without-a-match) |
 
 ## One byte format for disk and wire
 
@@ -2540,12 +2542,12 @@ time, and `Session::handleFrame()` runs a statement to completion before
 the loop looks at another socket. There is no point *inside* a statement
 at which another session's statement can begin. Adding a table lock
 would protect against nothing this engine can do, and would not help the
-one case where the scenario is real — two server processes opened on the
-same data directory, which nothing prevents and which the whole design
-already assumes away (in-memory locks, one `TransactionManager`, one
-`LockManager`; see "`LockManager` never waits"). The assumption is
-written down at the build itself, so that an engine which ever grows
-real concurrency finds it there.
+one case where the scenario is real — two processes opened on the same
+data directory, which the whole design already assumes away (in-memory
+locks, one `TransactionManager`, one `LockManager`; see "`LockManager`
+never waits"). That assumption is now enforced rather than merely
+recorded: see "[One process per data directory, enforced by a
+lock](#one-process-per-data-directory-enforced-by-a-lock)".
 
 `DROP INDEX`'s own ordering is the mirror of that and equally
 deliberate: the schema is updated first, the file deleted second. An
@@ -2575,3 +2577,79 @@ still pointing at the old inode. Atomicity holds either way; it is the
 reaching for `ext-ffi` to call `open(2)`/`fsync(2)` directly — real
 machinery for a window this project's own single-crash model already
 leaves open elsewhere.
+
+## One process per data directory, enforced by a lock
+
+Every concurrency decision above rests on the same assumption: one
+process owns a data directory. In-memory `LockManager`, one
+`TransactionManager` per `Schema\Database`, a `Storage\PageManager` that
+caches its own page count and read-modify-writes whole pages — none of it
+means anything across a process boundary. The assumption was written down
+in several places and enforced in none, and `Schema\Database::open()`
+would open a directory another process already had open, without a word.
+
+What that costs is not a race that occasionally reorders two writes. Two
+processes each believe the heap file ends at page N, each `allocate()`s
+page N, and each writes its own copy of that page back — so one of them
+writes over rows the other has just added. Both callers were told their
+`INSERT` succeeded. Measured, not reasoned about: six processes inserting
+30 rows each into one directory reported 180 successes and no errors at
+all, and left 100 rows on disk.
+
+So `open()` now takes an exclusive `Infrastructure\FileLock` on
+`<data>/db.lock` and `close()` releases it. The class was written for
+exactly this ("used to keep two processes from writing the same database
+at once") and had never been wired to anything but its own test. A second
+opener waits out the timeout and then gets told what is wrong and where
+the concurrency it wants actually lives — `bin/minidb-server`, which
+serialises every session into one process's event loop. That is the
+whole fix: it does not make the engine multi-process, it makes the
+single-process rule impossible to break by accident.
+
+Two consequences worth naming. `bin/minidb-server dump`/`load` open the
+directory directly, so they are now refused while a server is running on
+it — correct rather than restrictive, since `load` was a second writer
+and `dump` read pages a live server was writing underneath it; the online
+route is `bin/minidb backup`/`export`, which go through the server. And a
+crashed process leaves no stale lock to clean up: `flock()` is released
+by the kernel when the process dies, which is the reason the lock lives
+on a lock file rather than in one.
+
+
+## A prefix scan may not stop at the first leaf without a match
+
+`BTreeIndex::scanPrefix()` is what answers both `search()` and a unique
+index's duplicate check. It descended to the leaf that should hold the
+first matching key, walked it, and followed the leaf chain only while the
+leaf it had just read still ended in a match — the run of entries for one
+value can spill onto the next leaf, and that was the case it was written
+for.
+
+The case it was not written for is the run *starting* past a leaf
+boundary. A leaf split promotes the right half's first **whole** key as
+the separator — value bytes plus the 8-byte `RecordId` suffix — while a
+search descends by `boundary($prefix, true)`, the same value with an
+all-zero suffix. The separator is therefore strictly greater than what
+the search descends by, so `childFor()` keeps left and the descent lands
+on the leaf *before* the one holding the entry. No match on that leaf,
+and the scan stopped there: one key vanished per leaf split, while the
+row itself sat untouched in the heap and answered `COUNT(*)` normally.
+
+That is a wrong answer, not a slow one, and it had two faces. A `SELECT
+... WHERE id = ?` on a `PRIMARY KEY` returned nothing for a row plainly
+in the table — about 1% of rows at a thousand, one per split, the same
+ids every run, which reads as data loss from the application's side and
+is why it was reported as one. And because the same scan is the unique
+index's duplicate check, `INSERT` accepted a *second* row with one of
+those primary keys.
+
+`range()` never had the bug: it follows the chain unconditionally and
+tests each entry against its bounds. `scanPrefix()` now stops on the same
+evidence rather than on the absence of a match — with the entries sorted,
+an entry above the boundary that does not carry the prefix is above every
+key that could, and only then is the run certainly over.
+
+Sampling is what hid it. `testManyInsertsForceSplitsAndEverythingStaysFindable`
+inserted 2000 keys and checked six of them, none of which was a
+separator. It now checks every key it inserts, and a second test inserts
+every key a second time to prove the unique index refuses all of them.

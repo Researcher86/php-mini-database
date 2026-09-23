@@ -278,8 +278,9 @@ final class BTreeIndex
 
         while ($pageId !== null) {
             $sawMatch = false;
+            $entries = $this->readLeafEntries($this->pages->read($pageId));
 
-            foreach ($this->readLeafEntries($this->pages->read($pageId)) as $entry) {
+            foreach ($entries as $entry) {
                 if (substr($entry, 0, -self::RECORD_ID_LENGTH) === $prefix) {
                     $sawMatch = true;
                     yield $this->recordIdFromKey($entry);
@@ -288,9 +289,24 @@ final class BTreeIndex
                 }
             }
 
-            // The run can end exactly at a leaf boundary; keep following
-            // the chain only while this leaf's last entry still matched.
-            $pageId = $sawMatch ? $this->nextLeafPageId($this->pages->read($pageId)) : null;
+            // The run can both start and end past a leaf boundary, so
+            // neither edge may stop the walk early. It can *end* past one
+            // because a value with several RecordIds spills onto the next
+            // leaf. It can *start* past one because a split promotes the
+            // right half's first whole key - value bytes plus RecordId -
+            // as the separator, which sorts above the all-zero-suffix
+            // boundary this scan descended by: the descent lands on the
+            // left leaf and the run begins on the right one. Stop only
+            // once an entry is genuinely past the run - with the entries
+            // sorted, anything above $boundary that does not carry the
+            // prefix is above every key that could.
+            $last = $entries === [] ? null : $entries[array_key_last($entries)];
+
+            if (!$sawMatch && $last !== null && strcmp($last, $boundary) > 0) {
+                return;
+            }
+
+            $pageId = $this->nextLeafPageId($this->pages->read($pageId));
         }
     }
 

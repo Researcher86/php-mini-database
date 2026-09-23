@@ -215,11 +215,23 @@ final class BTreeIndexTest extends TestCase
             $index->insert($i, new RecordId(0, $i));
         }
 
-        foreach ([0, 1, 500, 999, 1500, $count - 1] as $key) {
+        // Every key, not a sample of six. A leaf split promotes the right
+        // half's first *whole* key - value bytes plus RecordId - as the
+        // separator, while a search descends by the value's lowest
+        // possible whole key (an all-zero RecordId suffix), so the descent
+        // lands one leaf left of the entry: one key per split used to
+        // disappear, and sampling walked straight past all of them.
+        $missing = [];
+
+        for ($key = 0; $key < $count; $key++) {
             $found = $this->searchAll($index, $key);
-            self::assertCount(1, $found, "key {$key} should be found");
-            self::assertSame($key, $found[0]->slot);
+
+            if ($found === [] || $found[0]->slot !== $key) {
+                $missing[] = $key;
+            }
         }
+
+        self::assertSame([], $missing);
 
         self::assertSame([], $this->searchAll($index, $count));
 
@@ -282,5 +294,36 @@ final class BTreeIndexTest extends TestCase
         $index->delete(1, new RecordId(0, 500));
 
         self::assertCount(999, $this->searchAll($index, 1));
+    }
+
+    /**
+     * The same scan backs a unique index's duplicate check, so a key it
+     * could not find was a key that could be inserted twice - a PRIMARY
+     * KEY admitting two rows with the same id, which is the same bug
+     * wearing its worse face.
+     */
+    public function testNoKeyCanBeDuplicatedOnceTheLeavesHaveSplit(): void
+    {
+        $index = BTreeIndex::open($this->path('idx.dat'), new VarcharType(40), unique: true);
+        $keys = [];
+
+        for ($i = 0; $i < 600; $i++) {
+            $key = sprintf('order-%05d', $i);
+            $keys[] = $key;
+            $index->insert($key, new RecordId(intdiv($i, 20) + 1, $i % 20));
+        }
+
+        $accepted = [];
+
+        foreach ($keys as $key) {
+            try {
+                $index->insert($key, new RecordId(9999, 0));
+                $accepted[] = $key;
+            } catch (ConstraintViolationException) {
+                // what every one of them must do
+            }
+        }
+
+        self::assertSame([], $accepted);
     }
 }

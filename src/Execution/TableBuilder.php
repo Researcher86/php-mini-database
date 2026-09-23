@@ -60,7 +60,7 @@ final readonly class TableBuilder
         $constraints = [];
 
         foreach ($statement->columns as $definition) {
-            [$column, $inlineConstraints] = $this->column($statement->table, $definition);
+            [$column, $inlineConstraints] = $this->buildColumn($statement->table, $definition);
             $columns[] = $column;
             array_push($constraints, ...$inlineConstraints);
         }
@@ -152,8 +152,17 @@ final readonly class TableBuilder
         }, $columns);
     }
 
-    /** @return array{0: Column, 1: list<Constraint>} */
-    private function column(string $table, ColumnDefinition $definition): array
+    /**
+     * One parsed column definition turned into the `Schema\Column` the
+     * catalog stores, plus whatever constraints its inline modifiers
+     * declared. Public because `ALTER TABLE ... ADD COLUMN` builds exactly
+     * one of these, from the same `ColumnDefinition` the parser produces
+     * inside a `CREATE TABLE` — it is the caller's job to decide what to do
+     * with any constraints that come back.
+     *
+     * @return array{0: Column, 1: list<Constraint>}
+     */
+    public function buildColumn(string $table, ColumnDefinition $definition): array
     {
         $column = new Column($definition->name, $this->types->fromName($definition->type), $definition->notNull);
 

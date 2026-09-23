@@ -224,4 +224,82 @@ final class TableTest extends TestCase
         $this->expectException(SchemaException::class);
         $this->usersTable()->withoutIndex('missing');
     }
+
+    public function testWithColumnAppendsItAfterTheExistingOnes(): void
+    {
+        $table = $this->usersTable();
+
+        $altered = $table->withColumn((new Column('status', new VarcharType(20)))->withDefault('active'));
+
+        self::assertSame(['id', 'email', 'age', 'active'], $table->columnNames());
+        self::assertSame(['id', 'email', 'age', 'active', 'status'], $altered->columnNames());
+        self::assertSame('active', $altered->column('status')->defaultValue());
+    }
+
+    public function testWithColumnKeepsConstraintsAndIndexes(): void
+    {
+        $table = $this->usersTable()->withIndex(new IndexDefinition('idx_users_age', ['age']));
+
+        $altered = $table->withColumn(new Column('status', new VarcharType(20)));
+
+        self::assertTrue($altered->hasIndex('idx_users_age'));
+        self::assertSame(
+            array_map(static fn ($c): string => $c->name(), $table->constraints()),
+            array_map(static fn ($c): string => $c->name(), $altered->constraints()),
+        );
+    }
+
+    public function testWithColumnOnAnExistingNameThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('already has a column "age"');
+
+        $this->usersTable()->withColumn(new Column('age', new IntType()));
+    }
+
+    public function testWithoutColumnRemovesIt(): void
+    {
+        $table = $this->usersTable();
+
+        $altered = $table->withoutColumn('age');
+
+        self::assertSame(['id', 'email', 'active'], $altered->columnNames());
+        self::assertFalse($altered->hasColumn('age'));
+        self::assertSame(['id', 'email', 'age', 'active'], $table->columnNames());
+    }
+
+    public function testWithoutColumnOnAnUnknownNameThrows(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('has no column "missing"');
+
+        $this->usersTable()->withoutColumn('missing');
+    }
+
+    public function testWithoutColumnRefusesAColumnAConstraintNames(): void
+    {
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('"PRIMARY" still names it');
+
+        $this->usersTable()->withoutColumn('id');
+    }
+
+    public function testWithoutColumnRefusesAColumnAnIndexNames(): void
+    {
+        $table = $this->usersTable()->withIndex(new IndexDefinition('idx_users_age', ['age']));
+
+        $this->expectException(SchemaException::class);
+        $this->expectExceptionMessage('"idx_users_age" still names it');
+
+        $table->withoutColumn('age');
+    }
+
+    public function testWithoutColumnRefusesTheLastColumn(): void
+    {
+        $table = new Table('counters', [new Column('value', new IntType())]);
+
+        $this->expectException(SchemaException::class);
+
+        $table->withoutColumn('value');
+    }
 }

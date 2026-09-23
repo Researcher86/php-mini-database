@@ -151,6 +151,79 @@ final readonly class Table
     }
 
     /**
+     * A copy of this table with one more column, appended after the
+     * existing ones — `ALTER TABLE ... ADD COLUMN`'s half of the change
+     * that `Schema` can express.
+     *
+     * Appended, never inserted: a record is a null bitmap followed by the
+     * values in column order (`Storage\RecordSerializer`), so a column's
+     * position *is* its position in every stored record. Putting a new one
+     * anywhere but last would move every value after it, for a difference
+     * only `SELECT *` would ever show.
+     */
+    public function withColumn(Column $column): self
+    {
+        if ($this->hasColumn($column->name)) {
+            throw new SchemaException(sprintf('Table "%s" already has a column "%s".', $this->name, $column->name));
+        }
+
+        return new self($this->name, [...$this->columns, $column], $this->constraints, $this->indexes, $this->serializer);
+    }
+
+    /**
+     * A copy of this table without the named column — `ALTER TABLE ...
+     * DROP COLUMN`'s half.
+     *
+     * Refused while a constraint or an index still names the column,
+     * rather than dropping either along with it. The constructor would
+     * refuse the resulting table anyway ("names unknown column"); what
+     * this adds is a message that says which declaration is in the way,
+     * and the decision that `DROP COLUMN` never silently drops a
+     * `UNIQUE`, a `PRIMARY KEY` or an index the user did not name.
+     *
+     * A `CHECK` whose expression mentions the column but whose declared
+     * column list is empty is *not* caught here: that list is allowed to
+     * mean "not known" (see `Constraint\CheckConstraint`), and finding out
+     * takes the SQL parser, which lives above this layer.
+     * `Execution\Executor` checks it before calling this.
+     */
+    public function withoutColumn(string $name): self
+    {
+        if (!$this->hasColumn($name)) {
+            throw new SchemaException(sprintf('Table "%s" has no column "%s".', $this->name, $name));
+        }
+
+        foreach ($this->constraints as $constraint) {
+            if (in_array($name, $constraint->columns(), true)) {
+                throw new SchemaException(sprintf(
+                    'Cannot drop column "%s.%s": constraint "%s" still names it.',
+                    $this->name,
+                    $name,
+                    $constraint->name(),
+                ));
+            }
+        }
+
+        foreach ($this->indexes as $index) {
+            if (in_array($name, $index->columns(), true)) {
+                throw new SchemaException(sprintf(
+                    'Cannot drop column "%s.%s": index "%s" still names it; drop the index first.',
+                    $this->name,
+                    $name,
+                    $index->name,
+                ));
+            }
+        }
+
+        $remaining = array_values(array_filter(
+            $this->columns,
+            static fn (Column $column): bool => $column->name !== $name,
+        ));
+
+        return new self($this->name, $remaining, $this->constraints, $this->indexes, $this->serializer);
+    }
+
+    /**
      * Resolve a Row into the positional values RecordSerializer expects: one
      * per column, in column order, missing values filled from defaults.
      *

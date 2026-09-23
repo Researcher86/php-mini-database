@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Storage;
 
+use Closure;
 use Generator;
 use PhpMiniDatabase\Infrastructure\FileSystem;
+use Throwable;
 
 /**
  * An unordered file of records — the table itself, once a row has been
@@ -186,25 +188,72 @@ final class HeapFile
     public function vacuum(): int
     {
         $path = $this->pages->path();
-        $temporary = $path . '.vacuum';
         $sizeBefore = $this->files->size($path);
 
-        $this->files->delete($temporary);
-        $compacted = self::open($temporary, $this->files);
+        $this->replace('.vacuum', static fn (string $record): string => $record);
 
-        foreach ($this->scan() as $record) {
-            $compacted->insert($record);
+        return $sizeBefore - $this->files->size($path);
+    }
+
+    /**
+     * Put every live record through $transform and keep the results in
+     * place of what is here now — how `ALTER TABLE` re-encodes a whole
+     * table once a column has been added to or removed from its schema,
+     * since a record carries no schema of its own to decode it by (see
+     * `RecordSerializer`).
+     *
+     * **Every RecordId in the file changes**, exactly as in `vacuum()`,
+     * and for the same reason: this is the same rewrite, with the
+     * identity transform swapped for a real one. Every index on the table
+     * has to be rebuilt afterwards.
+     *
+     * A transform that throws — a row the new schema refuses — aborts the
+     * whole rewrite with this file untouched, so a half-converted table is
+     * never what a failure leaves behind.
+     *
+     * @param Closure(string): string $transform
+     */
+    public function rewrite(Closure $transform): void
+    {
+        $this->replace('.rewrite', $transform);
+    }
+
+    /**
+     * The shared machinery of `vacuum()` and `rewrite()`: build the whole
+     * new file under a temporary name, then rename it over the original
+     * and reopen. A crash before the rename leaves the original intact and
+     * loses only the temporary; a throw partway through deletes the
+     * temporary on the way out, so a retry does not reopen half a file.
+     *
+     * @param Closure(string): string $transform
+     */
+    private function replace(string $suffix, Closure $transform): void
+    {
+        $path = $this->pages->path();
+        $temporary = $path . $suffix;
+
+        $this->files->delete($temporary);
+        $rewritten = self::open($temporary, $this->files);
+
+        try {
+            foreach ($this->scan() as $record) {
+                $rewritten->insert($transform($record));
+            }
+
+            $rewritten->sync();
+        } catch (Throwable $e) {
+            $rewritten->close();
+            $this->files->delete($temporary);
+
+            throw $e;
         }
 
-        $compacted->sync();
-        $compacted->close();
+        $rewritten->close();
 
         $this->pages->close();
         $this->files->rename($temporary, $path);
         $this->pages = new PageManager($path, $this->files);
         $this->insertHint = max(0, $this->pages->pageCount() - 1);
-
-        return $sizeBefore - $this->files->size($path);
     }
 
     public function sync(): void

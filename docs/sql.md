@@ -123,6 +123,40 @@ a cascade that is itself blocked one level further down).
 name` — no `RENAME`, no `ALTER COLUMN`, no constraint changes after the
 fact.
 
+Either form rewrites every record in the table, because a record is a null
+bitmap plus its values in column order and carries no schema of its own
+(see [storage.md](storage.md)): there is no reading a row written under one
+column list under a different one. The cost is a full pass over the table
+plus a rebuild of every index on it, not a catalog edit.
+
+An added column is always appended last, and existing rows get its
+`DEFAULT`, or NULL where it has none — the same path an `INSERT` that omits
+the column takes. `ADD COLUMN ... NOT NULL` with no default therefore
+succeeds on an empty table and is refused on one with rows in it, with the
+table left exactly as it was.
+
+What is refused rather than half-done:
+
+- `ADD COLUMN` with `PRIMARY KEY`, `UNIQUE`, `CHECK` or `REFERENCES` on the
+  added column. Such a constraint would have to already hold for every row
+  in the table, and nothing checks that yet; only `NOT NULL` and `DEFAULT`
+  are accepted.
+- `DROP COLUMN` on a column an index, a `PRIMARY KEY`, a `UNIQUE` or a
+  foreign key still names — drop the index or recreate the table instead.
+  Nothing is ever dropped implicitly along with the column. This covers a
+  column another table's foreign key points at as well, since such a column
+  must be covered by a `PRIMARY KEY` or `UNIQUE` here for that reference to
+  have been accepted at all.
+- `DROP COLUMN` on a column a `CHECK` expression mentions. The check is a
+  textual one — the expression is re-lexed and searched for an identifier of
+  that name — so it can refuse a drop over an identifier that is not really
+  a reference to the column, and cannot miss one that is.
+
+`ALTER TABLE` is DDL, and DDL here is not transactional (see
+[DECISIONS.md](DECISIONS.md)): the rewrite is not undone by a `ROLLBACK`,
+and a crash partway through can leave a table whose records and schema
+disagree, which only a restore from backup puts right.
+
 `CREATE [UNIQUE] INDEX name ON table (column)` — one column per index; no
 multi-column or expression indexes. `DROP INDEX name`.
 

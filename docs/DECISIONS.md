@@ -35,6 +35,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | Recovery assumes a single crash | superseded, [why](#recovery-assumes-a-single-crash) — see [Undoing an already-undone change is success](#undoing-an-already-undone-change-is-success-not-an-error) |
 | `Database`, not `Executor`, owns transaction and lock state | current, [why](#database-not-executor-owns-transaction-and-lock-state) |
 | DDL is not transactional | current, [why](#ddl-is-not-transactional) |
+| `ALTER TABLE` rewrites the whole table, and refuses what it cannot check | current, [why](#alter-table-rewrites-the-whole-table) |
 | A `LogicalPlan` node carries its own physical decision; there is no separate physical plan | current, [why](#a-logicalplan-node-carries-its-own-physical-decision) |
 | A predicate never pushes past an outer join's nullable side | current, [why](#a-predicate-never-pushes-past-an-outer-joins-nullable-side) |
 | Join reordering is a two-table swap by page count, not a search | current, [why](#join-reordering-is-a-two-table-swap-by-page-count-not-a-search) |
@@ -1077,6 +1078,58 @@ DDL's effects are cheap to redo by hand if a mistake is caught immediately
 after, and the machinery to make it fully transactional is disproportionate
 to how often a schema change needs undoing compared to a row's data.
 
+## `ALTER TABLE` rewrites the whole table
+
+`ADD COLUMN` and `DROP COLUMN` both read every record in the table and
+write it back in the new column layout, then rebuild every index on it.
+There is no lazy alternative to fall back on: a record is a null bitmap
+plus its values in column order (`Storage\RecordSerializer`) and carries
+no version or column count of its own, so a row written under four columns
+decoded under five runs off the end of its own bytes — and where the extra
+column crosses a bitmap-byte boundary, even the surviving values come back
+as garbage. Reading old rows lazily would mean putting a schema version in
+every record and keeping every past layout around to decode them by, which
+is a change to the storage format and to every read path, for a statement
+this engine expects to run rarely.
+
+The rewrite goes through `HeapFile::rewrite()` — the machinery `vacuum()`
+already had: build the whole new file under a temporary name, rename it
+over the original, reopen. That is what makes a failure safe. A row the new
+schema refuses (`ADD COLUMN ... NOT NULL` with no default, on a table with
+rows) throws while only the temporary file has been written, so the table
+is left exactly as it was, with no rule anywhere saying so — the same shape
+as `CREATE INDEX`'s "fill before you publish".
+
+What it does *not* buy is atomicity across the three files a schema change
+touches. Heap, indexes and `schema.json` are replaced in that order, and a
+crash between any two leaves records and catalog describing different
+shapes, recoverable only from a backup. Making that atomic needs the
+catalog in the WAL, which is exactly the work "DDL is not transactional"
+above declines.
+
+The refusals are the other half of the decision. `ADD COLUMN` takes only
+`NOT NULL` and `DEFAULT`; a `PRIMARY KEY`, `UNIQUE`, `CHECK` or
+`REFERENCES` on an added column is a claim about rows that already exist,
+and the alternative to refusing it is recording a constraint that is
+quietly false. `DROP COLUMN` never drops anything else along with the
+column — an index, a `UNIQUE`, a `PRIMARY KEY` or a foreign key that names
+it makes the statement fail, because a user who did not ask for a
+constraint to disappear should not discover later that it did.
+
+A `CHECK` is the one that cannot be decided from the schema alone: a
+constraint's declared column list is allowed to be empty, meaning "not
+known" rather than "touches nothing", and a table-level `CHECK (discount <
+price)` is stored exactly that way (`Schema\Constraint\CheckConstraint`).
+`Execution\Executor` re-lexes the expression and refuses the drop if any
+identifier in it matches the column name. It is deliberately the crude
+test: it can refuse a drop over an identifier that is not really a
+reference, and it cannot miss one that is. Being wrong the first way costs
+a statement the user rewrites; being wrong the second way leaves a `CHECK`
+evaluated against a column that no longer exists, on every write, forever.
+Parsing the expression and walking it would narrow the first case, and
+needs an expression walker nothing else here wants yet — the seam is that
+one method.
+
 ## A `LogicalPlan` node carries its own physical decision
 
 `Sql\Planner\Plan\Scan::$index` and `Plan\Join::$hash` both start `null`
@@ -1164,8 +1217,9 @@ storage — and it happens once per *statement*, alongside everything else
 a single `INSERT`/`UPDATE` already does once per statement: resolving
 column defaults, checking `UNIQUE` against an index, evaluating the
 `SET`/`VALUES` expressions themselves. A cache would be one more thing to
-invalidate correctly whenever a table's constraints change (`ALTER TABLE`,
-once it exists) for a cost this project has not measured as worth avoiding.
+invalidate correctly whenever a table's constraints change - which
+`ALTER TABLE` does not do today, and would the moment it grew an `ADD
+CONSTRAINT` - for a cost this project has not measured as worth avoiding.
 If a profiled workload ever shows otherwise, the seam is exactly this one
 call — nothing else would need to change to add a cache behind it.
 

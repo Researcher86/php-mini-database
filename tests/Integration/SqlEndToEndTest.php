@@ -178,4 +178,38 @@ final class SqlEndToEndTest extends TestCase
 
         self::assertSame([['name' => 'Ann']], $popularAuthors);
     }
+
+    public function testASchemaChangeMidSessionKeepsTheDataAndTheIndexesItAddressedBy(): void
+    {
+        $this->schema();
+        $this->exec("INSERT INTO authors (id, name) VALUES (1, 'Ann'), (2, 'Bob')");
+        $this->exec(
+            "INSERT INTO posts (id, author_id, title, views) VALUES "
+            . "(1, 1, 'First post', 100), (2, 2, 'Bob''s post', 10)",
+        );
+
+        $this->exec("ALTER TABLE posts ADD COLUMN status VARCHAR(10) DEFAULT 'draft'");
+        $this->exec("UPDATE posts SET status = 'published' WHERE views > 50");
+
+        self::assertSame(
+            [
+                ['title' => "Bob's post", 'status' => 'draft'],
+                ['title' => 'First post', 'status' => 'published'],
+            ],
+            $this->query('SELECT title, status FROM posts ORDER BY title'),
+        );
+
+        // idx_posts_author addressed records the rewrite has since moved.
+        self::assertSame(
+            [['title' => 'First post', 'status' => 'published']],
+            $this->query('SELECT p.title, p.status FROM posts p WHERE p.author_id = 1'),
+        );
+
+        $this->exec('ALTER TABLE posts DROP COLUMN status');
+
+        self::assertSame(
+            [['id' => 1, 'author_id' => 1, 'title' => 'First post', 'views' => 100]],
+            $this->query('SELECT * FROM posts WHERE author_id = 1'),
+        );
+    }
 }

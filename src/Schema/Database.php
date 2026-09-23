@@ -112,6 +112,93 @@ final class Database
     }
 
     /**
+     * `ALTER TABLE`: re-encode every record in a table to match a changed
+     * set of columns, then publish the new schema.
+     *
+     * $transform turns one stored record into its replacement — the caller
+     * is the only one that knows both the old and the new column list, and
+     * this class deliberately never learns what changed. A record carries
+     * no schema of its own (see `Storage\RecordSerializer`), so there is no
+     * such thing as reading an old record under a new schema: every row has
+     * to be rewritten, which is why an `ALTER TABLE` here costs a full pass
+     * over the table rather than a catalog edit.
+     *
+     * The order is data first, catalog last: the heap is rewritten under a
+     * temporary name and renamed into place, then every index is rebuilt
+     * (the rewrite moves every `RecordId`, exactly as a vacuum does), and
+     * only then does `schema.json` start describing the new shape. DDL is
+     * not transactional here (see DECISIONS.md), and three files cannot be
+     * swapped at once without a journal: a crash between the steps leaves a
+     * table whose records and schema disagree, and only a restore from
+     * backup puts that right. What this ordering does buy is that a
+     * *failure* — a row the new schema refuses — throws before anything at
+     * all has been replaced.
+     *
+     * @param Closure(string): string $transform
+     */
+    public function alterTable(Table $altered, Closure $transform): void
+    {
+        $this->heapFile($altered->name)->rewrite($transform);
+        $this->rebuildIndexes($altered);
+        $this->catalog->updateTable($altered);
+    }
+
+    /**
+     * Rebuilds every index of a table from its heap file, which is what a
+     * rewrite of that file makes necessary: `HeapFile::rewrite()` moves
+     * every record, so every id an index holds is stale.
+     *
+     * Each index is built under a temporary name and renamed over the old
+     * file, for the reason `createIndex()` gives: a failure partway through
+     * must not leave a half-filled tree behind that queries would answer
+     * from. A composite index has no file to rebuild (see
+     * `createIndex()`), so there is nothing here for it to do.
+     */
+    private function rebuildIndexes(Table $table): void
+    {
+        $heap = $this->heapFile($table->name);
+
+        foreach ($table->indexes() as $definition) {
+            if (count($definition->columns()) !== 1) {
+                continue;
+            }
+
+            $column = $definition->columns()[0];
+            $path = $this->indexPath($table->name, $definition->name);
+            $temporary = $path . '.rebuilding';
+            $this->files->delete($temporary);
+
+            $index = BTreeIndex::open($temporary, $table->column($column)->type, $definition->unique);
+
+            try {
+                foreach ($heap->scan() as $id => $record) {
+                    $index->insert($table->deserializeRow($record)->get($column), $id);
+                }
+
+                $index->sync();
+            } catch (Throwable $e) {
+                $index->close();
+                $this->files->delete($temporary);
+
+                throw $e;
+            }
+
+            $index->close();
+
+            // The cached handle still points at the file about to be
+            // replaced; on Unix it would stay readable and stale forever.
+            $cacheKey = $this->indexCacheKey($table->name, $definition->name);
+
+            if (isset($this->indexes[$cacheKey])) {
+                $this->indexes[$cacheKey]->close();
+                unset($this->indexes[$cacheKey]);
+            }
+
+            $this->files->rename($temporary, $path);
+        }
+    }
+
+    /**
      * Drops this table's open heap file and indexes from the cache, after
      * something has made the files they hold open unreachable or stale.
      */

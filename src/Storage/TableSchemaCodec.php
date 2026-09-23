@@ -19,7 +19,7 @@ use PhpMiniDatabase\Schema\Type\TypeFactory;
 /**
  * Translates a Table to and from the JSON shape PLAN.md §6.3 describes for
  * `schema.json` — the one on-disk format for a table's shape, read by
- * `Catalog` and, eventually, written by `CREATE TABLE` and `ALTER TABLE`.
+ * `Catalog` and written by `CREATE TABLE` and `ALTER TABLE`.
  *
  * Column types round-trip through their *name* ("VARCHAR(255)"), via
  * `TypeFactory`, so the file reads as the DDL that produced it. A default

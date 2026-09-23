@@ -7,6 +7,7 @@ namespace PhpMiniDatabase\Execution;
 use Closure;
 use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Exception\ExecutionException;
+use PhpMiniDatabase\Exception\SchemaException;
 use PhpMiniDatabase\Exception\TransactionException;
 use PhpMiniDatabase\Execution\Expression\EvaluationContext;
 use PhpMiniDatabase\Execution\Expression\Evaluator;
@@ -25,12 +26,15 @@ use PhpMiniDatabase\Execution\Operator\Project;
 use PhpMiniDatabase\Execution\Operator\Qualify;
 use PhpMiniDatabase\Execution\Operator\SeqScan;
 use PhpMiniDatabase\Execution\Operator\Sort;
+use PhpMiniDatabase\Schema\Constraint\CheckConstraint;
 use PhpMiniDatabase\Schema\Constraint\ForeignKey;
 use PhpMiniDatabase\Schema\Constraint\ReferentialAction;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Schema\IndexDefinition;
 use PhpMiniDatabase\Schema\Row;
 use PhpMiniDatabase\Schema\Table;
+use PhpMiniDatabase\Sql\Ast\AlterAction\AddColumn;
+use PhpMiniDatabase\Sql\Ast\AlterAction\DropColumn;
 use PhpMiniDatabase\Sql\Ast\AlterTableStatement;
 use PhpMiniDatabase\Sql\Ast\BeginStatement;
 use PhpMiniDatabase\Sql\Ast\CommitStatement;
@@ -52,6 +56,7 @@ use PhpMiniDatabase\Sql\Ast\SelectItem;
 use PhpMiniDatabase\Sql\Ast\SelectStatement;
 use PhpMiniDatabase\Sql\Ast\Statement;
 use PhpMiniDatabase\Sql\Ast\UpdateStatement;
+use PhpMiniDatabase\Sql\Lexer;
 use PhpMiniDatabase\Sql\Optimizer\Optimizer;
 use PhpMiniDatabase\Sql\Optimizer\PlanContext;
 use PhpMiniDatabase\Sql\Parser;
@@ -66,6 +71,7 @@ use PhpMiniDatabase\Sql\Planner\Plan\Scan as PlanScan;
 use PhpMiniDatabase\Sql\Planner\Plan\Sort as PlanSort;
 use PhpMiniDatabase\Sql\Planner\PlannedQuery;
 use PhpMiniDatabase\Sql\Planner\Planner;
+use PhpMiniDatabase\Sql\TokenType;
 use PhpMiniDatabase\Storage\BTreeIndex;
 use PhpMiniDatabase\Storage\RecordId;
 use PhpMiniDatabase\Transaction\IsolationLevel;
@@ -112,11 +118,18 @@ use Throwable;
  * every table in the join, which `Planner` does not do for one. List
  * columns explicitly instead.
  *
+ * `ALTER TABLE ADD/DROP COLUMN` rewrites every record in the table rather
+ * than editing the catalog: a record carries no schema of its own, so a row
+ * written under one column list cannot be read under another (see
+ * DECISIONS.md). What it will not do is record a constraint it has not
+ * checked against the rows already there, or drop a column something else
+ * still names.
+ *
  * What this phase does *not* do, deliberately, and reports clearly rather
  * than silently mishandling: derived tables and subqueries (still need a
- * planner that can run a nested `SELECT`); `ALTER TABLE`; a cascade cycle,
- * which recurses until the call stack gives out rather than being detected.
- * See DECISIONS.md for the reasoning behind each.
+ * planner that can run a nested `SELECT`); a cascade cycle, which recurses
+ * until the call stack gives out rather than being detected. See
+ * DECISIONS.md for the reasoning behind each.
  *
  * `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT` (Phase 8) dispatch straight to
  * `TransactionManager`. Every `INSERT`/`UPDATE`/`DELETE` runs inside a
@@ -199,9 +212,7 @@ final readonly class Executor
             $statement instanceof ReleaseSavepointStatement => $this->executeReleaseSavepoint($statement),
             $statement instanceof RollbackToSavepointStatement => $this->executeRollbackToSavepoint($statement),
             $statement instanceof ExplainStatement => $this->executeExplain($statement),
-            $statement instanceof AlterTableStatement => throw new ExecutionException(
-                sprintf('%s is not supported yet.', $statement::class),
-            ),
+            $statement instanceof AlterTableStatement => $this->executeAlterTable($statement),
             default => throw new ExecutionException(sprintf('Unknown statement type %s.', $statement::class)),
         };
     }
@@ -916,6 +927,124 @@ final readonly class Executor
         $this->database->dropTable($statement->table);
 
         return null;
+    }
+
+    private function executeAlterTable(AlterTableStatement $statement): null
+    {
+        $table = $this->database->table($statement->table);
+        $action = $statement->action;
+
+        return match (true) {
+            $action instanceof AddColumn => $this->addColumn($table, $action),
+            $action instanceof DropColumn => $this->dropColumn($table, $action),
+            default => throw new ExecutionException(sprintf('Unknown ALTER TABLE action %s.', $action::class)),
+        };
+    }
+
+    /**
+     * `ADD COLUMN`, which is a full rewrite of the table: a record is a
+     * null bitmap plus its values in column order and carries no schema of
+     * its own (`Storage\RecordSerializer`), so a row written before the
+     * column existed cannot be read under the schema that has it.
+     *
+     * Each existing row is rebuilt from the column list it was stored
+     * under and re-serialized under the new one, which is what fills the
+     * added column in: `Schema\Table::valuesFromRow()` supplies the
+     * `DEFAULT`, or NULL where there is none, from exactly the same code
+     * an `INSERT` that omits the column goes through. A `NOT NULL` column
+     * with no default therefore fails on the first row rather than
+     * needing a rule of its own here — and, since the rewrite happens in a
+     * temporary file, fails with the table untouched. On an empty table it
+     * simply succeeds, which is the honest answer: there is no row for the
+     * constraint to be false of.
+     */
+    private function addColumn(Table $table, AddColumn $action): null
+    {
+        [$column, $constraints] = $this->tableBuilder->buildColumn($table->name, $action->column);
+
+        if ($constraints !== []) {
+            throw new ExecutionException(sprintf(
+                'ADD COLUMN "%s" carries a constraint that would have to already hold for every row in "%s"; only NOT NULL and DEFAULT are supported on an added column.',
+                $column->name,
+                $table->name,
+            ));
+        }
+
+        $altered = $table->withColumn($column);
+
+        $this->database->alterTable(
+            $altered,
+            static fn (string $record): string => $altered->serializeRow($table->deserializeRow($record)),
+        );
+
+        return null;
+    }
+
+    /**
+     * `DROP COLUMN`, the same rewrite in the other direction — the value
+     * has to physically leave every record, because the ones after it in
+     * column order would otherwise be decoded at the wrong offsets.
+     *
+     * Nothing is dropped along with the column: an index, a `UNIQUE`, a
+     * `PRIMARY KEY` or a foreign key that still names it makes the
+     * statement fail (`Schema\Table::withoutColumn()`), so removing a
+     * column never silently removes a rule the user did not name. That
+     * also covers the *other* direction, without a check of its own: a
+     * column another table's foreign key points at must be covered by a
+     * `PRIMARY KEY` or `UNIQUE` here for that reference to have been
+     * accepted at all (`Storage\Catalog`), and refusing the drop over
+     * that constraint refuses it over the reference too.
+     */
+    private function dropColumn(Table $table, DropColumn $action): null
+    {
+        $this->assertNoCheckConstraintMentions($table, $action->column);
+
+        $altered = $table->withoutColumn($action->column);
+        $dropped = $action->column;
+
+        $this->database->alterTable($altered, static function (string $record) use ($table, $altered, $dropped): string {
+            $values = $table->deserializeRow($record)->toArray();
+            unset($values[$dropped]);
+
+            return $altered->serializeRow(new Row($values));
+        });
+
+        return null;
+    }
+
+    /**
+     * Refuses to drop a column a `CHECK` expression mentions, which
+     * `Schema\Table` cannot decide for itself: a constraint's declared
+     * column list is allowed to be empty, meaning "not known" rather than
+     * "touches nothing" (see `Schema\Constraint\CheckConstraint`), and a
+     * table-level `CHECK (discount < price)` is stored exactly that way.
+     *
+     * The expression is re-lexed and searched for an identifier of that
+     * name rather than parsed and walked. It is the conservative answer,
+     * and deliberately so: it can refuse a drop over an identifier that is
+     * not really a reference to the column, and it cannot miss one that
+     * is. The cost of being wrong in that direction is a statement the
+     * user has to rewrite; in the other, it is a `CHECK` evaluated against
+     * a column that no longer exists, on every write, forever.
+     */
+    private function assertNoCheckConstraintMentions(Table $table, string $column): void
+    {
+        foreach ($table->constraints() as $constraint) {
+            if (!$constraint instanceof CheckConstraint) {
+                continue;
+            }
+
+            foreach (Lexer::tokenize($constraint->expression) as $token) {
+                if ($token->is(TokenType::IDENTIFIER) && strcasecmp($token->text, $column) === 0) {
+                    throw new SchemaException(sprintf(
+                        'Cannot drop column "%s.%s": check constraint "%s" mentions it.',
+                        $table->name,
+                        $column,
+                        $constraint->name(),
+                    ));
+                }
+            }
+        }
     }
 
     private function executeCreateIndex(CreateIndexStatement $statement): null

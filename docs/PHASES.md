@@ -1429,3 +1429,54 @@ unaffected; durability of the newest write is what is not guaranteed.
 
 **Done when:** `composer test` (1024), `composer analyse` (level 8) and
 `composer format:check` all clean.
+
+## Post-plan: `ALTER TABLE` stopped being a parser-only statement
+
+The parser had accepted `ALTER TABLE ... ADD [COLUMN]` / `DROP [COLUMN]`
+since Phase 4, and the executor had answered every one of them with
+`AlterTableStatement is not supported yet.` — the last statement in
+`docs/sql.md`'s table with no executor path behind it.
+
+Running one means rewriting the table, not editing the catalog. A record
+is a null bitmap plus its values in column order and carries no schema of
+its own (`Storage\RecordSerializer`), so a row written under four columns
+cannot be read under five: there is no lazy migration to fall back on. The
+work landed as three pieces, each at the layer that already owned the
+question:
+
+- `Storage\HeapFile::rewrite()` — `vacuum()`'s existing "build a new file
+  under a temporary name, rename it over the original, reopen" with the
+  identity transform swapped for a real one. A transform that throws
+  deletes the temporary and leaves the original untouched.
+- `Schema\Table::withColumn()`/`withoutColumn()` alongside the
+  `withIndex()`/`withoutIndex()` that were already there, and
+  `Schema\Database::alterTable()`, which rewrites the heap, rebuilds every
+  index (the rewrite moves every `RecordId`, exactly as a vacuum does) and
+  publishes the new `schema.json` last.
+- `Execution\Executor::addColumn()`/`dropColumn()`, which decide what a
+  statement is allowed to do: only `NOT NULL` and `DEFAULT` on an added
+  column, and no dropping a column an index, a constraint or a `CHECK`
+  expression still names. See DECISIONS.md, "`ALTER TABLE` rewrites the
+  whole table".
+
+Two things the tests had to be rewritten to actually prove. The first
+version of the index-rebuild tests passed with the rebuild deleted: two
+rows in one page land back at the ids they already had, so a stale index
+looked correct. Deleting a row first is what makes the rewrite pack the
+survivors and move them. The second was a check on the *referencing* side
+of a foreign key, written in `Storage\Catalog` and then deleted as
+unreachable: a column another table points at must be covered by a
+`PRIMARY KEY` or `UNIQUE` here for that reference to have been accepted,
+and refusing the drop over that constraint refuses it over the reference
+too.
+
+**Tests:** `ExecutorAlterTableTest` (23), `TableTest`'s
+`withColumn`/`withoutColumn` cases, `HeapFileTest`'s `rewrite` cases, and
+`SqlEndToEndTest::testASchemaChangeMidSessionKeepsTheDataAndTheIndexesItAddressedBy`.
+The two index-rebuild tests were each verified to fail with
+`Database::rebuildIndexes()` removed.
+
+**Still not done:** `RENAME`, `ALTER COLUMN`, and any constraint change
+after the fact — and the rewrite is DDL, so it is not transactional and a
+crash between the heap, the indexes and the catalog leaves them
+disagreeing.

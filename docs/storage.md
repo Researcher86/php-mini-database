@@ -111,6 +111,14 @@ about columns or types — a record is just a string, and
   the file changes** — anything storing one (every index) must be rebuilt
   afterwards. The rewrite goes to a temporary file renamed over the
   original at the end, so a crash mid-vacuum loses only the temporary.
+- **`rewrite(Closure $transform): void`** is the same rewrite with the
+  identity transform swapped for a real one: every live record goes through
+  `$transform` on its way into the replacement file. `ALTER TABLE` uses it
+  to re-encode a whole table after a column has been added or removed — a
+  record carries no schema of its own, so there is no other way to read one
+  written under a different column list. **Every `RecordId` changes** here
+  too, and a transform that throws aborts the whole thing with the original
+  file untouched.
 
 ## Row encoding: `RecordSerializer`
 

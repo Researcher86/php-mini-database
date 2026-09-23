@@ -1,118 +1,748 @@
 # PHP Mini Database
 
-> A small, readable relational database written in PHP — a laboratory for
-> learning how databases actually work: on-disk storage, file formats,
-> records and pages, indexes, SQL, query execution, transactions, WAL, crash
-> recovery, locking, and concurrency.
+> A small, readable relational database written in PHP — built to explore how databases actually work from the inside.
 
-A **PHP runtime engineering playground**: one small, readable implementation
-of every mechanism a database server is built from, so that any one of them
-can be opened and understood on its own.
+**PHP Mini Database** is an educational database engine implemented from scratch in PHP.
 
-The goal is not to compete with MySQL, PostgreSQL or SQLite. It is to have
-somewhere to look when you need to remember how a storage engine, an index,
-or a query planner actually works — with a version small enough to read in
-one sitting and real enough to run and benchmark.
+The project explores the core mechanisms behind a relational database: on-disk storage, pages and records, B-tree indexes, SQL parsing and execution, transactions, locking, write-ahead logging (WAL), crash recovery, networking, authentication, and concurrent clients.
 
-The implementation plan lives in [PLAN.md](PLAN.md) and is executed phase by
-phase; each phase is a single commit.
+The goal is **not** to compete with MySQL, PostgreSQL, or SQLite.
+
+The goal is to build something small enough to understand completely, but real enough to run, test, crash, recover, and benchmark.
+
+It is a laboratory for learning how database engines work.
 
 ---
 
-## Status
+## Why This Project Exists
 
-**All 20 milestones of [PLAN.md](PLAN.md) are done.** Latest finished
-phase: **Phase 20 — Testing, Optimization, Documentation**. PHPStan runs
-at level 8 (`phpstan.neon`) across `src`, `bin`, `tests`, and `examples`
-with zero errors; line coverage is 90.5%
-(`Xdebug`, `--coverage-text`). `tests/Integration/` covers realistic,
-multi-feature scenarios end to end — embedded and client-server, crash
-recovery across real process restarts, authentication through the actual
-`bin/minidb user` CLI, and genuinely concurrent clients via `pcntl_fork()`
-— on top of the feature-by-feature `tests/Unit/` suite every earlier
-phase built. `tests/Benchmark/` (`make bench`, excluded from `make test`)
-measures insert/select/join throughput and network round-trip latency; a
-real crash-recovery bug involving `ROLLBACK TO SAVEPOINT` was found and
-fixed writing this milestone's tests (see
-[docs/DECISIONS.md](docs/DECISIONS.md#recovery-replays-through-the-same-transaction-state-machine-a-live-rollback-uses)).
-`docs/{sql,architecture,storage,transactions,security,cli}.md` now cover
-every layer alongside the wire protocol (`docs/protocol.md`, written
-earlier); `examples/{embedded,client,pool,transaction}.php` are runnable,
-verified end to end against a real server, not illustrative snippets.
+Most application developers use databases through an ORM or SQL client and rarely need to see what happens underneath:
 
-Since then, an external review of the finished engine surfaced two real
-transaction-safety gaps — a second connection could silently join and
-even `COMMIT` another connection's open transaction, and `COMMIT` did not
-wait for a transaction's pages to actually reach disk before discarding
-the WAL record that could have redone them — both reproduced against a
-real server and fixed; see
-[docs/PHASES.md](docs/PHASES.md#post-plan-two-transaction-safety-gaps-found-in-review).
-
-The phase-by-phase record of the build is in [docs/PHASES.md](docs/PHASES.md),
-and the reasoning behind the designs that survived is in
-[docs/DECISIONS.md](docs/DECISIONS.md).
-
-## Getting started
-
-Requires Docker. Nothing is installed on your machine.
-
-```bash
-make install    # build the image and install dependencies
-make test       # run the test suite
-make bench      # run the (slow, opt-in) benchmark suite
-make analyse    # run PHPStan
-make lint       # check formatting
-make fix        # apply PHP CS Fixer
+```text
+SQL
+ ↓
+Parser
+ ↓
+Query Planner / Executor
+ ↓
+Transactions
+ ↓
+Storage Engine
+ ↓
+Pages / Records / Indexes
+ ↓
+Files on disk
 ```
 
-```bash
-make shell      # drop into the container
+PHP Mini Database makes these layers explicit.
+
+You can follow a query from SQL text all the way down to the bytes stored on disk.
+
+The implementation is intentionally compact and readable so that individual mechanisms can be studied without navigating millions of lines of production database code.
+
+---
+
+## What It Covers
+
+The database implements the major building blocks of a relational database engine.
+
+### SQL
+
+* SQL lexer and parser
+* `CREATE TABLE`
+* `DROP TABLE`
+* `CREATE INDEX`
+* `INSERT`
+* `UPDATE`
+* `DELETE`
+* `SELECT`
+* `WHERE`
+* expressions and operators
+* ordering
+* limits
+* joins
+* aggregates
+* constraints
+* transactions
+
+### Storage Engine
+
+* on-disk database files
+* fixed-size pages
+* record storage
+* page allocation
+* table/heap storage
+* catalog metadata
+* persistence across process restarts
+* B-tree indexes
+
+### Query Execution
+
+* parsed SQL statements
+* execution plans
+* table scans
+* index scans
+* filtering
+* projection
+* sorting
+* joins
+* aggregation
+
+### Transactions
+
+* `BEGIN`
+* `COMMIT`
+* `ROLLBACK`
+* savepoints
+* isolation levels
+* row/table locking
+* concurrent transactions
+
+### Durability
+
+* write-ahead logging (WAL)
+* transaction log records
+* checkpointing
+* crash recovery
+* rollback after an interrupted transaction
+* recovery after real process termination
+
+### Networking
+
+The database can run in two modes:
+
+```text
+Embedded
+
+PHP Application
+      │
+      ▼
+Database Engine
+      │
+      ▼
+Storage
 ```
+
+or:
+
+```text
+Client
+   │
+   │ binary protocol
+   ▼
+Database Server
+   │
+   ▼
+Database Engine
+   │
+   ▼
+Storage
+```
+
+The client/server implementation includes a small binary wire protocol, authentication, and concurrent clients.
+
+---
+
+## Project Status
+
+**All 20 milestones are complete.**
+
+The implementation has progressed phase by phase, with each phase focused on a specific database mechanism.
+
+The final phase covers testing, optimization, and documentation.
+
+Current project characteristics:
+
+* PHPStan level 8
+* zero PHPStan errors
+* ~90% line coverage
+* unit tests
+* integration tests
+* crash-recovery tests
+* concurrent-client tests
+* client/server tests
+* authentication tests
+* benchmark suite
+* architecture documentation
+* storage documentation
+* transaction and recovery documentation
+* SQL reference
+* protocol documentation
+* runnable examples
+
+The project is considered a **completed educational database engine** rather than an unfinished prototype.
+
+---
+
+## Quick Start
+
+The project uses Docker so that nothing needs to be installed directly on the host machine.
+
+### Install
+
+```bash
+make install
+```
+
+This builds the development image and installs the project dependencies.
+
+### Run tests
+
+```bash
+make test
+```
+
+### Static analysis
+
+```bash
+make analyse
+```
+
+### Check formatting
+
+```bash
+make lint
+```
+
+### Fix formatting
+
+```bash
+make fix
+```
+
+### Run benchmarks
+
+```bash
+make bench
+```
+
+Benchmarks are intentionally excluded from the normal test suite because they are slower and depend on the execution environment.
+
+### Open a shell
+
+```bash
+make shell
+```
+
+---
+
+## Running the Database
+
+The project provides both an embedded API and a client/server interface.
+
+### Start the server
+
+```bash
+bin/minidb-server
+```
+
+### Connect with the CLI
+
+```bash
+bin/minidb
+```
+
+The CLI can be used to execute SQL statements against the running database.
+
+For the complete command reference, see:
+
+* [`docs/cli.md`](docs/cli.md)
+
+---
+
+## Embedded Usage
+
+The database can also be used directly from PHP without starting a separate server.
+
+See:
+
+```text
+examples/embedded.php
+```
+
+This mode is useful when studying the engine itself because the application and database run inside the same PHP process.
+
+---
+
+## Client / Server Usage
+
+The database also supports a separate server process.
+
+See:
+
+```text
+examples/client.php
+```
+
+The architecture becomes:
+
+```text
+PHP Client
+    │
+    │ Binary Protocol
+    ▼
+MiniDB Server
+    │
+    ├── SQL
+    ├── Transactions
+    ├── Locks
+    └── Storage
+```
+
+This makes it possible to study the additional problems introduced by a database server: networking, request boundaries, authentication, concurrency, and process isolation.
+
+---
+
+## Transactions
+
+Transactions are available through both SQL and the PHP API.
+
+For example:
+
+```sql
+BEGIN;
+
+INSERT INTO users (name)
+VALUES ('Alice');
+
+UPDATE accounts
+SET balance = balance - 100
+WHERE id = 1;
+
+COMMIT;
+```
+
+Rollback is also supported:
+
+```sql
+BEGIN;
+
+UPDATE accounts
+SET balance = balance - 100
+WHERE id = 1;
+
+ROLLBACK;
+```
+
+Savepoints allow partial rollback inside a transaction:
+
+```sql
+BEGIN;
+
+SAVEPOINT before_update;
+
+UPDATE accounts
+SET balance = balance - 100
+WHERE id = 1;
+
+ROLLBACK TO SAVEPOINT before_update;
+
+COMMIT;
+```
+
+The transaction implementation is backed by locking and WAL-based recovery.
+
+See:
+
+* [`docs/transactions.md`](docs/transactions.md)
+
+---
+
+## Crash Recovery
+
+One of the main goals of the project is to make durability mechanisms tangible.
+
+The integration test suite does not only simulate errors inside one process. It also exercises recovery across **real process restarts**.
+
+Conceptually:
+
+```text
+Transaction
+     │
+     ▼
+   WAL
+     │
+     ▼
+Data Pages
+     │
+     X
+   CRASH
+     │
+     ▼
+Restart
+     │
+     ▼
+Recovery
+     │
+     ▼
+Consistent Database
+```
+
+This makes it possible to experiment with the same class of problems that production database engines have to solve.
+
+---
+
+## Indexes
+
+The storage layer includes B-tree indexes.
+
+An indexed query can therefore follow a path such as:
+
+```text
+SELECT ...
+WHERE id = 42
+```
+
+instead of always scanning the entire table:
+
+```text
+SQL
+ ↓
+Executor
+ ↓
+Index
+ ↓
+B-tree lookup
+ ↓
+Record
+```
+
+The implementation is intentionally small enough to inspect and understand.
+
+See:
+
+* [`docs/storage.md`](docs/storage.md)
+
+---
+
+## Architecture
+
+The project is divided into several logical layers.
+
+```text
+┌─────────────────────────────┐
+│            CLI              │
+├─────────────────────────────┤
+│       Client / Network      │
+├─────────────────────────────┤
+│       SQL / Execution       │
+├─────────────────────────────┤
+│       Transactions          │
+│     Locks / WAL / Recovery  │
+├─────────────────────────────┤
+│          Storage            │
+│ Pages / Records / B-Trees   │
+├─────────────────────────────┤
+│       Files on Disk         │
+└─────────────────────────────┘
+```
+
+The source code is organized around these responsibilities rather than around a single monolithic database class.
+
+See:
+
+* [`docs/architecture.md`](docs/architecture.md)
+
+---
+
+## Repository Layout
+
+```text
+├── bin/
+│   ├── minidb
+│   └── minidb-server
+│
+├── benchmarks/
+│   └── standalone benchmark scripts
+│
+├── config/
+│
+├── docs/
+│   ├── sql.md
+│   ├── architecture.md
+│   ├── storage.md
+│   ├── transactions.md
+│   ├── protocol.md
+│   ├── security.md
+│   ├── cli.md
+│   ├── PHASES.md
+│   └── DECISIONS.md
+│
+├── examples/
+│   ├── embedded.php
+│   ├── client.php
+│   ├── pool.php
+│   └── transaction.php
+│
+├── src/
+│   ├── Sql/
+│   ├── Execution/
+│   ├── Storage/
+│   ├── Transaction/
+│   ├── Network/
+│   ├── Client/
+│   └── Cli/
+│
+├── tests/
+│   ├── Unit/
+│   ├── Integration/
+│   ├── Benchmark/
+│   └── Support/
+│
+└── var/
+    └── data/
+```
+
+---
+
+## Testing
+
+Testing is divided into several levels.
+
+### Unit Tests
+
+Small, isolated tests for individual database components.
+
+```text
+tests/Unit/
+```
+
+### Integration Tests
+
+Tests involving multiple database subsystems working together.
+
+```text
+tests/Integration/
+```
+
+These include scenarios such as:
+
+* embedded database usage
+* client/server communication
+* authentication
+* transactions
+* crash recovery
+* process restarts
+* concurrent clients
+
+Some concurrency scenarios use real PHP processes via `pcntl_fork()`.
+
+### Benchmarks
+
+```text
+tests/Benchmark/
+benchmarks/
+```
+
+Benchmarks measure things such as:
+
+* insert throughput
+* select throughput
+* join performance
+* network round-trip latency
+
+Run them explicitly:
+
+```bash
+make bench
+```
+
+---
 
 ## Documentation
 
-- [docs/sql.md](docs/sql.md) — the SQL dialect: statements, expressions, types, constraints
-- [docs/architecture.md](docs/architecture.md) — how the layers fit together, text-in to rows-out
-- [docs/storage.md](docs/storage.md) — the on-disk format: pages, heap files, B-tree indexes, the catalog
-- [docs/transactions.md](docs/transactions.md) — isolation levels, locking, the WAL, crash recovery
-- [docs/protocol.md](docs/protocol.md) — the binary wire protocol
-- [docs/security.md](docs/security.md) — authentication, what is and isn't protected
-- [docs/cli.md](docs/cli.md) — `bin/minidb-server` and `bin/minidb` reference
+The project is designed to be studied layer by layer.
 
-## Layout
+| Document                                       | Description                                              |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| [`docs/sql.md`](docs/sql.md)                   | SQL dialect, statements, expressions, types, constraints |
+| [`docs/architecture.md`](docs/architecture.md) | How a query travels through the system                   |
+| [`docs/storage.md`](docs/storage.md)           | Pages, records, heap storage, B-trees and catalog        |
+| [`docs/transactions.md`](docs/transactions.md) | Transactions, isolation, locking, WAL and recovery       |
+| [`docs/protocol.md`](docs/protocol.md)         | Binary client/server protocol                            |
+| [`docs/security.md`](docs/security.md)         | Authentication and security boundaries                   |
+| [`docs/cli.md`](docs/cli.md)                   | CLI and server commands                                  |
+| [`docs/PHASES.md`](docs/PHASES.md)             | Phase-by-phase implementation history                    |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md)       | Important architectural decisions and their reasoning    |
 
+---
+
+## Design Philosophy
+
+The project follows a few principles.
+
+### Small enough to read
+
+The implementation should remain understandable by a single developer.
+
+Complexity is added only when it teaches an important database mechanism.
+
+### Real mechanisms, not mock implementations
+
+The project does not merely imitate database concepts.
+
+It uses real:
+
+* files
+* pages
+* indexes
+* transactions
+* locks
+* WAL records
+* processes
+* sockets
+* recovery procedures
+
+### Explicit over clever
+
+The implementation favors straightforward code over abstractions that hide the underlying mechanism.
+
+The purpose is educational clarity.
+
+### Measure instead of assume
+
+Performance-sensitive areas have benchmarks.
+
+The project is intended to make performance characteristics observable rather than relying only on theoretical reasoning.
+
+### Learn by implementation
+
+The best way to understand a database engine is to build one.
+
+---
+
+## What This Project Is Not
+
+PHP Mini Database is **not intended for production workloads**.
+
+Do not use it as a replacement for:
+
+* PostgreSQL
+* MySQL
+* MariaDB
+* SQLite
+* other production database systems
+
+It is intentionally missing many features, optimizations, operational guarantees, and battle-tested behavior expected from production databases.
+
+Its value is educational:
+
+> **Build a small database to understand big databases.**
+
+---
+
+## Learning Path
+
+The recommended way to explore the project is to follow the layers.
+
+```text
+1. SQL
+   ↓
+2. Query Execution
+   ↓
+3. Records
+   ↓
+4. Pages
+   ↓
+5. Files
+   ↓
+6. Indexes
+   ↓
+7. Transactions
+   ↓
+8. Locks
+   ↓
+9. WAL
+   ↓
+10. Crash Recovery
+   ↓
+11. Network Protocol
+   ↓
+12. Concurrent Clients
 ```
-├── bin/            CLI entry points (minidb, minidb-server)
-├── benchmarks/     standalone, manually-run measurement scripts
-├── docs/           decisions, phase history, and the reference docs above
-├── examples/       runnable scripts (embedded, client, pool, transaction)
-├── src/            the database itself (Sql, Execution, Storage, Transaction, Network, Client, Cli, ...)
-├── tests/
-│   ├── Unit/       one feature or class at a time
-│   ├── Integration/  multi-feature scenarios, embedded and client-server
-│   ├── Benchmark/  PHPUnit-driven throughput/latency timing (`make bench`, not `make test`)
-│   └── Support/    shared test fixtures and helpers
-└── var/data/       on-disk data files (gitignored content, kept as a dir)
+
+The implementation history follows the same progression.
+
+See [`docs/PHASES.md`](docs/PHASES.md) for the complete phase history.
+
+---
+
+## Related Projects
+
+PHP Mini Database is part of **[PHP Systems Lab](https://github.com/Researcher86/php-systems-lab)** — a collection of small educational PHP projects focused on backend and systems programming.
+
+The projects are intentionally independent. They do not form a production framework or dependency stack.
+
+Instead, each project explores a different mechanism.
+
+### [`php-memory-lab`](https://github.com/Researcher86/php-memory-lab)
+
+Explores memory and operating-system mechanisms:
+
+* `mmap`
+* page faults
+* `MAP_SHARED`
+* `MAP_PRIVATE`
+* `msync`
+* file-backed memory
+
+It provides useful background for understanding the page cache and memory behavior underneath a database storage engine.
+
+### [`php-concurrency`](https://github.com/Researcher86/php-concurrency)
+
+Explores:
+
+* processes
+* IPC
+* synchronization
+* event loops
+* Fibers
+* concurrency patterns
+
+These concepts provide useful background for database locking and concurrent execution.
+
+### [`php-mini-cache`](https://github.com/Researcher86/php-mini-cache)
+
+Explores the opposite side of the persistence problem:
+
+> How can data be kept fast?
+
+PHP Mini Database asks:
+
+> How can data be kept safe and durable?
+
+### [`php-worker-pool`](https://github.com/Researcher86/php-worker-pool)
+
+Explores long-running PHP processes, worker lifecycle management, IPC, and process coordination.
+
+### [`php-job-queue`](https://github.com/Researcher86/php-job-queue)
+
+Explores reliable asynchronous job processing and delivery semantics.
+
+### [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server)
+
+Explores the HTTP server side of the stack.
+
+Together, these projects form a broader systems-learning path:
+
+```text
+Memory
+   ↓
+Concurrency
+   ↓
+Workers
+   ↓
+HTTP
+   ↓
+Queues
+   ↓
+Cache
+   ↓
+Database
 ```
-## Related projects
 
-Part of [**php-systems-lab**](https://github.com/Researcher86/php-systems-lab),
-a collection of educational PHP backend and systems programming projects. None
-of them depends on another as a package - what travels between them is the
-mechanism, read in one and reimplemented in the next.
+---
 
-* [**php-memory-lab**](https://github.com/Researcher86/php-memory-lab) — what
-  the layer underneath this one costs: `mmap` and page faults, `MAP_SHARED`
-  against `MAP_PRIVATE`, `msync` and what it does and does not buy, and why a
-  mapped file pays only for the pages it touches where `file_get_contents()`
-  pays for all of them. That is the page cache this storage engine sits on.
-* [**php-concurrency**](https://github.com/Researcher86/php-concurrency) —
-  processes, IPC, coordination patterns, event loops and Fibers. The
-  groundwork for the locking and concurrency phases.
-* [**php-mini-cache**](https://github.com/Researcher86/php-mini-cache) — the
-  opposite question, in the same shape. A cache asks how to keep data fast; a
-  database asks how to keep it safe.
-* [**php-worker-pool**](https://github.com/Researcher86/php-worker-pool) ·
-  [**php-job-queue**](https://github.com/Researcher86/php-job-queue) ·
-  [**php-mini-http-server**](https://github.com/Researcher86/php-mini-http-server)
-  — process runtime, background work, and the HTTP front door.
+## License
+
+MIT.

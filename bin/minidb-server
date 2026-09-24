@@ -14,7 +14,7 @@ declare(strict_types=1);
  * `reload` need a pid to act on.
  */
 
-require __DIR__ . '/../vendor/autoload.php';
+require __DIR__ . '/bootstrap.php';
 
 use PhpMiniDatabase\Cli\ServerApplication;
 

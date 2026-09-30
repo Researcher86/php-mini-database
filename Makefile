@@ -1,4 +1,4 @@
-.PHONY: up down shell build install test bench analyse lint fix
+.PHONY: up down shell build install test bench analyse format format-check
 
 up:
 	docker compose up -d
@@ -28,10 +28,9 @@ bench: up
 analyse: up
 	docker compose exec php composer analyse
 
-# apply the formatter and write the changes
-fix: up
+format: up
 	docker compose exec php composer format
 
 # check reports without touching anything (what CI runs)
-lint: up
+format-check: up
 	docker compose exec php composer format:check

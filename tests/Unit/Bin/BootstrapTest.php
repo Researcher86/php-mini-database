@@ -45,17 +45,17 @@ final class BootstrapTest extends TestCase
 
     public function testFindsTheConsumersAutoloaderWhenInstalledAsADependency(): void
     {
-        // vendor/tanat/php-mini-database/bin/bootstrap.php, with no
+        // vendor/researcher86/php-mini-database/bin/bootstrap.php, with no
         // vendor/autoload.php of its own anywhere under
-        // vendor/tanat/php-mini-database/ - only the CONSUMING project's
+        // vendor/researcher86/php-mini-database/ - only the CONSUMING project's
         // own, three levels further up.
         $marker = $this->buildTree(
             $this->path('consumer'),
-            bootstrapAt: 'vendor/tanat/php-mini-database/bin',
+            bootstrapAt: 'vendor/researcher86/php-mini-database/bin',
             autoloadAt: '',
         );
 
-        $this->assertRequireSucceeds($this->path('consumer/vendor/tanat/php-mini-database/bin/bootstrap.php'));
+        $this->assertRequireSucceeds($this->path('consumer/vendor/researcher86/php-mini-database/bin/bootstrap.php'));
         $this->assertFileExists($marker);
     }
 

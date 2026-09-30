@@ -1,5 +1,7 @@
 # PHP Mini Database
 
+**[🧪 PHP Systems Lab](https://github.com/Researcher86/php-systems-lab)** · Level 7 of 8 · ← [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server) · [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) →
+
 > A small, readable relational database written in PHP — built to explore how databases actually work from the inside.
 
 **PHP Mini Database** is an educational database engine implemented from scratch in PHP.
@@ -201,13 +203,13 @@ make analyse
 ### Check formatting
 
 ```bash
-make lint
+make format-check
 ```
 
 ### Fix formatting
 
 ```bash
-make fix
+make format
 ```
 
 ### Run benchmarks
@@ -667,79 +669,44 @@ See [`docs/PHASES.md`](docs/PHASES.md) for the complete phase history.
 
 ---
 
-## Related Projects
+## PHP Systems Lab
 
-PHP Mini Database is part of **[PHP Systems Lab](https://github.com/Researcher86/php-systems-lab)** — a collection of small educational PHP projects focused on backend and systems programming.
+This project is part of [**PHP Systems Lab**](https://github.com/Researcher86/php-systems-lab) — a collection of small
+educational PHP projects that rebuild the mechanisms behind backend
+infrastructure in order to understand them. The recommended order:
 
-The projects are intentionally independent. They do not form a production framework or dependency stack.
+| Level | Project | Focus |
+| ----- | ------- | ----- |
+| 1 | 🧠 [`php-memory-lab`](https://github.com/Researcher86/php-memory-lab) | memory, RSS, fork, copy-on-write, `mmap`, shared memory, FFI |
+| 2 | ⚡ [`php-concurrency`](https://github.com/Researcher86/php-concurrency) | processes, IPC, concurrency patterns, event loops, Fibers (course in Russian) |
+| 3 | ⚙️ [`php-worker-pool`](https://github.com/Researcher86/php-worker-pool) | persistent master/worker pool, supervision, graceful shutdown |
+| 4 | 📬 [`php-job-queue`](https://github.com/Researcher86/php-job-queue) | reliable background jobs: delivery leases, ACK, retries, DLQ |
+| 5 | 💾 [`php-mini-cache`](https://github.com/Researcher86/php-mini-cache) | event-driven in-memory server: RESP, pipelining, TTL, Pub/Sub |
+| 6 | 🌐 [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server) | event-driven HTTP server: parsing, routing, middleware, keep-alive |
+| **7** | 🗄️ **`php-mini-database`** (this project) | **relational engine: pages, B-trees, SQL, transactions, WAL, recovery** |
+| 8 | 🏗️ [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) | integration of the components into one backend platform |
 
-Instead, each project explores a different mechanism.
+These are teaching projects, not libraries: a mechanism travels between them
+by being read in one and reimplemented in the next. Levels 1–7 do not depend
+on each other as packages. Only [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) requires the
+five components (worker pool, job queue, cache, HTTP server, database)
+through Composer and runs them together as one system.
 
-### [`php-memory-lab`](https://github.com/Researcher86/php-memory-lab)
+### How this project relates
 
-Explores memory and operating-system mechanisms:
+**[`php-memory-lab`](https://github.com/Researcher86/php-memory-lab)** — `mmap`, page faults, `MAP_SHARED` /
+`MAP_PRIVATE`, `msync` and file-backed memory: useful background for the page
+cache and memory behavior underneath a storage engine.
 
-* `mmap`
-* page faults
-* `MAP_SHARED`
-* `MAP_PRIVATE`
-* `msync`
-* file-backed memory
+**[`php-concurrency`](https://github.com/Researcher86/php-concurrency)** — processes, IPC, synchronization and event
+loops: the background for database locking and concurrent clients.
 
-It provides useful background for understanding the page cache and memory behavior underneath a database storage engine.
+**[`php-mini-cache`](https://github.com/Researcher86/php-mini-cache)** — the opposite side of the persistence problem.
+The cache asks *how can data be kept fast?*; this project asks *how can data
+be kept safe and durable?*
 
-### [`php-concurrency`](https://github.com/Researcher86/php-concurrency)
-
-Explores:
-
-* processes
-* IPC
-* synchronization
-* event loops
-* Fibers
-* concurrency patterns
-
-These concepts provide useful background for database locking and concurrent execution.
-
-### [`php-mini-cache`](https://github.com/Researcher86/php-mini-cache)
-
-Explores the opposite side of the persistence problem:
-
-> How can data be kept fast?
-
-PHP Mini Database asks:
-
-> How can data be kept safe and durable?
-
-### [`php-worker-pool`](https://github.com/Researcher86/php-worker-pool)
-
-Explores long-running PHP processes, worker lifecycle management, IPC, and process coordination.
-
-### [`php-job-queue`](https://github.com/Researcher86/php-job-queue)
-
-Explores reliable asynchronous job processing and delivery semantics.
-
-### [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server)
-
-Explores the HTTP server side of the stack.
-
-Together, these projects form a broader systems-learning path:
-
-```text
-Memory
-   ↓
-Concurrency
-   ↓
-Workers
-   ↓
-HTTP
-   ↓
-Queues
-   ↓
-Cache
-   ↓
-Database
-```
+**[`php-systems-platform`](https://github.com/Researcher86/php-systems-platform)** — uses this database as its storage tier
+(`src/Storage/Database.php`, through the client's `ConnectionPool`).
 
 ---
 

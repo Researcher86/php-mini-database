@@ -3,7 +3,7 @@
 This is the running record of the build order for `php-mini-database`. Each
 phase is one commit, and a phase is only marked finished after its own
 Definition of Done — the tests named below, run with `make test` — passes
-together with `make analyse` and `make lint`.
+together with `make analyse` and `make format-check`.
 
 The plan the project is built from lives in [PLAN.md](../PLAN.md). When a
 phase is done it is checked off here and on the plan's checklist; design
@@ -42,7 +42,7 @@ Two decisions here outlive the phase and are recorded in
 wire, and integer-like types are encoded sign-flipped so that byte order is
 value order.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Schema/Type/*Test.php` — one per type, each covering
 cast, round trip, byte layout and truncated input;
@@ -75,7 +75,7 @@ slotted page and stable slot numbers, holding a page decoded in memory, no
 buffer pool, inserting only into the last page, and locking a separate file
 rather than the data file.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Storage/PageTest.php` — layout, round trip, tombstone
 reuse and four kinds of corrupted page; `PageManagerTest.php` — page
@@ -122,7 +122,7 @@ One simplification against PLAN.md's layout is recorded in
 `tables/` directory listing is the catalog, so there is only ever one
 place a table's existence is recorded.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Schema/{Column,Row,IndexDefinition,Table}Test.php` and
 `Constraint/*Test.php` for the model and its self-validation;
@@ -162,7 +162,7 @@ Every error — from the lexer or the parser — is a `ParserException`
 carrying a 1-based line and column computed from the byte position where it
 was raised, the form useful to a human reading the original SQL text.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Sql/LexerTest.php` for tokenizing, comments,
 quoting and escape handling, and four kinds of malformed input;
@@ -213,7 +213,7 @@ tables, subqueries, `GROUP BY`/`HAVING`/`DISTINCT`/aggregates, and enforcing
 `ExecutionException` rather than mishandled — each is a later phase's job,
 named in DECISIONS.md.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Execution/Expression/EvaluatorTest.php` for the
 three-valued truth tables and the function registry;
@@ -274,7 +274,7 @@ concatenated multi-column key has its own correctness pitfalls this phase
 did not need to take on to deliver single-column indexing, and it is a
 named, tested gap rather than a silent one.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Storage/BTreeIndexTest.php` — including forced
 multi-level splits over thousands of entries, and the specific regression
@@ -330,7 +330,7 @@ grouped one, so it can reference an output alias that only exists once
 computed — the same operator, two different places in the pipeline,
 depending on what it needs to see.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** one file per new operator (`QualifyTest`, `NestedLoopJoinTest`,
 `HashJoinTest`, `DistinctTest`, `AggregateTest` — including the
@@ -420,7 +420,7 @@ and incorrectly undo work that was never abandoned in the first place.
 transaction system entirely, applied immediately regardless of an open
 `BEGIN` — the same way many real databases keep DDL non-transactional.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Transaction/LockManagerTest.php`, `WalTest.php`,
 `TransactionTest.php`, `TransactionManagerTest.php` for each piece in
@@ -486,7 +486,7 @@ prints the tree instead of compiling it — one line per node
 (`LogicalPlan::describe()`), indented under its `children()`. It never
 executes the statement it describes.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Sql/Planner/PlannerTest.php` for the tree shape
 every clause combination produces; one file per rule
@@ -540,7 +540,7 @@ inline, extracted so a cascaded child row goes through exactly the same
 write path a top-level one does — logged, locked, and undoable by
 `TransactionManager` identically.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Execution/ConstraintEnforcerTest.php` for `CHECK`
 (true/false/null) and `FOREIGN KEY` (matched/unmatched/null-exempt, and
@@ -592,7 +592,7 @@ into that one message shape, and turns any exception into a
 shape of failure `Exception\ExecutionException` covers that none of the
 original twelve codes fit).
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Network/Protocol/FrameTest.php` (round trip, bad
 magic, truncated header/payload, trailing bytes, unknown type, an
@@ -656,7 +656,7 @@ environment variables drive — checked by hand against an actually
 running, separate process, not only against PHPUnit driving ticks in the
 same one.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Network/EventLoopTest.php` (a callback firing on
 readability, `removeReadable()`, a callback safely removing another
@@ -729,7 +729,7 @@ by name specifically. Both configs now do, and `composer format` found
 (and fixed) one real, previously invisible formatting mistake in that
 file the moment it started actually being checked.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Network/Auth/` — `PasswordHashTest.php`,
 `ScramChallengeTest.php` (correct/wrong hash/nonce/response),
@@ -779,7 +779,7 @@ directly, executing an `INSERT` with a parameter value crafted to look
 like a second SQL statement and confirming it lands in the table as one
 literal string, not as executed SQL.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Network/ServerPreparedStatementTest.php` — a
 prepared `SELECT` executed twice with different parameters, a prepared
@@ -830,7 +830,7 @@ lock manager) had stayed unchecked since Phase 8 actually built all four,
 apparently missed at the time; ticked now since re-reading the code
 confirmed all four are true and already tested.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Network/ServerTransactionTest.php` — `BEGIN`/
 `COMMIT`/`ROLLBACK` round-tripping over the wire, a `ROLLBACK` undoing
@@ -887,7 +887,7 @@ launches the real `bin/minidb-server` as a genuine child process via
 faithful one for this specific layer: it is the actual thing a `Connection`
 is built to talk to, not a stand-in for it. See DECISIONS.md.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Client/ResultSetTest.php` (no sockets — `fetch()`'s
 own cursor vs. `foreach`/`fetchAll()` not sharing it, the `affected_rows`
@@ -962,7 +962,7 @@ belongs to Milestone 18's PID-file/start-stop-status-reload lifecycle —
 corrected, and left untouched otherwise, since retrofitting flags with no
 lifecycle around them yet would be premature.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Cli/SqlSplitterTest.php`, `ArgvParserTest.php`,
 `OutputFormatTest.php`, `ResultPrinterTest.php` (all pure logic, no
@@ -1039,7 +1039,7 @@ socket and `$dataDirectory` is the one `Schema\Database` already open —
 neither can change without restarting something, and nothing else in
 `ServerConfig` has anywhere to reload *from* yet.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Network/MetricsTest.php` (a `Tests\Support\FakeClock`,
 no sockets); `tests/Unit/Network/ServerAdminTest.php` — `SHOW_STATUS`'s
@@ -1120,7 +1120,7 @@ copy loses that placeholder-shaped directory structure on extraction, but
 `Database::open()` recreates whatever it needs from nothing regardless,
 so nothing real is lost.
 
-**Done when:** `make test`, `make analyse` and `make lint` are all clean.
+**Done when:** `make test`, `make analyse` and `make format-check` are all clean.
 
 **Tests:** `tests/Unit/Backup/DumperTest.php` (column/constraint/index
 rendering, dependency ordering, an explicit table filter, a table with no

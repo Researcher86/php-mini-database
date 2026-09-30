@@ -1,5 +1,9 @@
 .PHONY: up down shell build install test bench analyse format format-check
 
+# CI has no terminal to attach to (GitHub Actions sets CI=true), so exec runs
+# without one there; locally it keeps the TTY for colours and interactive use.
+TTY := $(if $(CI),-T,)
+
 up:
 	docker compose up -d
 
@@ -10,27 +14,27 @@ build:
 	docker compose build
 
 shell: up
-	docker compose exec php bash
+	docker compose exec $(TTY) php bash
 
 htop: up
-	docker compose exec php htop
+	docker compose exec $(TTY) php htop
 
 install: up
-	docker compose exec php composer install
+	docker compose exec $(TTY) php composer install
 
 test: up
-	docker compose exec php composer test
+	docker compose exec $(TTY) php composer test
 
 # slow, load-bearing timing assertions - not part of `make test`
 bench: up
-	docker compose exec php composer bench
+	docker compose exec $(TTY) php composer bench
 
 analyse: up
-	docker compose exec php composer analyse
+	docker compose exec $(TTY) php composer analyse
 
 format: up
-	docker compose exec php composer format
+	docker compose exec $(TTY) php composer format
 
 # check reports without touching anything (what CI runs)
 format-check: up
-	docker compose exec php composer format:check
+	docker compose exec $(TTY) php composer format:check

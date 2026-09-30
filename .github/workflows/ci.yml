@@ -10,20 +10,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.5'
-          # These are the platform extensions the experiment scripts use at
-          # runtime; on the GitHub runner /proc is real, so the /proc readers
-          # are exercised against the live kernel rather than fixtures only.
-          # ffi pulls in libffi, which the composer platform config needs.
-          extensions: ffi, pcntl, posix, sockets, sysvmsg, sysvsem, sysvshm
-          coverage: none
+      # The same Docker image and the same make targets as local development:
+      # CI checks the environment the project is actually developed in.
+      - run: make build
 
-      - run: composer install --no-interaction --no-progress
+      - run: make install
 
-      - run: composer test
+      - run: make test
 
-      - run: composer analyse
+      - run: make analyse
 
-      - run: composer format:check
+      - run: make format-check
+
+      - if: always()
+        run: make down

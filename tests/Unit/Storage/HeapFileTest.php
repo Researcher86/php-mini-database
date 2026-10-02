@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Tests\Unit\Storage;
 
+use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Storage\HeapFile;
 use PhpMiniDatabase\Storage\Page;
 use PhpMiniDatabase\Storage\RecordId;
@@ -44,6 +45,24 @@ final class HeapFileTest extends TestCase
         self::assertFalse($first->equals($second));
         self::assertSame('one', $this->heap->read($first));
         self::assertSame('two', $this->heap->read($second));
+    }
+
+    /**
+     * Regression: an update too large for any page used to delete the old
+     * record before discovering that, so the failed UPDATE lost the row —
+     * and nothing had been logged yet for a rollback to restore it from.
+     */
+    public function testAnUpdateTooLargeForAnyPageLeavesTheRecordUntouched(): void
+    {
+        $id = $this->heap->insert('small');
+
+        try {
+            $this->heap->update($id, str_repeat('x', Page::MAX_RECORD_SIZE + 1));
+            self::fail('An oversized record must be refused.');
+        } catch (StorageException) {
+        }
+
+        self::assertSame('small', $this->heap->read($id));
     }
 
     public function testADeletedRecordReadsAsNull(): void

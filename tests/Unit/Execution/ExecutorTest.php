@@ -7,10 +7,12 @@ namespace PhpMiniDatabase\Tests\Unit\Execution;
 use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Exception\ExecutionException;
 use PhpMiniDatabase\Exception\SchemaException;
+use PhpMiniDatabase\Exception\StorageException;
 use PhpMiniDatabase\Execution\Executor;
 use PhpMiniDatabase\Execution\QueryResult;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Schema\Row;
+use PhpMiniDatabase\Storage\Page;
 use PhpMiniDatabase\Tests\Support\TemporaryDirectory;
 use PHPUnit\Framework\TestCase;
 
@@ -54,6 +56,25 @@ final class ExecutorTest extends TestCase
         self::assertIsInt($result);
 
         return $result;
+    }
+
+    /**
+     * Regression: an UPDATE whose new row no page can hold used to delete
+     * the old row before failing, and the row was gone for good — the
+     * statement's own rollback had nothing logged to restore it from.
+     */
+    public function testAnUpdateTooLargeToStoreFailsWithTheRowIntact(): void
+    {
+        $this->executor->run('CREATE TABLE docs (id INT PRIMARY KEY, body BLOB)');
+        $this->exec("INSERT INTO docs VALUES (1, 'short')");
+
+        try {
+            $this->executor->run('UPDATE docs SET body = ? WHERE id = 1', [str_repeat('x', Page::MAX_RECORD_SIZE)]);
+            self::fail('A row larger than a page must be refused.');
+        } catch (StorageException) {
+        }
+
+        self::assertSame([['id' => 1, 'body' => 'short']], $this->query('SELECT id, body FROM docs'));
     }
 
     private function createUsers(): void

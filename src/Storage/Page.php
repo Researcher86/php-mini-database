@@ -157,13 +157,7 @@ final class Page
      */
     public function insert(string $record): ?int
     {
-        if (strlen($record) > self::MAX_RECORD_SIZE) {
-            throw new StorageException(sprintf(
-                'Record of %d bytes exceeds the %d byte maximum.',
-                strlen($record),
-                self::MAX_RECORD_SIZE,
-            ));
-        }
+        self::assertStorable($record);
 
         $tombstone = $this->firstTombstone();
         $needed = strlen($record) + ($tombstone === null ? self::SLOT_SIZE : 0);
@@ -181,6 +175,18 @@ final class Page
         $this->records[] = $record;
 
         return count($this->records) - 1;
+    }
+
+    /** @throws StorageException when $record could not fit even on an empty page */
+    public static function assertStorable(string $record): void
+    {
+        if (strlen($record) > self::MAX_RECORD_SIZE) {
+            throw new StorageException(sprintf(
+                'Record of %d bytes exceeds the %d byte maximum.',
+                strlen($record),
+                self::MAX_RECORD_SIZE,
+            ));
+        }
     }
 
     /** The record in a slot, or null if the slot is a tombstone. */

@@ -108,6 +108,10 @@ final class HeapFile
             return $id;
         }
 
+        // Refused before the old copy is deleted, not by the insert()
+        // after it: a record no page can hold would otherwise fail with the
+        // row already gone, before the caller logged anything to undo.
+        Page::assertStorable($record);
         $page->delete($id->slot);
         $this->pages->write($page);
 

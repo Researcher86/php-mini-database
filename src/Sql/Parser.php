@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Sql;
 
+use Closure;
 use PhpMiniDatabase\Exception\ParserException;
 use PhpMiniDatabase\Schema\Constraint\ReferentialAction;
 use PhpMiniDatabase\Sql\Ast\AlterAction\AddColumn;
@@ -213,7 +214,7 @@ final class Parser
     {
         $this->expect(TokenType::SELECT);
         $distinct = $this->match(TokenType::DISTINCT);
-        $columns = $this->selectItemList();
+        $columns = $this->commaSeparated($this->selectItem(...));
 
         $from = null;
         if ($this->match(TokenType::FROM)) {
@@ -233,25 +234,13 @@ final class Parser
         $orderBy = [];
         if ($this->match(TokenType::ORDER)) {
             $this->expect(TokenType::BY);
-            $orderBy = $this->orderByList();
+            $orderBy = $this->commaSeparated($this->orderByItem(...));
         }
 
         $limit = $this->match(TokenType::LIMIT) ? $this->integerLiteral() : null;
         $offset = $this->match(TokenType::OFFSET) ? $this->integerLiteral() : null;
 
         return new SelectStatement($columns, $from, $where, $distinct, $groupBy, $having, $orderBy, $limit, $offset);
-    }
-
-    /** @return list<SelectItem> */
-    private function selectItemList(): array
-    {
-        $items = [$this->selectItem()];
-
-        while ($this->match(TokenType::COMMA)) {
-            $items[] = $this->selectItem();
-        }
-
-        return $items;
     }
 
     private function selectItem(): SelectItem
@@ -343,18 +332,6 @@ final class Parser
         return new TableReference($table, $this->optionalAlias());
     }
 
-    /** @return list<OrderByItem> */
-    private function orderByList(): array
-    {
-        $items = [$this->orderByItem()];
-
-        while ($this->match(TokenType::COMMA)) {
-            $items[] = $this->orderByItem();
-        }
-
-        return $items;
-    }
-
     private function orderByItem(): OrderByItem
     {
         $expression = $this->expression();
@@ -377,20 +354,10 @@ final class Parser
         $this->expect(TokenType::INTO);
         $table = $this->identifier();
 
-        $columns = null;
-        if ($this->match(TokenType::LPAREN)) {
-            $columns = $this->identifierList();
-            $this->expect(TokenType::RPAREN);
-        }
-
+        $columns = $this->check(TokenType::LPAREN) ? $this->parenthesizedIdentifierList() : null;
         $this->expect(TokenType::VALUES);
 
-        $rows = [$this->valuesRow()];
-        while ($this->match(TokenType::COMMA)) {
-            $rows[] = $this->valuesRow();
-        }
-
-        return new InsertStatement($table, $columns, $rows);
+        return new InsertStatement($table, $columns, $this->commaSeparated($this->valuesRow(...)));
     }
 
     /** @return list<Expression> */
@@ -409,11 +376,7 @@ final class Parser
         $table = $this->identifier();
         $this->expect(TokenType::SET);
 
-        $assignments = [$this->assignment()];
-        while ($this->match(TokenType::COMMA)) {
-            $assignments[] = $this->assignment();
-        }
-
+        $assignments = $this->commaSeparated($this->assignment(...));
         $where = $this->match(TokenType::WHERE) ? $this->expression() : null;
 
         return new UpdateStatement($table, $assignments, $where);
@@ -475,11 +438,7 @@ final class Parser
 
     private function startsTableConstraint(): bool
     {
-        return $this->check(TokenType::CONSTRAINT)
-            || $this->check(TokenType::PRIMARY)
-            || $this->check(TokenType::UNIQUE)
-            || $this->check(TokenType::FOREIGN)
-            || $this->check(TokenType::CHECK);
+        return in_array($this->current()->type, [TokenType::CONSTRAINT, TokenType::PRIMARY, TokenType::UNIQUE, TokenType::FOREIGN, TokenType::CHECK], true);
     }
 
     private function columnDefinition(): ColumnDefinition
@@ -545,10 +504,7 @@ final class Parser
             return $name;
         }
 
-        $parameters = [$this->expect(TokenType::NUMBER)->text];
-        while ($this->match(TokenType::COMMA)) {
-            $parameters[] = $this->expect(TokenType::NUMBER)->text;
-        }
+        $parameters = $this->commaSeparated(fn (): string => $this->expect(TokenType::NUMBER)->text);
         $this->expect(TokenType::RPAREN);
 
         return sprintf('%s(%s)', $name, implode(',', $parameters));
@@ -560,9 +516,7 @@ final class Parser
 
         if ($this->match(TokenType::PRIMARY)) {
             $this->expect(TokenType::KEY);
-            $this->expect(TokenType::LPAREN);
-            $columns = $this->identifierList();
-            $this->expect(TokenType::RPAREN);
+            $columns = $this->parenthesizedIdentifierList();
 
             // A `CONSTRAINT <name>` given here has nowhere to go: a primary
             // key's name is fixed ('PRIMARY', see Schema\Constraint\PrimaryKey),
@@ -571,23 +525,15 @@ final class Parser
         }
 
         if ($this->match(TokenType::UNIQUE)) {
-            $this->expect(TokenType::LPAREN);
-            $columns = $this->identifierList();
-            $this->expect(TokenType::RPAREN);
-
-            return new UniqueDefinition($columns, $name);
+            return new UniqueDefinition($this->parenthesizedIdentifierList(), $name);
         }
 
         if ($this->match(TokenType::FOREIGN)) {
             $this->expect(TokenType::KEY);
-            $this->expect(TokenType::LPAREN);
-            $columns = $this->identifierList();
-            $this->expect(TokenType::RPAREN);
+            $columns = $this->parenthesizedIdentifierList();
             $this->expect(TokenType::REFERENCES);
             $referencedTable = $this->identifier();
-            $this->expect(TokenType::LPAREN);
-            $referencedColumns = $this->identifierList();
-            $this->expect(TokenType::RPAREN);
+            $referencedColumns = $this->parenthesizedIdentifierList();
             [$onDelete, $onUpdate] = $this->referentialActions();
 
             return new ForeignKeyDefinition($columns, $referencedTable, $referencedColumns, $onDelete, $onUpdate, $name);
@@ -691,11 +637,8 @@ final class Parser
         $name = $this->identifier();
         $this->expect(TokenType::ON);
         $table = $this->identifier();
-        $this->expect(TokenType::LPAREN);
-        $columns = $this->identifierList();
-        $this->expect(TokenType::RPAREN);
 
-        return new CreateIndexStatement($name, $table, $columns, $unique);
+        return new CreateIndexStatement($name, $table, $this->parenthesizedIdentifierList(), $unique);
     }
 
     private function dropIndexStatement(): DropIndexStatement
@@ -1057,28 +1000,45 @@ final class Parser
     // Shared helpers
     // -----------------------------------------------------------------
 
-    /** @return list<Expression> */
-    private function expressionList(): array
+    /**
+     * One or more `$item`s separated by commas — every list in the grammar.
+     *
+     * @template T
+     *
+     * @param Closure(): T $item
+     *
+     * @return non-empty-list<T>
+     */
+    private function commaSeparated(Closure $item): array
     {
-        $items = [$this->expression()];
+        $items = [$item()];
 
         while ($this->match(TokenType::COMMA)) {
-            $items[] = $this->expression();
+            $items[] = $item();
         }
 
         return $items;
     }
 
-    /** @return list<string> */
-    private function identifierList(): array
+    /** @return list<Expression> */
+    private function expressionList(): array
     {
-        $items = [$this->identifier()];
+        return $this->commaSeparated($this->expression(...));
+    }
 
-        while ($this->match(TokenType::COMMA)) {
-            $items[] = $this->identifier();
-        }
+    /**
+     * `(a, b, c)` — a column list as `CREATE INDEX`, `INSERT` and every key
+     * constraint write it.
+     *
+     * @return list<string>
+     */
+    private function parenthesizedIdentifierList(): array
+    {
+        $this->expect(TokenType::LPAREN);
+        $identifiers = $this->commaSeparated($this->identifier(...));
+        $this->expect(TokenType::RPAREN);
 
-        return $items;
+        return $identifiers;
     }
 
     private function identifier(): string

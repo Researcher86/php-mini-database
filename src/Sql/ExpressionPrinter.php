@@ -22,84 +22,103 @@ use PhpMiniDatabase\Sql\Ast\Expression\UnaryOp;
 use PhpMiniDatabase\Sql\Ast\Expression\UnaryOperator;
 
 /**
- * `Parser`'s dual: turns an `Expression` back into SQL text that
- * `Parser::parseOne()` reparses to an equivalent tree.
+ * `Parser`'s dual: turns an `Expression` back into text, in one of two
+ * modes that differ only in who reads the result.
  *
- * The one place this is needed today is `CHECK (...)`: `Schema\Constraint\CheckConstraint`
- * keeps its expression as a string (a decision made before a parser
- * existed — see DECISIONS.md), so whatever builds one from a parsed
- * `CREATE TABLE` needs a text form to hand it, and this is that form.
- * `Storage\Backup\Dumper` (Phase 19) is expected to be the other caller,
- * turning a table's constraints back into the `CREATE TABLE` text a dump
- * file holds.
- *
+ * The default mode produces SQL that `Parser::parseExpression()` reparses
+ * to an equivalent tree. It is what `CHECK (...)` needs:
+ * `Schema\Constraint\CheckConstraint` keeps its expression as a string (a
+ * decision made before a parser existed — see DECISIONS.md), so whatever
+ * builds one from a parsed `CREATE TABLE` needs a text form to hand it.
  * Every operator's operands are parenthesized unconditionally, whether or
  * not precedence would require it. Precedence-minimal printing would need
  * this class to track the exact same precedence table as `Parser` and keep
  * the two in step by hand; over-parenthesizing needs nothing but the tree
  * itself; and correctness — the printed text always reparses to a tree
- * `Parser` agrees is equivalent — is the only property that actually
- * matters here.
- *
+ * `Parser` agrees is equivalent — is the only property that matters there.
  * `Star`, `Placeholder` and the two subquery nodes have no legal place in a
  * `CHECK` expression and are refused rather than printed.
+ *
+ * `forExplain()` is the other mode: short, readable text for an `EXPLAIN`
+ * line. A plan is read by a person, not re-parsed, so the defensive
+ * parentheses go, and a `?` or a `*` — exactly what a person planning a
+ * prepared statement's query needs to see — is printed instead of refused.
  */
-final class ExpressionPrinter
+final readonly class ExpressionPrinter
 {
+    public function __construct(
+        private bool $forExplain = false,
+    ) {
+    }
+
+    public static function forExplain(): self
+    {
+        return new self(forExplain: true);
+    }
+
     public function print(Expression $expression): string
     {
+        $not = static fn (bool $negated): string => $negated ? 'NOT ' : '';
+
         return match (true) {
             $expression instanceof Literal => $this->literal($expression->value),
             $expression instanceof ColumnRef => $expression->qualifier !== null
                 ? sprintf('%s.%s', $expression->qualifier, $expression->column)
                 : $expression->column,
-            $expression instanceof BinaryOp => sprintf(
-                '(%s %s %s)',
+            $expression instanceof BinaryOp => $this->group(sprintf(
+                '%s %s %s',
                 $this->print($expression->left),
                 $expression->operator->symbol(),
                 $this->print($expression->right),
-            ),
-            $expression instanceof UnaryOp => sprintf(
-                '%s (%s)',
-                $expression->operator === UnaryOperator::NOT ? 'NOT' : '-',
-                $this->print($expression->operand),
-            ),
-            $expression instanceof Between => sprintf(
-                '(%s %sBETWEEN %s AND %s)',
+            )),
+            $expression instanceof UnaryOp => $this->forExplain
+                ? ($expression->operator === UnaryOperator::NOT ? 'NOT ' : '-') . $this->print($expression->operand)
+                : sprintf('%s (%s)', $expression->operator === UnaryOperator::NOT ? 'NOT' : '-', $this->print($expression->operand)),
+            $expression instanceof Between => $this->group(sprintf(
+                '%s %sBETWEEN %s AND %s',
                 $this->print($expression->subject),
-                $expression->negated ? 'NOT ' : '',
+                $not($expression->negated),
                 $this->print($expression->low),
                 $this->print($expression->high),
-            ),
-            $expression instanceof IsNull => sprintf(
-                '(%s IS %sNULL)',
+            )),
+            $expression instanceof IsNull => $this->group(sprintf(
+                '%s IS %sNULL',
                 $this->print($expression->subject),
-                $expression->negated ? 'NOT ' : '',
-            ),
-            $expression instanceof Like => sprintf(
-                '(%s %sLIKE %s)',
+                $not($expression->negated),
+            )),
+            $expression instanceof Like => $this->group(sprintf(
+                '%s %sLIKE %s',
                 $this->print($expression->subject),
-                $expression->negated ? 'NOT ' : '',
+                $not($expression->negated),
                 $this->print($expression->pattern),
-            ),
-            $expression instanceof InList => sprintf(
-                '(%s %sIN (%s))',
+            )),
+            $expression instanceof InList => $this->group(sprintf(
+                '%s %sIN (%s)',
                 $this->print($expression->subject),
-                $expression->negated ? 'NOT ' : '',
+                $not($expression->negated),
                 implode(', ', array_map($this->print(...), $expression->values)),
-            ),
+            )),
             $expression instanceof FunctionCall => sprintf(
                 '%s(%s%s)',
                 $expression->name,
                 $expression->distinct ? 'DISTINCT ' : '',
                 implode(', ', array_map($this->print(...), $expression->arguments)),
             ),
-            $expression instanceof Star, $expression instanceof Placeholder,
-            $expression instanceof InSubquery, $expression instanceof ScalarSubquery => throw new ExecutionException(
-                sprintf('%s cannot appear in this expression.', $expression::class),
-            ),
+            !$this->forExplain && ($expression instanceof Star || $expression instanceof Placeholder
+                || $expression instanceof InSubquery || $expression instanceof ScalarSubquery) => throw new ExecutionException(
+                    sprintf('%s cannot appear in this expression.', $expression::class),
+                ),
+            $expression instanceof Placeholder => '?',
+            $expression instanceof Star => $expression->qualifier !== null ? sprintf('%s.*', $expression->qualifier) : '*',
+            $expression instanceof InSubquery, $expression instanceof ScalarSubquery => '(subquery)',
             default => throw new ExecutionException(sprintf('Cannot print expression of type %s.', $expression::class)),
         };
+    }
+
+    /** Parentheses around one operator's text, unless only a person will read it. */
+    private function group(string $text): string
+    {
+        return $this->forExplain ? $text : "({$text})";
     }
 
     private function literal(int|float|string|bool|null $value): string
@@ -111,5 +130,4 @@ final class ExpressionPrinter
             default => (string) $value,
         };
     }
-
 }

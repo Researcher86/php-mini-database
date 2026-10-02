@@ -31,11 +31,8 @@ enum BinaryOperator
     /**
      * How this operator is written in SQL. It lives here, on the enum that
      * owns the cases, rather than in whichever class happens to be
-     * printing: `Sql\ExpressionPrinter` (rendering a `CHECK` back into
-     * storable DDL) and `Sql\Planner\PlanExpressionPrinter` (rendering an
-     * `EXPLAIN` line) are deliberately separate classes with different
-     * jobs, and both once carried a private copy of exactly this map —
-     * two places for one fact about the language.
+     * printing (`Sql\ExpressionPrinter`, for a `CHECK` or an `EXPLAIN`
+     * line) — one place for one fact about the language.
      */
     public function symbol(): string
     {

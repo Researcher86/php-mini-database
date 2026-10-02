@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Sql\Planner\Plan;
 
 use PhpMiniDatabase\Schema\Table;
+use PhpMiniDatabase\Sql\ExpressionPrinter;
 use PhpMiniDatabase\Sql\Planner\LogicalPlan;
-use PhpMiniDatabase\Sql\Planner\PlanExpressionPrinter;
 
 /**
  * Reads every row of one table. `$alias` is exactly `TableReference::$alias`
@@ -50,7 +50,7 @@ final readonly class Scan implements LogicalPlan
             $this->index->indexName,
             $this->index->column,
             $this->operatorSymbol($this->index->operator),
-            (new PlanExpressionPrinter())->print($this->index->value),
+            ExpressionPrinter::forExplain()->print($this->index->value),
         );
     }
 

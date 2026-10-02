@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Sql\Planner\Plan;
 
 use PhpMiniDatabase\Sql\Ast\OrderByItem;
+use PhpMiniDatabase\Sql\ExpressionPrinter;
 use PhpMiniDatabase\Sql\Planner\LogicalPlan;
-use PhpMiniDatabase\Sql\Planner\PlanExpressionPrinter;
 
 final readonly class Sort implements LogicalPlan
 {
@@ -19,7 +19,7 @@ final readonly class Sort implements LogicalPlan
 
     public function describe(): string
     {
-        $printer = new PlanExpressionPrinter();
+        $printer = ExpressionPrinter::forExplain();
 
         return sprintf('Sort (%s)', implode(', ', array_map(
             static fn (OrderByItem $item): string => $printer->print($item->expression) . ' ' . $item->direction->name,

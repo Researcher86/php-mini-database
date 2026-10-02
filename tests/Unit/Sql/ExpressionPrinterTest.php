@@ -82,4 +82,22 @@ final class ExpressionPrinterTest extends TestCase
         $this->expectException(ExecutionException::class);
         $this->printer->print(new Placeholder(0));
     }
+
+    /**
+     * The `EXPLAIN` mode drops the defensive parentheses and prints what the
+     * `CHECK` mode refuses, since a person reads it rather than `Parser`.
+     */
+    public function testExplainModePrintsReadableTextIncludingPlaceholdersAndSubqueries(): void
+    {
+        $printer = ExpressionPrinter::forExplain();
+
+        self::assertSame(
+            'a = ? AND NOT b IS NULL AND -c NOT BETWEEN 1 AND 2',
+            $printer->print($this->parseWhere('a = ? AND NOT b IS NULL AND -c NOT BETWEEN 1 AND 2')),
+        );
+        self::assertSame('x IN (1, 2)', $printer->print($this->parseWhere('x IN (1, 2)')));
+        self::assertSame('t.*', $printer->print(new Star('t')));
+        self::assertSame('(subquery)', $printer->print($this->parseWhere('(SELECT 1)')));
+        self::assertSame('NOT (a)', $this->printer->print($this->parseWhere('NOT a')));
+    }
 }

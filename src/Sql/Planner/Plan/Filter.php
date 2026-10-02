@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace PhpMiniDatabase\Sql\Planner\Plan;
 
 use PhpMiniDatabase\Sql\Ast\Expression;
+use PhpMiniDatabase\Sql\ExpressionPrinter;
 use PhpMiniDatabase\Sql\Planner\LogicalPlan;
-use PhpMiniDatabase\Sql\Planner\PlanExpressionPrinter;
 
 /** Keeps only the rows of `$source` for which `$predicate` is true. */
 final readonly class Filter implements LogicalPlan
@@ -19,7 +19,7 @@ final readonly class Filter implements LogicalPlan
 
     public function describe(): string
     {
-        return sprintf('Filter (%s)', (new PlanExpressionPrinter())->print($this->predicate));
+        return sprintf('Filter (%s)', ExpressionPrinter::forExplain()->print($this->predicate));
     }
 
     public function children(): array

@@ -6,8 +6,8 @@ namespace PhpMiniDatabase\Sql\Planner\Plan;
 
 use PhpMiniDatabase\Sql\Ast\Expression;
 use PhpMiniDatabase\Sql\Ast\SelectItem;
+use PhpMiniDatabase\Sql\ExpressionPrinter;
 use PhpMiniDatabase\Sql\Planner\LogicalPlan;
-use PhpMiniDatabase\Sql\Planner\PlanExpressionPrinter;
 
 /** `GROUP BY`/`HAVING` and the select list's aggregates, together. */
 final readonly class Aggregate implements LogicalPlan
@@ -28,7 +28,7 @@ final readonly class Aggregate implements LogicalPlan
 
     public function describe(): string
     {
-        $printer = new PlanExpressionPrinter();
+        $printer = ExpressionPrinter::forExplain();
         $groupBy = implode(', ', array_map($printer->print(...), $this->groupBy));
 
         return sprintf('Aggregate (%s)%s', $groupBy, $this->having !== null ? sprintf(' HAVING (%s)', $printer->print($this->having)) : '');

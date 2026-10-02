@@ -6,8 +6,8 @@ namespace PhpMiniDatabase\Sql\Planner\Plan;
 
 use PhpMiniDatabase\Sql\Ast\Expression;
 use PhpMiniDatabase\Sql\Ast\From\JoinType;
+use PhpMiniDatabase\Sql\ExpressionPrinter;
 use PhpMiniDatabase\Sql\Planner\LogicalPlan;
-use PhpMiniDatabase\Sql\Planner\PlanExpressionPrinter;
 
 /**
  * Two plans joined on `$on`. `$hash`, filled in by
@@ -44,7 +44,7 @@ final readonly class Join implements LogicalPlan
             '%s%s (%s)',
             $this->hash !== null ? 'HashJoin ' : 'NestedLoopJoin ',
             $this->type->name,
-            (new PlanExpressionPrinter())->print($this->on),
+            ExpressionPrinter::forExplain()->print($this->on),
         );
     }
 

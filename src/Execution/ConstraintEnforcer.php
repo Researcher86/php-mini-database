@@ -90,7 +90,7 @@ final readonly class ConstraintEnforcer
                 continue;
             }
 
-            $values = array_map(static fn (string $column): mixed => $row->get($column), $constraint->columns());
+            $values = $row->valuesOf($constraint->columns());
 
             if (in_array(null, $values, true)) {
                 continue;
@@ -114,16 +114,10 @@ final readonly class ConstraintEnforcer
         $columns = $constraint->referencedColumns();
 
         if (count($columns) === 1) {
-            $indexName = $this->singleColumnIndexNameFor($referenced, $columns[0]);
+            $indexName = $referenced->singleColumnIndexNameFor($columns[0]);
 
             if ($indexName !== null) {
-                $index = $this->database->index($referenced->name, $indexName);
-
-                foreach ($index->search($values[0]) as $id) {
-                    return true;
-                }
-
-                return false;
+                return $this->database->index($referenced->name, $indexName)->search($values[0])->valid();
             }
         }
 
@@ -131,27 +125,12 @@ final readonly class ConstraintEnforcer
         // BTreeIndex - see TableBuilder::backingIndexes()): fall back to a
         // full scan, the same trade-off a composite UNIQUE constraint
         // already makes.
-        $heap = $this->database->heapFile($referenced->name);
-
-        foreach ($heap->scan() as $record) {
-            $candidate = $referenced->deserializeRow($record);
-
-            if (array_map(static fn (string $c): mixed => $candidate->get($c), $columns) === $values) {
+        foreach ($this->database->heapFile($referenced->name)->scan() as $record) {
+            if ($referenced->deserializeRow($record)->valuesOf($columns) === $values) {
                 return true;
             }
         }
 
         return false;
-    }
-
-    private function singleColumnIndexNameFor(Table $table, string $column): ?string
-    {
-        foreach ($table->indexes() as $definition) {
-            if ($definition->columns() === [$column]) {
-                return $definition->name;
-            }
-        }
-
-        return null;
     }
 }

@@ -123,13 +123,16 @@ final readonly class Table
 
     public function hasIndex(string $name): bool
     {
-        foreach ($this->indexes as $index) {
-            if ($index->name === $name) {
-                return true;
-            }
-        }
+        return array_any($this->indexes, static fn (IndexDefinition $index): bool => $index->name === $name);
+    }
 
-        return false;
+    /**
+     * The name of an index on exactly $column alone, if there is one — the
+     * only kind that has a `BTreeIndex` file to search (see DECISIONS.md).
+     */
+    public function singleColumnIndexNameFor(string $column): ?string
+    {
+        return array_find($this->indexes, static fn (IndexDefinition $index): bool => $index->columns() === [$column])?->name;
     }
 
     /** A copy of this table with one more index declared. */

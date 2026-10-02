@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Execution;
 
+use Generator;
 use PhpMiniDatabase\Exception\ConstraintViolationException;
 use PhpMiniDatabase\Schema\Database;
 use PhpMiniDatabase\Schema\IndexDefinition;
@@ -35,19 +36,7 @@ final readonly class IndexMaintainer
     /** @throws ConstraintViolationException when a unique index would collide */
     public function assertUniqueForInsert(Table $table, Row $row): void
     {
-        foreach ($this->singleColumnIndexes($table) as $definition) {
-            if (!$definition->unique) {
-                continue;
-            }
-
-            if ($this->firstMatch($table, $definition, $row) !== null) {
-                throw new ConstraintViolationException(sprintf(
-                    'Duplicate value for unique index "%s" on "%s".',
-                    $definition->name,
-                    $table->name,
-                ));
-            }
-        }
+        $this->assertUniqueForUpdate($table, $row, null);
     }
 
     /**
@@ -57,16 +46,16 @@ final readonly class IndexMaintainer
      *
      * @throws ConstraintViolationException when a unique index would collide
      */
-    public function assertUniqueForUpdate(Table $table, Row $newRow, RecordId $excluding): void
+    public function assertUniqueForUpdate(Table $table, Row $newRow, ?RecordId $excluding): void
     {
         foreach ($this->singleColumnIndexes($table) as $definition) {
             if (!$definition->unique) {
                 continue;
             }
 
-            $match = $this->firstMatch($table, $definition, $newRow);
+            $matches = $this->search($table, $definition, $newRow);
 
-            if ($match !== null && !$match->equals($excluding)) {
+            if ($matches->valid() && ($excluding === null || !$matches->current()->equals($excluding))) {
                 throw new ConstraintViolationException(sprintf(
                     'Duplicate value for unique index "%s" on "%s".',
                     $definition->name,
@@ -141,9 +130,7 @@ final readonly class IndexMaintainer
      */
     private function isIndexed(Table $table, IndexDefinition $definition, Row $row, RecordId $id): bool
     {
-        $value = $row->get($definition->columns()[0]);
-
-        foreach ($this->database->index($table->name, $definition->name)->search($value) as $found) {
+        foreach ($this->search($table, $definition, $row) as $found) {
             if ($found->equals($id)) {
                 return true;
             }
@@ -152,15 +139,10 @@ final readonly class IndexMaintainer
         return false;
     }
 
-    private function firstMatch(Table $table, IndexDefinition $definition, Row $row): ?RecordId
+    /** @return Generator<RecordId> every id $definition's index holds for $row's value */
+    private function search(Table $table, IndexDefinition $definition, Row $row): Generator
     {
-        $value = $row->get($definition->columns()[0]);
-
-        foreach ($this->database->index($table->name, $definition->name)->search($value) as $id) {
-            return $id;
-        }
-
-        return null;
+        return $this->database->index($table->name, $definition->name)->search($row->get($definition->columns()[0]));
     }
 
     /** @return list<IndexDefinition> */

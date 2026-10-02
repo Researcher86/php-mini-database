@@ -65,7 +65,7 @@ final readonly class IndexSelection implements Rule
         }
 
         $predicate = $this->indexablePredicate($plan->predicate);
-        $indexName = $predicate === null ? null : $this->singleColumnIndexNameFor($source->table, $predicate['column']);
+        $indexName = $predicate === null ? null : $source->table->singleColumnIndexNameFor($predicate['column']);
 
         if ($predicate === null || $indexName === null) {
             return new Filter($source, $plan->predicate);
@@ -106,16 +106,5 @@ final readonly class IndexSelection implements Rule
     private function isConstant(Expression $expression): bool
     {
         return $expression instanceof Literal || $expression instanceof Placeholder;
-    }
-
-    private function singleColumnIndexNameFor(Table $table, string $column): ?string
-    {
-        foreach ($table->indexes() as $definition) {
-            if ($definition->columns() === [$column]) {
-                return $definition->name;
-            }
-        }
-
-        return null;
     }
 }

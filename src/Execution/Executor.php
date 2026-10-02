@@ -44,6 +44,7 @@ use PhpMiniDatabase\Sql\Ast\DeleteStatement;
 use PhpMiniDatabase\Sql\Ast\DropIndexStatement;
 use PhpMiniDatabase\Sql\Ast\DropTableStatement;
 use PhpMiniDatabase\Sql\Ast\ExplainStatement;
+use PhpMiniDatabase\Sql\Ast\Expression;
 use PhpMiniDatabase\Sql\Ast\Expression\Star;
 use PhpMiniDatabase\Sql\Ast\From\JoinType;
 use PhpMiniDatabase\Sql\Ast\From\TableReference;
@@ -577,7 +578,7 @@ final readonly class Executor
                 $oldRow = $table->deserializeRow($record);
                 $context = new RowContext($oldRow, $statement->table, parameters: $parameters);
 
-                if ($statement->where !== null && !$this->evaluator->isTrue($this->evaluator->evaluate($statement->where, $context))) {
+                if (!$this->satisfies($statement->where, $context)) {
                     continue;
                 }
 
@@ -628,12 +629,8 @@ final readonly class Executor
             foreach ($heap->scan() as $id => $record) {
                 $row = $table->deserializeRow($record);
 
-                if ($statement->where !== null) {
-                    $context = new RowContext($row, $statement->table, parameters: $parameters);
-
-                    if (!$this->evaluator->isTrue($this->evaluator->evaluate($statement->where, $context))) {
-                        continue;
-                    }
+                if (!$this->satisfies($statement->where, new RowContext($row, $statement->table, parameters: $parameters))) {
+                    continue;
                 }
 
                 $this->locks->acquireRowLock($table->name, $id, $txId, LockMode::EXCLUSIVE);
@@ -650,6 +647,12 @@ final readonly class Executor
 
             return count($matches);
         });
+    }
+
+    /** Whether a row passes `UPDATE`/`DELETE`'s `WHERE` — every row does when there is none. */
+    private function satisfies(?Expression $where, EvaluationContext $context): bool
+    {
+        return $where === null || $this->evaluator->isTrue($this->evaluator->evaluate($where, $context));
     }
 
     /**
@@ -705,12 +708,12 @@ final readonly class Executor
     private function cascadeBeforeDelete(Table $table, Row $row, int $txId): void
     {
         foreach ($this->referencingForeignKeys($table->name) as [$childTable, $foreignKey]) {
-            $keyValues = array_map(static fn (string $column): mixed => $row->get($column), $foreignKey->referencedColumns());
+            $keyValues = $row->valuesOf($foreignKey->referencedColumns());
 
             foreach ($this->matchingChildRows($childTable, $foreignKey, $keyValues) as $child) {
                 match ($foreignKey->onDelete) {
                     ReferentialAction::CASCADE => $this->cascadeDeleteChild($childTable, $child['id'], $child['row'], $txId),
-                    ReferentialAction::SET_NULL => $this->cascadeNullifyChild($childTable, $child['id'], $child['row'], $foreignKey, $txId),
+                    ReferentialAction::SET_NULL => $this->cascadeRewriteChildKey($childTable, $child['id'], $child['row'], $foreignKey, null, $txId),
                     ReferentialAction::RESTRICT, ReferentialAction::NO_ACTION => throw new ConstraintViolationException(sprintf(
                         'Cannot delete from "%s": still referenced by "%s" via "%s".',
                         $table->name,
@@ -731,8 +734,8 @@ final readonly class Executor
     private function cascadeBeforeUpdate(Table $table, Row $oldRow, Row $newRow, int $txId): void
     {
         foreach ($this->referencingForeignKeys($table->name) as [$childTable, $foreignKey]) {
-            $oldKeyValues = array_map(static fn (string $column): mixed => $oldRow->get($column), $foreignKey->referencedColumns());
-            $newKeyValues = array_map(static fn (string $column): mixed => $newRow->get($column), $foreignKey->referencedColumns());
+            $oldKeyValues = $oldRow->valuesOf($foreignKey->referencedColumns());
+            $newKeyValues = $newRow->valuesOf($foreignKey->referencedColumns());
 
             if ($oldKeyValues === $newKeyValues) {
                 continue;
@@ -740,8 +743,8 @@ final readonly class Executor
 
             foreach ($this->matchingChildRows($childTable, $foreignKey, $oldKeyValues) as $child) {
                 match ($foreignKey->onUpdate) {
-                    ReferentialAction::CASCADE => $this->cascadeUpdateChildKey($childTable, $child['id'], $child['row'], $foreignKey, $newKeyValues, $txId),
-                    ReferentialAction::SET_NULL => $this->cascadeNullifyChild($childTable, $child['id'], $child['row'], $foreignKey, $txId),
+                    ReferentialAction::CASCADE => $this->cascadeRewriteChildKey($childTable, $child['id'], $child['row'], $foreignKey, $newKeyValues, $txId),
+                    ReferentialAction::SET_NULL => $this->cascadeRewriteChildKey($childTable, $child['id'], $child['row'], $foreignKey, null, $txId),
                     ReferentialAction::RESTRICT, ReferentialAction::NO_ACTION => throw new ConstraintViolationException(sprintf(
                         'Cannot update "%s": still referenced by "%s" via "%s".',
                         $table->name,
@@ -760,28 +763,19 @@ final readonly class Executor
         $this->physicallyDeleteRow($childTable, $id, $row);
     }
 
-    /** @param list<mixed> $newKeyValues in the same order as $foreignKey->columns() */
-    private function cascadeUpdateChildKey(Table $childTable, RecordId $id, Row $row, ForeignKey $foreignKey, array $newKeyValues, int $txId): void
+    /**
+     * `CASCADE` on update (the child's key follows the parent's new one) and
+     * `SET NULL` on either (`$newKeyValues === null`: the key is cleared).
+     *
+     * @param list<mixed>|null $newKeyValues in the same order as $foreignKey->columns()
+     */
+    private function cascadeRewriteChildKey(Table $childTable, RecordId $id, Row $row, ForeignKey $foreignKey, ?array $newKeyValues, int $txId): void
     {
         $this->locks->acquireRowLock($childTable->name, $id, $txId, LockMode::EXCLUSIVE);
 
         $values = $row->toArray();
         foreach ($foreignKey->columns() as $i => $column) {
-            $values[$column] = $newKeyValues[$i];
-        }
-
-        $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
-        $this->indexMaintainer->assertUniqueForUpdate($childTable, $newRow, $id);
-        $this->physicallyUpdateRow($childTable, $id, $row, $newRow);
-    }
-
-    private function cascadeNullifyChild(Table $childTable, RecordId $id, Row $row, ForeignKey $foreignKey, int $txId): void
-    {
-        $this->locks->acquireRowLock($childTable->name, $id, $txId, LockMode::EXCLUSIVE);
-
-        $values = $row->toArray();
-        foreach ($foreignKey->columns() as $column) {
-            $values[$column] = null;
+            $values[$column] = $newKeyValues[$i] ?? null;
         }
 
         $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
@@ -835,7 +829,7 @@ final readonly class Executor
 
         foreach ($this->database->heapFile($childTable->name)->scan() as $id => $record) {
             $row = $childTable->deserializeRow($record);
-            $values = array_map(static fn (string $column): mixed => $row->get($column), $foreignKey->columns());
+            $values = $row->valuesOf($foreignKey->columns());
 
             if (!in_array(null, $values, true) && $values === $keyValues) {
                 $matches[] = ['id' => $id, 'row' => $row];

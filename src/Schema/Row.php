@@ -38,6 +38,19 @@ final readonly class Row
         return $this->values[$column];
     }
 
+    /**
+     * The values of $columns, in that order — a key, as a foreign key or a
+     * unique constraint compares it.
+     *
+     * @param list<string> $columns
+     *
+     * @return list<mixed>
+     */
+    public function valuesOf(array $columns): array
+    {
+        return array_map($this->get(...), $columns);
+    }
+
     /** @return list<string> */
     public function columnNames(): array
     {

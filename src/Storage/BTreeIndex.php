@@ -131,7 +131,8 @@ final class BTreeIndex
         // a value-only search does.
         $fullKey = $prefix . $this->encodeRecordId($id);
         $pageId = $this->leafPageIdFor($fullKey);
-        $entries = $this->readLeafEntries($this->pages->read($pageId));
+        $page = $this->pages->read($pageId);
+        $entries = $this->readLeafEntries($page);
 
         $index = array_search($fullKey, $entries, true);
 
@@ -140,7 +141,7 @@ final class BTreeIndex
         }
 
         unset($entries[$index]);
-        $this->writeLeaf($pageId, array_values($entries), $this->nextLeafPageId($this->pages->read($pageId)));
+        $this->writeLeaf($pageId, array_values($entries), $this->nextLeafPageId($page));
     }
 
     /** @return Generator<RecordId> */
@@ -163,8 +164,10 @@ final class BTreeIndex
      */
     public function range(mixed $low, bool $lowInclusive, mixed $high, bool $highInclusive): Generator
     {
-        $lowBound = $low === null ? null : $this->boundary($this->valuePrefix($low), $lowInclusive);
-        $highBound = $high === null ? null : $this->boundary($this->valuePrefix($high), !$highInclusive);
+        $lowPrefix = $this->valuePrefix($low);
+        $highPrefix = $this->valuePrefix($high);
+        $lowBound = $lowPrefix === null ? null : $this->boundary($lowPrefix, $lowInclusive);
+        $highBound = $highPrefix === null ? null : $this->boundary($highPrefix, !$highInclusive);
 
         $pageId = $lowBound === null ? $this->leftmostLeafPageId() : $this->leafPageIdFor($lowBound);
 
@@ -233,12 +236,8 @@ final class BTreeIndex
      * comparing > it skips the prefix entirely. Used to turn a value-level
      * range bound into a whole-key comparison.
      */
-    private function boundary(?string $prefix, bool $inclusiveOfPrefix): ?string
+    private function boundary(string $prefix, bool $inclusiveOfPrefix): string
     {
-        if ($prefix === null) {
-            return null;
-        }
-
         return $prefix . str_repeat($inclusiveOfPrefix ? "\x00" : "\xff", self::RECORD_ID_LENGTH);
     }
 
@@ -268,12 +267,7 @@ final class BTreeIndex
     /** @return Generator<RecordId> */
     private function scanPrefix(string $prefix): Generator
     {
-        // boundary() only returns null when its own $prefix is null -
-        // this call always passes scanPrefix()'s own non-null $prefix, so
-        // the null branch never actually triggers here (unlike in
-        // range(), which does pass values that can genuinely be null).
-        $boundary = $this->boundary($prefix, true)
-            ?? throw new StorageException('boundary() unexpectedly returned null for a non-null prefix.');
+        $boundary = $this->boundary($prefix, true);
         $pageId = $this->leafPageIdFor($boundary);
 
         while ($pageId !== null) {
@@ -312,11 +306,7 @@ final class BTreeIndex
 
     private function prefixExists(string $prefix): bool
     {
-        foreach ($this->scanPrefix($prefix) as $ignored) {
-            return true;
-        }
-
-        return false;
+        return $this->scanPrefix($prefix)->valid();
     }
 
     // -----------------------------------------------------------------
@@ -334,8 +324,14 @@ final class BTreeIndex
 
     private function rootPageId(): int
     {
+        return $this->specialPageId($this->pages->read(0));
+    }
+
+    /** The page id a meta page or a leaf keeps in its `0x00`-tagged first slot. */
+    private function specialPageId(Page $page): int
+    {
         /** @var array{id: int} $unpacked */
-        $unpacked = unpack('Nid', substr((string) $this->pages->read(0)->read(0), 1));
+        $unpacked = unpack('Nid', substr((string) $page->read(0), 1));
 
         return $unpacked['id'];
     }
@@ -351,8 +347,8 @@ final class BTreeIndex
     {
         $pageId = $this->rootPageId();
 
-        while ($this->pages->read($pageId)->type === PageType::BTREE_INTERNAL) {
-            $pageId = $this->readInternalEntries($this->pages->read($pageId))[0]['child'];
+        while (($page = $this->pages->read($pageId))->type === PageType::BTREE_INTERNAL) {
+            $pageId = $this->readInternalEntries($page)[0]['child'];
         }
 
         return $pageId;
@@ -468,23 +464,39 @@ final class BTreeIndex
 
     private function nextLeafPageId(Page $page): ?int
     {
-        /** @var array{id: int} $unpacked */
-        $unpacked = unpack('Nid', substr((string) $page->read(0), 1));
+        $id = $this->specialPageId($page);
 
-        return $unpacked['id'] === self::NO_PAGE ? null : $unpacked['id'];
+        return $id === self::NO_PAGE ? null : $id;
     }
 
-    /** @param list<string> $entries */
-    private function writeLeaf(int $pageId, array $entries, ?int $nextLeafPageId): void
+    /**
+     * A fresh leaf page holding $entries, or null when they do not all fit
+     * on one — the same bytes whether the caller writes it or only asks
+     * whether it would fit.
+     *
+     * @param list<string> $entries
+     */
+    private function buildLeaf(int $pageId, array $entries, ?int $nextLeafPageId): ?Page
     {
         $page = Page::create($pageId, PageType::BTREE_LEAF);
         $page->insert(self::TAG_SPECIAL . pack('N', $nextLeafPageId ?? self::NO_PAGE));
 
         foreach ($entries as $entry) {
-            $page->insert(self::TAG_ENTRY . $entry);
+            if ($page->insert(self::TAG_ENTRY . $entry) === null) {
+                return null;
+            }
         }
 
-        $this->pages->write($page);
+        return $page;
+    }
+
+    /** @param list<string> $entries */
+    private function writeLeaf(int $pageId, array $entries, ?int $nextLeafPageId): void
+    {
+        $this->pages->write(
+            $this->buildLeaf($pageId, $entries, $nextLeafPageId)
+                ?? throw new StorageException(sprintf('Leaf page %d cannot hold %d entries.', $pageId, count($entries))),
+        );
     }
 
     /**
@@ -494,8 +506,10 @@ final class BTreeIndex
      */
     private function writeLeafWithSplit(int $pageId, array $entries, ?int $nextLeafPageId): ?array
     {
-        if ($this->fitsOnALeaf($entries)) {
-            $this->writeLeaf($pageId, $entries, $nextLeafPageId);
+        $page = $this->buildLeaf($pageId, $entries, $nextLeafPageId);
+
+        if ($page !== null) {
+            $this->pages->write($page);
 
             return null;
         }
@@ -509,21 +523,6 @@ final class BTreeIndex
         $this->writeLeaf($pageId, $left, $rightPage->id);
 
         return [$right[0], $rightPage->id];
-    }
-
-    /** @param list<string> $entries */
-    private function fitsOnALeaf(array $entries): bool
-    {
-        $page = Page::create(0, PageType::BTREE_LEAF);
-        $page->insert(self::TAG_SPECIAL . pack('N', 0));
-
-        foreach ($entries as $entry) {
-            if ($page->insert(self::TAG_ENTRY . $entry) === null) {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     /**
@@ -568,17 +567,33 @@ final class BTreeIndex
         return $entries;
     }
 
-    /** @param list<array{key: ?string, child: int}> $entries */
-    private function writeInternal(int $pageId, array $entries): void
+    /**
+     * `buildLeaf()`'s counterpart for an internal node.
+     *
+     * @param list<array{key: ?string, child: int}> $entries
+     */
+    private function buildInternal(int $pageId, array $entries): ?Page
     {
         $page = Page::create($pageId, PageType::BTREE_INTERNAL);
 
         foreach ($entries as $entry) {
             $tag = $entry['key'] === null ? self::TAG_SPECIAL : self::TAG_ENTRY . $entry['key'];
-            $page->insert($tag . pack('N', $entry['child']));
+
+            if ($page->insert($tag . pack('N', $entry['child'])) === null) {
+                return null;
+            }
         }
 
-        $this->pages->write($page);
+        return $page;
+    }
+
+    /** @param list<array{key: ?string, child: int}> $entries */
+    private function writeInternal(int $pageId, array $entries): void
+    {
+        $this->pages->write(
+            $this->buildInternal($pageId, $entries)
+                ?? throw new StorageException(sprintf('Internal page %d cannot hold %d entries.', $pageId, count($entries))),
+        );
     }
 
     /**
@@ -588,8 +603,10 @@ final class BTreeIndex
      */
     private function writeInternalWithSplit(int $pageId, array $entries): ?array
     {
-        if ($this->fitsOnAnInternalPage($entries)) {
-            $this->writeInternal($pageId, $entries);
+        $page = $this->buildInternal($pageId, $entries);
+
+        if ($page !== null) {
+            $this->pages->write($page);
 
             return null;
         }
@@ -612,21 +629,5 @@ final class BTreeIndex
             ?? throw new StorageException('Cannot promote an internal page\'s sentinel (null-key) entry.');
 
         return [$promotedKey, $rightPage->id];
-    }
-
-    /** @param list<array{key: ?string, child: int}> $entries */
-    private function fitsOnAnInternalPage(array $entries): bool
-    {
-        $page = Page::create(0, PageType::BTREE_INTERNAL);
-
-        foreach ($entries as $entry) {
-            $tag = $entry['key'] === null ? self::TAG_SPECIAL : self::TAG_ENTRY . $entry['key'];
-
-            if ($page->insert($tag . pack('N', $entry['child'])) === null) {
-                return false;
-            }
-        }
-
-        return true;
     }
 }

@@ -50,6 +50,7 @@ final class Wal
     ) {
         $this->handle = $this->files->openReadWrite($path);
         $this->nextLsn = $this->computeNextLsn();
+        $this->seekPastLastCompleteRecord();
     }
 
     public static function open(string $path, FileSystem $files = new FileSystem()): self
@@ -137,6 +138,34 @@ final class Wal
     public function close(): void
     {
         fclose($this->handle);
+    }
+
+    /**
+     * Puts the cursor where the next `append()` belongs. "c+" opens at
+     * offset 0, which would write over the first record. A final line with
+     * no newline is finished first: one that still parses is a record
+     * `readAll()` already counts, so it only gets its newline; a torn one
+     * is cut off, since a record appended straight after it would be glued
+     * onto the same line and turn a harmless torn tail into corruption in
+     * the middle of the log.
+     */
+    private function seekPastLastCompleteRecord(): void
+    {
+        $contents = $this->files->read($this->path);
+        $lastNewline = strrpos($contents, "\n");
+        /** @var int<0, max> $end just past the last complete line */
+        $end = $lastNewline === false ? 0 : $lastNewline + 1;
+        $tail = substr($contents, $end);
+
+        $ok = match (true) {
+            $tail === '' => fseek($this->handle, $end) === 0,
+            json_validate($tail) => fseek($this->handle, 0, SEEK_END) === 0 && fwrite($this->handle, "\n") === 1,
+            default => ftruncate($this->handle, $end) && fseek($this->handle, $end) === 0,
+        };
+
+        if (!$ok) {
+            throw new StorageException(sprintf('Cannot open the WAL at "%s" for appending.', $this->path));
+        }
     }
 
     private function computeNextLsn(): int

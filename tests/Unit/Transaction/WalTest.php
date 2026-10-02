@@ -134,6 +134,62 @@ final class WalTest extends TestCase
         $reopened->close();
     }
 
+    /**
+     * Regression: the log is opened with "c+", which leaves the cursor at
+     * offset 0, so an append on a reopened, non-empty log used to write
+     * over its first record instead of after its last one.
+     */
+    public function testAppendingAfterAReopenKeepsTheRecordsAlreadyThere(): void
+    {
+        $this->wal->append(WalRecord::begin(1, 100));
+        $this->wal->close();
+
+        $this->wal = Wal::open($this->path('wal.log'));
+        $this->wal->append(WalRecord::commit(2, 100));
+
+        self::assertSame(
+            [WalOperation::BEGIN, WalOperation::COMMIT],
+            array_map(static fn (WalRecord $r): WalOperation => $r->operation, $this->wal->readAll()),
+        );
+    }
+
+    /**
+     * Regression: a record appended after a torn final one must not be
+     * glued onto it — that would turn a harmless torn tail into a
+     * malformed line in the middle of the log, which reads as corruption.
+     */
+    public function testAppendingAfterATornFinalRecordStartsAFreshLine(): void
+    {
+        $this->wal->append(WalRecord::begin(1, 1));
+        $this->wal->close();
+
+        file_put_contents($this->path('wal.log'), '{"lsn":2,"tx":1,"op":"INS', FILE_APPEND);
+
+        $this->wal = Wal::open($this->path('wal.log'));
+        $this->wal->append(WalRecord::commit(3, 1));
+        $this->wal->append(WalRecord::begin(4, 2));
+
+        self::assertSame(
+            [WalOperation::BEGIN, WalOperation::COMMIT, WalOperation::BEGIN],
+            array_map(static fn (WalRecord $r): WalOperation => $r->operation, $this->wal->readAll()),
+        );
+    }
+
+    /** A complete final record that only lacks its newline is still a record, and stays one. */
+    public function testAppendingAfterAFinalRecordWithoutItsNewlineKeepsIt(): void
+    {
+        file_put_contents($this->path('nonl.log'), '{"lsn":1,"tx":1,"op":"BEGIN"}');
+
+        $wal = Wal::open($this->path('nonl.log'));
+        $wal->append(WalRecord::commit(2, 1));
+
+        self::assertSame(
+            [WalOperation::BEGIN, WalOperation::COMMIT],
+            array_map(static fn (WalRecord $r): WalOperation => $r->operation, $wal->readAll()),
+        );
+        $wal->close();
+    }
+
     public function testCheckpointDiscardsEveryRecord(): void
     {
         $this->wal->append(WalRecord::begin(1, 100));

@@ -112,13 +112,7 @@ final readonly class Table
 
     public function primaryKey(): ?PrimaryKey
     {
-        foreach ($this->constraints as $constraint) {
-            if ($constraint instanceof PrimaryKey) {
-                return $constraint;
-            }
-        }
-
-        return null;
+        return array_find($this->constraints, static fn (Constraint $constraint): bool => $constraint instanceof PrimaryKey);
     }
 
     public function hasIndex(string $name): bool
@@ -266,6 +260,16 @@ final readonly class Table
         }
 
         return $values;
+    }
+
+    /**
+     * $row as it would be stored: every column present, defaults applied,
+     * values cast and NOT NULL checked — what a write validates and indexes,
+     * rather than only the columns a statement happened to name.
+     */
+    public function resolveRow(Row $row): Row
+    {
+        return $this->rowFromValues($this->valuesFromRow($row));
     }
 
     /** @param list<mixed> $values */

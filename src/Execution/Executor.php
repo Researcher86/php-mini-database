@@ -537,7 +537,7 @@ final readonly class Executor
                 // applied, NOT NULL checked) before indexes ever see it, so a
                 // unique index enforces the value that actually gets stored,
                 // not just the ones the statement happened to name.
-                $resolved = $table->rowFromValues($table->valuesFromRow($row));
+                $resolved = $table->resolveRow($row);
 
                 $this->constraints->assertCheckConstraints($table, $resolved);
                 $this->constraints->assertForeignKeysOnWrite($table, $resolved);
@@ -594,7 +594,7 @@ final readonly class Executor
                     $values[$assignment->column] = $this->evaluator->evaluate($assignment->value, $context);
                 }
 
-                $newRow = $table->rowFromValues($table->valuesFromRow(new Row($values)));
+                $newRow = $table->resolveRow(new Row($values));
                 $this->constraints->assertCheckConstraints($table, $newRow);
                 $this->constraints->assertForeignKeysOnWrite($table, $newRow);
                 $this->indexMaintainer->assertUniqueForUpdate($table, $newRow, $id);
@@ -778,7 +778,7 @@ final readonly class Executor
             $values[$column] = $newKeyValues[$i] ?? null;
         }
 
-        $newRow = $childTable->rowFromValues($childTable->valuesFromRow(new Row($values)));
+        $newRow = $childTable->resolveRow(new Row($values));
         $this->indexMaintainer->assertUniqueForUpdate($childTable, $newRow, $id);
         $this->physicallyUpdateRow($childTable, $id, $row, $newRow);
     }

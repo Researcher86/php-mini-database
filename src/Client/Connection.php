@@ -88,17 +88,8 @@ final class Connection
 
     public static function connect(ClientConfig $config): self
     {
-        $socket = self::openSocket($config);
-        $connection = new self($socket, $config);
-
-        try {
-            $connection->handshake();
-        } catch (Throwable $e) {
-            $connection->closed = true;
-            @fclose($socket);
-
-            throw $e;
-        }
+        $connection = new self(self::openSocket($config), $config);
+        $connection->handshakeOrClose();
 
         return $connection;
     }
@@ -116,31 +107,20 @@ final class Connection
             @fclose($this->socket);
         }
 
-        $socket = self::openSocket($this->config);
-        $this->socket = $socket;
+        $this->socket = self::openSocket($this->config);
         $this->reader = new FrameReader();
         // Flipped before handshake(), not after: send()/receive() (which
         // handshake() itself calls) refuse to run at all once $closed is
         // true, via requireOpen() - the same guard connect()'s own,
         // freshly-constructed Connection satisfies by starting out false.
         $this->closed = false;
-
-        try {
-            $this->handshake();
-        } catch (Throwable $e) {
-            $this->closed = true;
-            @fclose($socket);
-
-            throw $e;
-        }
+        $this->handshakeOrClose();
     }
 
     /** @param list<mixed> $parameters */
     public function query(string $sql, array $parameters = []): ResultSet
     {
-        $this->send(new Query($sql, $parameters));
-
-        return $this->receiveResult();
+        return $this->request(new Query($sql, $parameters));
     }
 
     /**
@@ -161,25 +141,14 @@ final class Connection
     public function prepare(string $sql): Statement
     {
         $this->send(new Prepare($sql));
-        $reply = $this->receive();
 
-        if ($reply instanceof QueryError) {
-            throw ClientException::fromQueryError($reply);
-        }
-
-        if (!$reply instanceof PrepareOk) {
-            throw new ClientException(sprintf('Expected PREPARE_OK, got %s.', $reply::class));
-        }
-
-        return new Statement($this, $reply->statementId);
+        return new Statement($this, $this->receiveReply(PrepareOk::class, 'PREPARE_OK')->statementId);
     }
 
     /** @param list<mixed> $parameters */
     public function executePrepared(int $statementId, array $parameters = []): ResultSet
     {
-        $this->send(new Execute($statementId, $parameters));
-
-        return $this->receiveResult();
+        return $this->request(new Execute($statementId, $parameters));
     }
 
     public function closeStatement(int $statementId): void
@@ -189,49 +158,40 @@ final class Connection
 
     public function beginTransaction(?IsolationLevel $isolationLevel = null): void
     {
-        $this->send(new Begin($isolationLevel));
-        $this->receiveAck();
+        $this->request(new Begin($isolationLevel));
     }
 
     public function commit(): void
     {
-        $this->send(new Commit());
-        $this->receiveAck();
+        $this->request(new Commit());
     }
 
     public function rollback(): void
     {
-        $this->send(new Rollback());
-        $this->receiveAck();
+        $this->request(new Rollback());
     }
 
     public function savepoint(string $name): void
     {
-        $this->send(new Savepoint($name));
-        $this->receiveAck();
+        $this->request(new Savepoint($name));
     }
 
     /** PLAN.md §10.4's `SHOW STATUS` — one row of server-wide counters (see `Network\Session::handleShowStatus()`). */
     public function showStatus(): ResultSet
     {
-        $this->send(new ShowStatus());
-
-        return $this->receiveResult();
+        return $this->request(new ShowStatus());
     }
 
     /** PLAN.md §10.4's `SHOW CONNECTIONS` — one row per currently-open session. */
     public function showConnections(): ResultSet
     {
-        $this->send(new ShowConnections());
-
-        return $this->receiveResult();
+        return $this->request(new ShowConnections());
     }
 
     /** PLAN.md §10.4's `KILL <id>` — closes another session by its `Session::$id`. */
     public function kill(int $connectionId): void
     {
-        $this->send(new Kill($connectionId));
-        $this->receiveAck();
+        $this->request(new Kill($connectionId));
     }
 
     /** A round trip through `PING`/`PONG` — whether this connection is still good for use. */
@@ -314,7 +274,45 @@ final class Connection
         }
     }
 
-    private function receiveResult(): ResultSet
+    /** `handshake()`, closing the fresh socket again if it fails. */
+    private function handshakeOrClose(): void
+    {
+        try {
+            $this->handshake();
+        } catch (Throwable $e) {
+            $this->closed = true;
+            @fclose($this->socket);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * One request answered by a `QUERY_RESULT`. That includes the replies
+     * that carry nothing worth reading — `BEGIN`, `COMMIT`, `ROLLBACK`,
+     * `SAVEPOINT`, `KILL`: on the wire each *is* a result (`ResultEncoder`
+     * answers every one of them with an empty `QUERY_RESULT`), so it is
+     * validated exactly like one, and its caller simply discards it.
+     */
+    private function request(Message $message): ResultSet
+    {
+        $this->send($message);
+        $reply = $this->receiveReply(QueryResultMessage::class, 'QUERY_RESULT');
+
+        return new ResultSet($reply->columns, $reply->rows);
+    }
+
+    /**
+     * The next reply, which must be a $expected — a `QUERY_ERROR` instead
+     * becomes the `ClientException` it describes.
+     *
+     * @template T of Message
+     *
+     * @param class-string<T> $expected
+     *
+     * @return T
+     */
+    private function receiveReply(string $expected, string $wireName): Message
     {
         $reply = $this->receive();
 
@@ -322,22 +320,11 @@ final class Connection
             throw ClientException::fromQueryError($reply);
         }
 
-        if (!$reply instanceof QueryResultMessage) {
-            throw new ClientException(sprintf('Expected QUERY_RESULT, got %s.', $reply::class));
+        if (!$reply instanceof $expected) {
+            throw new ClientException(sprintf('Expected %s, got %s.', $wireName, $reply::class));
         }
 
-        return new ResultSet($reply->columns, $reply->rows);
-    }
-
-    /**
-     * A reply that carries nothing worth reading — `BEGIN`, `COMMIT`,
-     * `ROLLBACK`, `SAVEPOINT`, `KILL`. Validated exactly like a result,
-     * since on the wire it *is* one (`ResultEncoder` answers every one of
-     * them with an empty `QUERY_RESULT`), and then discarded.
-     */
-    private function receiveAck(): void
-    {
-        $this->receiveResult();
+        return $reply;
     }
 
     private function send(Message $message): void

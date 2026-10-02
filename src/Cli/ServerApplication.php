@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpMiniDatabase\Cli;
 
+use Closure;
 use PhpMiniDatabase\Backup\Dumper;
 use PhpMiniDatabase\Backup\Restorer;
 use PhpMiniDatabase\Cli\Command\ServeCommand;
@@ -64,20 +65,13 @@ final class ServerApplication
     /** @param array<string, list<string>> $options */
     private function stop(array $options): int
     {
-        $pidFile = $this->requirePidFile($options);
+        $running = $this->runningServer($options);
 
-        if ($pidFile === null) {
+        if ($running === null) {
             return 1;
         }
 
-        $pid = $pidFile->read();
-
-        if ($pid === null || !$pidFile->isProcessRunning()) {
-            fwrite($this->errorOutput, "Not running.\n");
-
-            return 1;
-        }
-
+        [$pidFile, $pid] = $running;
         posix_kill($pid, SIGTERM);
 
         for ($i = 0; $i < 100 && $pidFile->isProcessRunning(); $i++) {
@@ -119,10 +113,33 @@ final class ServerApplication
     /** @param array<string, list<string>> $options */
     private function reload(array $options): int
     {
+        $running = $this->runningServer($options);
+
+        if ($running === null) {
+            return 1;
+        }
+
+        [, $pid] = $running;
+        posix_kill($pid, SIGHUP);
+        fwrite($this->output, sprintf("Reload signal sent (pid %d).\n", $pid));
+
+        return 0;
+    }
+
+    /**
+     * The pid file and pid of a server that is actually running — or null,
+     * with the reason already reported, for `stop`/`reload` to give up on.
+     *
+     * @param array<string, list<string>> $options
+     *
+     * @return array{0: PidFile, 1: int}|null
+     */
+    private function runningServer(array $options): ?array
+    {
         $pidFile = $this->requirePidFile($options);
 
         if ($pidFile === null) {
-            return 1;
+            return null;
         }
 
         $pid = $pidFile->read();
@@ -130,13 +147,10 @@ final class ServerApplication
         if ($pid === null || !$pidFile->isProcessRunning()) {
             fwrite($this->errorOutput, "Not running.\n");
 
-            return 1;
+            return null;
         }
 
-        posix_kill($pid, SIGHUP);
-        fwrite($this->output, sprintf("Reload signal sent (pid %d).\n", $pid));
-
-        return 0;
+        return [$pidFile, $pid];
     }
 
     /** @param array<string, list<string>> $options */
@@ -174,29 +188,12 @@ final class ServerApplication
         }
 
         try {
-            $database = Database::open($dataDirectory);
-        } catch (Throwable $e) {
-            fwrite($this->errorOutput, $e->getMessage() . "\n");
+            return $this->withDatabase($dataDirectory, static function (Database $database) use ($output, $options): int {
+                (new Dumper($database, new Executor($database)))->dump($output, $options['table'] ?? null);
 
-            if ($outputPath !== null) {
-                fclose($output);
-            }
-
-            return 1;
-        }
-
-        try {
-            $executor = new Executor($database);
-            (new Dumper($database, $executor))->dump($output, $options['table'] ?? null);
-
-            return 0;
-        } catch (Throwable $e) {
-            fwrite($this->errorOutput, $e->getMessage() . "\n");
-
-            return 1;
+                return 0;
+            });
         } finally {
-            $database->close();
-
             if ($outputPath !== null) {
                 fclose($output);
             }
@@ -223,6 +220,22 @@ final class ServerApplication
             return 1;
         }
 
+        return $this->withDatabase($dataDirectory, function (Database $database) use ($sql): int {
+            $count = (new Restorer(new Executor($database)))->restore($sql);
+            fwrite($this->output, sprintf("Loaded %d statement%s.\n", $count, $count === 1 ? '' : 's'));
+
+            return 0;
+        });
+    }
+
+    /**
+     * Opens the database, runs $work against it and closes it again; any
+     * failure — opening included — is reported and becomes exit code 1.
+     *
+     * @param Closure(Database): int $work
+     */
+    private function withDatabase(string $dataDirectory, Closure $work): int
+    {
         try {
             $database = Database::open($dataDirectory);
         } catch (Throwable $e) {
@@ -232,10 +245,7 @@ final class ServerApplication
         }
 
         try {
-            $count = (new Restorer(new Executor($database)))->restore($sql);
-            fwrite($this->output, sprintf("Loaded %d statement%s.\n", $count, $count === 1 ? '' : 's'));
-
-            return 0;
+            return $work($database);
         } catch (Throwable $e) {
             fwrite($this->errorOutput, $e->getMessage() . "\n");
 

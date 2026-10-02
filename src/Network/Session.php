@@ -64,8 +64,8 @@ use Throwable;
  *
  * `Begin`/`Commit`/`Rollback`/`Savepoint` (Milestone 15) are thin wrappers
  * around the same `Sql\Ast\*Statement` classes `Query`'s plain SQL text
- * already produced since Phase 8 — `handleBegin()` etc. build one by hand
- * and hand it to `Executor::execute()` directly, the same method every
+ * already produced since Phase 8 — `handleFrame()` builds one by hand and
+ * hands it to `Executor::execute()` directly, the same method every
  * other path here already calls, rather than duplicating `BEGIN`'s
  * behavior a second time.
  *
@@ -241,10 +241,10 @@ final class Session
             $message instanceof Prepare => $this->handlePrepare($message),
             $message instanceof Execute => $this->handleExecute($message),
             $message instanceof CloseStatement => $this->handleCloseStatement($message),
-            $message instanceof Begin => $this->handleBegin($message),
-            $message instanceof Commit => $this->handleCommit(),
-            $message instanceof Rollback => $this->handleRollback(),
-            $message instanceof Savepoint => $this->handleSavepoint($message),
+            $message instanceof Begin => $this->executeAndRespond(new BeginStatement($message->isolationLevel)),
+            $message instanceof Commit => $this->executeAndRespond(new CommitStatement()),
+            $message instanceof Rollback => $this->executeAndRespond(new RollbackStatement()),
+            $message instanceof Savepoint => $this->executeAndRespond(new SavepointStatement($message->name)),
             $message instanceof ShowStatus => $this->handleShowStatus(),
             $message instanceof ShowConnections => $this->handleShowConnections(),
             $message instanceof Kill => $this->handleKill($message),
@@ -299,10 +299,10 @@ final class Session
     private function handlePrepare(Prepare $prepare): void
     {
         if (count($this->preparedStatements) >= $this->maxPreparedStatements) {
-            $this->send($this->resultEncoder->encodeError(new ExecutionException(sprintf(
+            $this->sendError(sprintf(
                 'Cannot prepare another statement: this connection already has %d open (the limit).',
                 $this->maxPreparedStatements,
-            ))));
+            ));
 
             return;
         }
@@ -325,40 +325,17 @@ final class Session
         $statement = $this->preparedStatements[$execute->statementId] ?? null;
 
         if ($statement === null) {
-            $this->send($this->resultEncoder->encodeError(new ExecutionException(sprintf(
-                'No prepared statement %d on this connection.',
-                $execute->statementId,
-            ))));
+            $this->sendError(sprintf('No prepared statement %d on this connection.', $execute->statementId));
 
             return;
         }
 
-        $this->runAndRespond(fn () => $this->executor->execute($statement, $execute->parameters));
+        $this->executeAndRespond($statement, $execute->parameters);
     }
 
     private function handleCloseStatement(CloseStatement $close): void
     {
         unset($this->preparedStatements[$close->statementId]);
-    }
-
-    private function handleBegin(Begin $begin): void
-    {
-        $this->runAndRespond(fn () => $this->executor->execute(new BeginStatement($begin->isolationLevel)));
-    }
-
-    private function handleCommit(): void
-    {
-        $this->runAndRespond(fn () => $this->executor->execute(new CommitStatement()));
-    }
-
-    private function handleRollback(): void
-    {
-        $this->runAndRespond(fn () => $this->executor->execute(new RollbackStatement()));
-    }
-
-    private function handleSavepoint(Savepoint $savepoint): void
-    {
-        $this->runAndRespond(fn () => $this->executor->execute(new SavepointStatement($savepoint->name)));
     }
 
     private function handleShowStatus(): void
@@ -392,16 +369,19 @@ final class Session
         $target = $this->sessions->find($kill->connectionId);
 
         if ($target === null) {
-            $this->send($this->resultEncoder->encodeError(new ExecutionException(sprintf(
-                'No connection %d.',
-                $kill->connectionId,
-            ))));
+            $this->sendError(sprintf('No connection %d.', $kill->connectionId));
 
             return;
         }
 
         $target->close();
         $this->send(new QueryResultMessage([], []));
+    }
+
+    /** @param list<mixed> $parameters */
+    private function executeAndRespond(Statement $statement, array $parameters = []): void
+    {
+        $this->runAndRespond(fn () => $this->executor->execute($statement, $parameters));
     }
 
     /** @param callable(): (QueryResult|int|null) $run */
@@ -416,6 +396,12 @@ final class Session
             $this->metrics->recordError();
             $this->send($this->resultEncoder->encodeError($e));
         }
+    }
+
+    /** A `QueryError` for a request this session refuses before running anything. */
+    private function sendError(string $message): void
+    {
+        $this->send($this->resultEncoder->encodeError(new ExecutionException($message)));
     }
 
     private function rejectUnsupported(Message $message): void

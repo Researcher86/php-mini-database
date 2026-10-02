@@ -164,38 +164,54 @@ final class Database
             }
 
             $column = $definition->columns()[0];
-            $path = $this->indexPath($table->name, $definition->name);
-            $temporary = $path . '.rebuilding';
-            $this->files->delete($temporary);
 
-            $index = BTreeIndex::open($temporary, $table->column($column)->type, $definition->unique);
-
-            try {
+            $this->buildIndexFile($table, $definition, static function (BTreeIndex $index) use ($heap, $table, $column): void {
                 foreach ($heap->scan() as $id => $record) {
                     $index->insert($table->deserializeRow($record)->get($column), $id);
                 }
-
-                $index->sync();
-            } catch (Throwable $e) {
-                $index->close();
-                $this->files->delete($temporary);
-
-                throw $e;
-            }
-
-            $index->close();
-
-            // The cached handle still points at the file about to be
-            // replaced; on Unix it would stay readable and stale forever.
-            $cacheKey = $this->indexCacheKey($table->name, $definition->name);
-
-            if (isset($this->indexes[$cacheKey])) {
-                $this->indexes[$cacheKey]->close();
-                unset($this->indexes[$cacheKey]);
-            }
-
-            $this->files->rename($temporary, $path);
+            });
         }
+    }
+
+    /**
+     * Fills a single-column index under a temporary name, pushes it to the
+     * device, and only then renames it over `$definition`'s `.idx` file —
+     * so a failure partway through (a duplicate value, a full disk) leaves
+     * no half-filled tree behind that queries would answer from.
+     *
+     * @param Closure(BTreeIndex): void $fill
+     */
+    private function buildIndexFile(Table $table, IndexDefinition $definition, Closure $fill): void
+    {
+        $path = $this->indexPath($table->name, $definition->name);
+        $temporary = $path . '.building';
+        $this->files->delete($temporary);
+
+        $index = BTreeIndex::open($temporary, $table->column($definition->columns()[0])->type, $definition->unique);
+
+        try {
+            $fill($index);
+            $index->sync();
+        } catch (Throwable $e) {
+            $index->close();
+            $this->files->delete($temporary);
+
+            throw $e;
+        }
+
+        $index->close();
+
+        // The cached handle still points at the file about to be
+        // replaced; on Unix it would stay readable and stale forever.
+        $this->forgetIndex($table->name, $definition->name);
+        $this->files->rename($temporary, $path);
+    }
+
+    private function forgetIndex(string $table, string $indexName): void
+    {
+        $cacheKey = $this->indexCacheKey($table, $indexName);
+        ($this->indexes[$cacheKey] ?? null)?->close();
+        unset($this->indexes[$cacheKey]);
     }
 
     /**
@@ -283,25 +299,7 @@ final class Database
             return;
         }
 
-        $path = $this->indexPath($table, $definition->name);
-        $temporary = $path . '.building';
-        $this->files->delete($temporary);
-
-        $columnType = $published->column($definition->columns()[0])->type;
-        $index = BTreeIndex::open($temporary, $columnType, $definition->unique);
-
-        try {
-            $fill($index);
-            $index->sync();
-        } catch (Throwable $e) {
-            $index->close();
-            $this->files->delete($temporary);
-
-            throw $e;
-        }
-
-        $index->close();
-        $this->files->rename($temporary, $path);
+        $this->buildIndexFile($published, $definition, $fill);
         $this->catalog->updateTable($published);
     }
 
@@ -329,13 +327,7 @@ final class Database
     {
         $this->catalog->updateTable($this->table($table)->withoutIndex($indexName));
 
-        $cacheKey = $this->indexCacheKey($table, $indexName);
-
-        if (isset($this->indexes[$cacheKey])) {
-            $this->indexes[$cacheKey]->close();
-            unset($this->indexes[$cacheKey]);
-        }
-
+        $this->forgetIndex($table, $indexName);
         $this->files->delete($this->indexPath($table, $indexName));
     }
 

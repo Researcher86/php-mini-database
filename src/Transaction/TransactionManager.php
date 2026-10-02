@@ -324,12 +324,7 @@ final class TransactionManager
         ));
     }
 
-    /**
-     * @param array<int, WalRecord> $records not typed `list<WalRecord>`:
-     *        `recover()`'s own `array_filter()` before this call preserves
-     *        keys, and only a plain `foreach` is needed here, so nothing
-     *        is actually lost by not requiring the keys stay contiguous
-     */
+    /** @param array<int, WalRecord> $records */
     private function applyUndo(array $records): void
     {
         $undo = $this->undo ?? throw new TransactionException('No undo handler has been configured.');

@@ -34,3 +34,6 @@ composer.phar
 
 # PHP CS Fixer
 /.php-cs-fixer.cache
+
+# Local scratch notes
+/.draft/

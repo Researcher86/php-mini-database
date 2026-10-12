@@ -124,4 +124,36 @@ final class EventLoopTest extends TestCase
 
         self::assertSame(3, $ticks);
     }
+
+    public function testAnOnTickCallbackRunsAfterEveryTickEvenWhenNothingIsReady(): void
+    {
+        $ticks = 0;
+        $this->loop->onReadable($this->pair[0], static function (): void {
+        });
+        $this->loop->onTick(function () use (&$ticks): void {
+            $ticks++;
+        });
+
+        $this->loop->tick(0.01);
+        $this->loop->tick(0.01);
+
+        self::assertSame(2, $ticks);
+    }
+
+    public function testAnOnTickCallbackRunsAfterTheReadableCallbacksOfTheSameTick(): void
+    {
+        $order = [];
+        $this->loop->onReadable($this->pair[0], function ($stream) use (&$order): void {
+            fread($stream, 1024);
+            $order[] = 'readable';
+        });
+        $this->loop->onTick(function () use (&$order): void {
+            $order[] = 'tick';
+        });
+
+        fwrite($this->pair[1], 'hello');
+        $this->loop->tick(1.0);
+
+        self::assertSame(['readable', 'tick'], $order);
+    }
 }

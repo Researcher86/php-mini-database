@@ -141,6 +141,8 @@ final class Session
 
     private readonly DateTimeImmutable $connectedAt;
 
+    private DateTimeImmutable $lastActivityAt;
+
     /** @param resource $socket */
     public function __construct(
         private mixed $socket,
@@ -151,12 +153,13 @@ final class Session
         private readonly Logger $logger = new Logger(),
         private readonly ?Authenticator $authenticator = null,
         private readonly int $maxPreparedStatements = 100,
-        Clock $clock = new SystemClock(),
+        private readonly Clock $clock = new SystemClock(),
     ) {
         $this->reader = new FrameReader();
         $this->codec = new Codec();
         $this->resultEncoder = new ResultEncoder();
         $this->connectedAt = $clock->now();
+        $this->lastActivityAt = $this->connectedAt;
     }
 
     /** @return resource */
@@ -185,6 +188,17 @@ final class Session
         return $this->connectedAt;
     }
 
+    /**
+     * When this client last sent the server any bytes at all — what
+     * `Server`'s idle-timeout sweep measures against. Any bytes, not only a
+     * complete frame: a client partway through sending a large `QUERY` is
+     * not idle, it is busy.
+     */
+    public function lastActivityAt(): DateTimeImmutable
+    {
+        return $this->lastActivityAt;
+    }
+
     public function handleReadable(): void
     {
         $chunk = @fread($this->socket, 65536);
@@ -195,6 +209,7 @@ final class Session
             return;
         }
 
+        $this->lastActivityAt = $this->clock->now();
         $this->reader->feed($chunk);
 
         try {

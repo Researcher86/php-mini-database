@@ -20,6 +20,13 @@ use Closure;
  * directly, one call at a time, against a real socket — no different from
  * how a real client would see the server behave, just paced by the test
  * instead of by `stream_select()`'s own timeout.
+ *
+ * `onTick()` callbacks run at the end of every `tick()`, whether or not
+ * any stream became readable — the hook for work driven by elapsed time
+ * rather than by I/O (`Server`'s idle-connection sweep). `tick()`'s own
+ * timeout bounds how late such work can run: with nothing readable,
+ * `stream_select()` still returns once the timeout elapses, so a
+ * time-driven check is never more than one tick behind.
  */
 final class EventLoop
 {
@@ -27,6 +34,9 @@ final class EventLoop
      * @var array<int, array{resource: resource, callback: Closure(resource): void}>
      */
     private array $readers = [];
+
+    /** @var list<Closure(): void> */
+    private array $tickCallbacks = [];
 
     private bool $stopped = false;
 
@@ -41,13 +51,29 @@ final class EventLoop
         unset($this->readers[(int) $stream]);
     }
 
+    /** @param Closure(): void $callback */
+    public function onTick(Closure $callback): void
+    {
+        $this->tickCallbacks[] = $callback;
+    }
+
     /**
      * One pass: wait up to `$timeoutSeconds` for any watched stream to
-     * become readable, then run every ready one's callback. A no-op,
-     * immediately, if nothing is watched at all — `stream_select()` cannot
-     * be called with every set empty.
+     * become readable, then run every ready one's callback, then every
+     * `onTick()` callback. Waits for nothing, immediately, if nothing is
+     * watched at all — `stream_select()` cannot be called with every set
+     * empty.
      */
     public function tick(float $timeoutSeconds = 1.0): void
+    {
+        $this->dispatchReadable($timeoutSeconds);
+
+        foreach ($this->tickCallbacks as $callback) {
+            $callback();
+        }
+    }
+
+    private function dispatchReadable(float $timeoutSeconds): void
     {
         if ($this->readers === []) {
             return;

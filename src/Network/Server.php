@@ -10,6 +10,8 @@ use PhpMiniDatabase\Infrastructure\Logger;
 use PhpMiniDatabase\Network\Auth\Authenticator;
 use PhpMiniDatabase\Network\Auth\UserStore;
 use PhpMiniDatabase\Schema\Database;
+use PhpMiniDatabase\Support\Clock;
+use PhpMiniDatabase\Support\SystemClock;
 use Throwable;
 
 /**
@@ -37,6 +39,14 @@ use Throwable;
  * shares, the same way they already share `$sessions` — what `SHOW_STATUS`
  * reports. `run()` also installs a `SIGHUP` handler calling `reload()`; see
  * that method's own docblock for exactly what it does and does not do.
+ *
+ * `ServerConfig::$idleTimeoutSeconds` is enforced by `closeIdleSessions()`,
+ * an `EventLoop::onTick()` callback: after every tick, any session whose
+ * client has sent nothing for longer than the timeout is closed the same
+ * way any other disconnect is (rolling back its open transaction, if it
+ * owns one). `$clock` is the one source of "now" for that check and for
+ * every `Session`'s timestamps, so a test can move time forward instead of
+ * waiting. `$queryTimeoutSeconds` is *not* enforced — see `ServerConfig`.
  */
 final class Server
 {
@@ -59,6 +69,7 @@ final class Server
     public function __construct(
         private readonly ServerConfig $config,
         private readonly Logger $logger = new Logger(),
+        private readonly Clock $clock = new SystemClock(),
     ) {
         $this->database = Database::open($config->dataDirectory);
         $this->sessions = new SessionManager($config->maxConnections);
@@ -75,6 +86,9 @@ final class Server
         $this->acceptor = $acceptor = new Acceptor($this->config);
         $this->loop->onReadable($acceptor->socket(), function (): void {
             $this->acceptConnection();
+        });
+        $this->loop->onTick(function (): void {
+            $this->closeIdleSessions();
         });
 
         $this->logger->info(sprintf('Listening on %s.', $acceptor->localAddress()));
@@ -176,6 +190,7 @@ final class Server
             $this->logger,
             $this->authenticator,
             $this->config->maxPreparedStatements,
+            $this->clock,
         );
         $this->sessions->add($session);
         $this->metrics->recordConnection();
@@ -198,6 +213,43 @@ final class Server
             $session->handleReadable();
         } catch (Throwable $e) {
             $this->logger->error(sprintf('Session %d failed unexpectedly: %s', $session->id, $e->getMessage()));
+            $session->close();
+        }
+
+        $this->reapClosedSessions();
+    }
+
+    /**
+     * Closes every session whose client has been silent for longer than
+     * `ServerConfig::$idleTimeoutSeconds`; `0` (or less) disables the
+     * check. Nothing is sent first — there is no unsolicited server-to-
+     * client message in the protocol, and a `QUERY_ERROR` arriving out of
+     * nowhere would be read as the reply to whatever the client sends
+     * next. The client sees the connection closed, exactly as it would
+     * after a `KILL`. See DECISIONS.md.
+     */
+    private function closeIdleSessions(): void
+    {
+        $timeout = $this->config->idleTimeoutSeconds;
+
+        if ($timeout <= 0) {
+            return;
+        }
+
+        $now = (float) $this->clock->now()->format('U.u');
+
+        foreach ($this->sessions->all() as $session) {
+            if ($session->isClosed()) {
+                continue;
+            }
+
+            $idleSeconds = $now - (float) $session->lastActivityAt()->format('U.u');
+
+            if ($idleSeconds <= $timeout) {
+                continue;
+            }
+
+            $this->logger->info(sprintf('Session %d closed: idle for more than %d seconds.', $session->id, $timeout));
             $session->close();
         }
 

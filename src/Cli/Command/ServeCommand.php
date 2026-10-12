@@ -107,6 +107,7 @@ final class ServeCommand
             host: $this->resolve($options, 'host', 'MINIDB_HOST', '127.0.0.1'),
             port: (int) $this->resolve($options, 'port', 'MINIDB_PORT', '5433'),
             maxConnections: (int) $this->resolve($options, 'max-connections', 'MINIDB_MAX_CONNECTIONS', '100'),
+            idleTimeoutSeconds: (int) $this->resolve($options, 'idle-timeout', 'MINIDB_IDLE_TIMEOUT', '300'),
             authEnabled: $this->resolveBool($this->resolve($options, 'auth-enabled', 'MINIDB_AUTH_ENABLED', 'false')),
         );
     }

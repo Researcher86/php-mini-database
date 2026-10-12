@@ -107,13 +107,17 @@ can run any statement against the one database a server process serves.
 - **Connection limit.** `ServerConfig::$maxConnections` (default 100) is
   enforced by `Network\SessionManager`; `$backlog` (128) is the listen
   backlog `Network\Acceptor` passes straight to `stream_socket_server()`.
-- **Idle/query timeouts.** `ServerConfig::$idleTimeoutSeconds`/
-  `$queryTimeoutSeconds` are recorded fields with PLAN.md §7.1's own
-  defaults, but nothing enforces them — `Network\EventLoop`'s tick-driven
-  reactor has no per-socket elapsed-time tracking yet. A stalled or
-  malicious connection that never sends a complete frame, or a query that
-  runs forever, is not cut off by anything in this project today. See
-  `docs/protocol.md`'s "What is deliberately not here yet".
+- **Idle timeout.** `ServerConfig::$idleTimeoutSeconds` (PLAN.md §7.1's
+  default, 300; `--idle-timeout`/`MINIDB_IDLE_TIMEOUT`) is enforced by
+  `Network\Server`: a connection that has sent no bytes at all for that
+  long is closed, rolling back any transaction it holds. "Any bytes" is
+  deliberate but limited — a client trickling one byte at a time, never
+  completing a frame, keeps resetting the clock, so this cuts off
+  abandoned and stalled connections, not a determined slowloris.
+- **Query timeout.** `ServerConfig::$queryTimeoutSeconds` is recorded but
+  not enforced: a query that runs forever is not cut off by anything in
+  this project. See DECISIONS.md for why a single-threaded server cannot
+  safely do this.
 
 ## SQL injection
 
@@ -157,7 +161,7 @@ project can protect a caller who does that.
 
 Named here together, rather than left implicit: no TLS, no
 authorization/permissions beyond "authenticated at all," no per-address
-rate limiting (only per-username), no enforced idle/query timeouts, and
+rate limiting (only per-username), no enforced query timeout, and
 no deadlock detection (`LockManager` refuses a conflicting lock outright
 instead — see
 [DECISIONS.md](DECISIONS.md#lockmanager-never-waits)). Each is either

@@ -2,9 +2,10 @@
 
 This documents the binary protocol implemented under `src/Network/Protocol/`
 — PLAN.md §5's design, as it actually exists in code, including the places
-this implementation narrows or extends that design. There is no TCP server
-yet (Milestone 12): everything here operates on plain byte strings, and is
-tested that way.
+this implementation narrows or extends that design. The codec layer itself
+works on plain byte strings and is tested that way; `Network\Server`
+(Milestone 12) carries the same frames over TCP, and `Client\Connection`
+(Milestone 16) is the client end of that socket.
 
 ## Frame
 
@@ -30,12 +31,13 @@ the OOM protection PLAN.md §14 names as a risk).
 
 ## Reassembling frames from a byte stream
 
-`Network\Protocol\FrameReader` is what a real socket read loop (Milestone 12)
-will drive: `feed(string $bytes)` appends whatever a `fread()` call returned,
-and `next(): ?Frame` returns the next complete frame once one has fully
-arrived, or `null` if not yet. A frame split across many `feed()` calls, or
-several frames delivered in one, both work — `next()` is simply called again
-until it returns `null`.
+`Network\Protocol\FrameReader` is what a socket read loop drives —
+`Network\Session` on the server side, `Client\Connection` on the client:
+`feed(string $bytes)` appends whatever a `fread()` call returned, and
+`next(): ?Frame` returns the next complete frame once one has fully arrived,
+or `null` if not yet. A frame split across many `feed()` calls, or several
+frames delivered in one, both work — `next()` is simply called again until
+it returns `null`.
 
 ```php
 $reader = new FrameReader();
@@ -336,9 +338,12 @@ DECISIONS.md.
 - **`COPY_IN`/`COPY_OUT`'s row format** — still nothing needs it designed;
   Milestone 19 (Backup, Dump, Restore) turned out not to be that reason
   after all (see DECISIONS.md).
-- **Idle and query timeouts.** `ServerConfig::$idleTimeoutSeconds`/
-  `$queryTimeoutSeconds` are recorded but not enforced — `EventLoop` has no
-  per-socket elapsed-time tracking yet. A session's automatic rollback on
-  disconnect (above) covers whatever a future timeout eventually closes,
-  the same as any other disconnect; detecting the timeout itself remains
-  unbuilt.
+- **Query timeouts.** `ServerConfig::$queryTimeoutSeconds` is recorded but
+  not enforced: a statement runs to completion inside one synchronous call
+  on the server's only thread, so there is nothing left running to cut it
+  off — see DECISIONS.md. Idle timeouts, by contrast, *are* enforced:
+  `ServerConfig::$idleTimeoutSeconds` (`--idle-timeout`, default 300)
+  closes a connection whose client has sent nothing for that long, with no
+  message first — the client simply sees the socket close, as after a
+  `KILL`. A session closed this way rolls back its open transaction the
+  same as any other disconnect (above).

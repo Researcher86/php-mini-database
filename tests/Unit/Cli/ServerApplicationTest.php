@@ -343,6 +343,31 @@ final class ServerApplicationTest extends TestCase
         self::assertSame(0, $exitCode);
     }
 
+    public function testIdleTimeoutFlagClosesASilentConnection(): void
+    {
+        $this->launch(['--idle-timeout', '1']);
+
+        $client = @stream_socket_client('tcp://127.0.0.1:' . self::PORT, $errorCode, $errorMessage, 1.0);
+        self::assertNotFalse($client, (string) $errorMessage);
+        stream_set_blocking($client, false);
+
+        // One second of silence, plus up to one more for the server's
+        // one-second event-loop tick to notice it, plus slack.
+        $closed = false;
+
+        for ($i = 0; $i < 400 && !$closed; $i++) {
+            $chunk = @fread($client, 1024);
+            $closed = ($chunk === '' || $chunk === false) && feof($client);
+
+            if (!$closed) {
+                usleep(10_000);
+            }
+        }
+
+        fclose($client);
+        self::assertTrue($closed, 'The server never closed a connection idle past --idle-timeout.');
+    }
+
     /** @param resource $process */
     private function pidOfLaunch(mixed $process): int
     {

@@ -1,11 +1,13 @@
 # Implementation Plan for `php-mini-database` (Relational DBMS with TCP Server)
 
-> **Status: complete.** All 20 milestones (§22) are done. This document is
-> kept as written — every `§N.M` reference throughout `src/`, `tests/`, and
-> `docs/*.md` cites a section number here, so nothing is renumbered or
-> removed now that the plan is finished. It is no longer the best
-> description of the system, though: for what was actually built and why,
-> see [docs/architecture.md](docs/architecture.md) (layers),
+> **Status: complete.** All 20 milestones (§22) are done. A few
+> requirement boxes in §2.1 and §16 stay unchecked on purpose: each says
+> inline whether it is partial, deferred or unverified, and why. This
+> document is otherwise kept as written — every `§N.M` reference throughout
+> `src/`, `tests/`, and `docs/*.md` cites a section number here, so nothing
+> is renumbered or removed now that the plan is finished. It is no longer
+> the best description of the system, though: for what was actually built
+> and why, see [docs/architecture.md](docs/architecture.md) (layers),
 > [docs/sql.md](docs/sql.md)/[docs/storage.md](docs/storage.md)/[docs/transactions.md](docs/transactions.md)/[docs/protocol.md](docs/protocol.md)/[docs/security.md](docs/security.md)/[docs/cli.md](docs/cli.md)
 > (each layer's real, code-verified reference — some details below turned
 > out differently once built), [docs/PHASES.md](docs/PHASES.md) (the order
@@ -52,18 +54,26 @@
 ### 2.1. Functional Requirements
 
 #### Relational Model
-- [ ] Tables, columns, types, constraints.
-- [ ] `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `NOT NULL`, `CHECK`, `DEFAULT`.
-- [ ] B-Tree indexes (regular and unique).
+- [x] Tables, columns, types, constraints.
+- [x] `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `NOT NULL`, `CHECK`, `DEFAULT`.
+- [x] B-Tree indexes (regular and unique).
 
 #### SQL
-- [ ] DDL: `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE`, `CREATE INDEX`, `DROP INDEX`.
-- [ ] DML: `INSERT`, `UPDATE`, `DELETE`, `SELECT`.
-- [ ] `JOIN` (INNER, LEFT, RIGHT).
-- [ ] `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`, `DISTINCT`.
-- [ ] Subqueries in `WHERE` and `FROM`.
-- [ ] Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`.
-- [ ] String/numeric/date functions.
+- [x] DDL: `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE`, `CREATE INDEX`, `DROP INDEX`.
+- [x] DML: `INSERT`, `UPDATE`, `DELETE`, `SELECT`.
+- [x] `JOIN` (INNER, LEFT, RIGHT).
+- [x] `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`, `DISTINCT`.
+- [ ] Subqueries in `WHERE` and `FROM`. *Deferred, not built:* scalar and
+  `IN` subqueries and derived tables parse, but `Executor` refuses them with
+  an `ExecutionException` rather than running them — see
+  [docs/sql.md](docs/sql.md#select) and
+  [DECISIONS.md](docs/DECISIONS.md#what-basic-execution-deliberately-does-not-do).
+- [x] Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`.
+- [ ] String/numeric/date functions. *Partial, the rest deferred:* only
+  `UPPER`, `LOWER`, `LENGTH`, `CONCAT`, `ABS`, `COALESCE` and the niladic
+  `CURRENT_DATE`/`CURRENT_TIMESTAMP` exist; anything else (`SUBSTRING`,
+  `ROUND`, date arithmetic, …) is an "unknown function" error at execution —
+  see [docs/sql.md](docs/sql.md#expressions).
 
 #### Transactions
 - [x] `BEGIN`, `COMMIT`, `ROLLBACK`.
@@ -78,7 +88,10 @@
 - [x] Authentication by login/password (challenge-response).
 - [x] Prepared statements support.
 - [x] Session-level transaction support.
-- [ ] Idle/query timeouts.
+- [ ] Idle/query timeouts. *Partial:* the idle timeout is enforced
+  (`--idle-timeout`/`MINIDB_IDLE_TIMEOUT`); the query timeout is recorded in
+  `ServerConfig` but deliberately not enforced — see
+  [DECISIONS.md](docs/DECISIONS.md#the-idle-timeout-is-a-per-tick-sweep-the-query-timeout-is-not-enforced).
 - [x] Max connections limit.
 - [x] Graceful shutdown.
 - [x] Query and error logging.
@@ -101,7 +114,10 @@
 #### Other
 - [x] `EXPLAIN` query plan.
 - [x] Metrics: connections, queries/sec, errors.
-- [ ] Configuration via file + ENV + flags.
+- [ ] Configuration via file + ENV + flags. *Partial:* CLI flags and
+  `MINIDB_*` environment variables, in that precedence, are built
+  ([docs/cli.md](docs/cli.md)); the `config/server.php` file layer (§7.1) is
+  not — see [DECISIONS.md](docs/DECISIONS.md#sighup-reload-is-scoped-to-max_connections-only).
 
 ### 2.2. Non-Functional Requirements
 
@@ -1284,16 +1300,24 @@ EXPLAIN SELECT * FROM users WHERE age > 18;
 
 ## 16. Definition of Done
 
-- [ ] All functional requirements are met.
-- [ ] Test coverage ≥ 85%.
-- [ ] PHPStan level 8 with no errors.
-- [ ] PHP-CS-Fixer with no violations.
-- [ ] Documentation: SQL, protocol, architecture, security, CLI.
-- [ ] Usage examples (embedded + client-server).
-- [ ] CI passes.
-- [ ] Benchmarks are published.
-- [ ] Server sustains 100 simultaneous clients.
-- [ ] No critical bugs.
+- [ ] All functional requirements are met. *Not quite:* §2.1's four
+  unchecked boxes above are deferred or partial, each with its reason.
+- [x] Test coverage ≥ 85%.
+- [x] PHPStan level 8 with no errors.
+- [x] PHP-CS-Fixer with no violations.
+- [x] Documentation: SQL, protocol, architecture, security, CLI.
+- [x] Usage examples (embedded + client-server).
+- [x] CI passes.
+- [ ] Benchmarks are published. *Partial:* the benchmark suite exists and
+  runs (`make bench`, `tests/Benchmark/`, `benchmarks/`), but no measured
+  results are published anywhere in the repository.
+- [ ] Server sustains 100 simultaneous clients. *Unverified:* the largest
+  concurrency test (`tests/Integration/ConcurrencyTest.php`) runs 6 forked
+  clients; nothing measures 100.
+- [ ] No critical bugs. *Not something a checkbox can assert:* critical
+  bugs were still being found and fixed after the milestones closed (see
+  [docs/PHASES.md](docs/PHASES.md)'s post-plan sections and
+  [DECISIONS.md](docs/DECISIONS.md)), so "none" is not a verified claim.
 
 ---
 

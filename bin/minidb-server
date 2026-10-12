@@ -6,12 +6,12 @@ declare(strict_types=1);
 /**
  * The server CLI — PLAN.md §9.1: `start`, `stop`, `status`, `reload`.
  * `start` reads `--host`/`--port`/`--data`/`--max-connections`/
- * `--auth-enabled`/`--log-level`/`--log-file` (CLI flags, then the
- * matching `MINIDB_*` environment variable, then a default — PLAN.md
- * §7.3's precedence, minus the `config/server.php` file layer no
- * milestone's checklist ever claims building; see DECISIONS.md), plus
- * `--pid-file` and `--daemon` for the process lifecycle `stop`/`status`/
- * `reload` need a pid to act on.
+ * `--idle-timeout`/`--auth-enabled`/`--log-level`/`--log-file` (CLI
+ * flags, then the matching `MINIDB_*` environment variable, then a
+ * default — PLAN.md §7.3's precedence, minus the `config/server.php` file
+ * layer no milestone's checklist ever claims building; see DECISIONS.md),
+ * plus `--pid-file` and `--daemon` for the process lifecycle `stop`/
+ * `status`/`reload` need a pid to act on.
  */
 
 require __DIR__ . '/bootstrap.php';

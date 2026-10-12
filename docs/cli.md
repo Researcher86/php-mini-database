@@ -44,6 +44,7 @@ runs `Network\Server::run()`'s event loop until stopped.
 | `--port`              | `MINIDB_PORT`                | `5433`                |
 | `--data`              | `MINIDB_DATA`                | `<cwd>/data/mydb`     |
 | `--max-connections`   | `MINIDB_MAX_CONNECTIONS`    | `100`                 |
+| `--idle-timeout`      | `MINIDB_IDLE_TIMEOUT`       | `300` (seconds; `0` disables) |
 | `--auth-enabled`      | `MINIDB_AUTH_ENABLED`       | `false`               |
 | `--log-level`         | `MINIDB_LOG_LEVEL`          | `info`                |
 | `--log-file`          | `MINIDB_LOG_FILE`           | `php://stderr`        |

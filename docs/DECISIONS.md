@@ -84,6 +84,7 @@ project is built from is [PLAN.md](../PLAN.md).
 | Undoing an already-undone change is success, not an error | current, [why](#undoing-an-already-undone-change-is-success-not-an-error) |
 | One process per data directory, enforced by a lock | current, [why](#one-process-per-data-directory-enforced-by-a-lock) |
 | A prefix scan may not stop at the first leaf without a match | current, [why](#a-prefix-scan-may-not-stop-at-the-first-leaf-without-a-match) |
+| The idle timeout is enforced by a per-tick sweep; the query timeout is not enforced at all | current, [why](#the-idle-timeout-is-a-per-tick-sweep-the-query-timeout-is-not-enforced) |
 
 ## One byte format for disk and wire
 
@@ -1720,7 +1721,7 @@ replies" needs nothing more than a listening socket that accepts a
 connection and stays silent — no buffer-filling trick required. This
 mirrors the project's existing practice of documenting a genuinely hard
 to test timing behavior rather than writing a slow or flaky test to chase
-full coverage of it (see `ServerConfig::$idleTimeoutSeconds`'s own gap).
+full coverage of it.
 
 ## ConnectionPool tests a connection on acquire, not on release
 
@@ -2707,3 +2708,67 @@ Sampling is what hid it. `testManyInsertsForceSplitsAndEverythingStaysFindable`
 inserted 2000 keys and checked six of them, none of which was a
 separator. It now checks every key it inserts, and a second test inserts
 every key a second time to prove the unique index refuses all of them.
+
+## The idle timeout is a per-tick sweep; the query timeout is not enforced
+
+`ServerConfig` has carried PLAN.md §7.1's `idle_timeout` (300) and
+`query_timeout` (60) since Phase 12, recorded and documented as unenforced.
+The idle half is now enforced; the query half is deliberately left
+unenforced, and these are the reasons for both.
+
+**Idle.** `Session` stamps `lastActivityAt` every time its socket delivers
+bytes, and `Server` registers `closeIdleSessions()` with the new
+`EventLoop::onTick()`, which runs after every `tick()` whether or not
+anything was readable. Since `stream_select()` returns once its timeout
+elapses even with nothing ready, `run()`'s one-second tick bounds how late
+an idle connection is noticed: at most one tick past its deadline. The
+alternatives were a per-session timer structure (a heap of deadlines, the
+way a real reactor does it) or `stream_select()`'s timeout computed from
+the nearest deadline. Both buy precision this setting does not need — it
+is measured in minutes — and a linear scan of at most `max_connections`
+sessions once a second is negligible next to the `stream_select()` call
+already being made.
+
+"Activity" is any bytes, not a complete frame. A client halfway through
+sending a large `QUERY` is busy, not idle, and closing it would be wrong.
+The cost is that a client trickling one byte at a time never times out;
+this setting cuts off abandoned and stalled connections, and is not a
+slowloris defence (`docs/security.md` says so).
+
+A timed-out connection is closed without a message first. The protocol has
+no unsolicited server-to-client message, and an unexpected `QUERY_ERROR`
+would be read as the reply to whatever the client sends next. A plain close
+is what a `KILL` already does, and both `Client\Connection` and
+`ConnectionPool`'s reconnect-on-acquire already handle it. The close goes
+through `Session::close()`, so an idle session holding the single writer
+has its transaction rolled back — the case that matters most, since an
+abandoned `BEGIN` would otherwise lock every other session out of writing
+until someone `KILL`ed it.
+
+Time comes from `Support\Clock`, injected into `Server` and passed to every
+`Session`, so the tests move a `FakeClock` forward instead of waiting. That
+is wall-clock time, not monotonic: a system clock stepped forward by more
+than the timeout would close every connection at once. That is acceptable
+for a setting measured in minutes, and the `Clock` seam is the place to
+swap in an `hrtime()`-based clock if it ever is not. `0` (or less) disables
+the check, matching `--idle-timeout 0`.
+
+**Query.** Every statement runs to completion inside one synchronous
+`Executor` call on the server's only thread. Nothing else runs while it
+does — no tick, no sweep — so there is nobody left to notice a deadline
+until the statement has already finished. Two ways around that were
+considered and rejected:
+
+- `pcntl_alarm()` with a handler that throws. PHP delivers async signals
+  between opcodes, so the exception could surface anywhere: between a heap
+  page write and its index entry, or between a storage write and its WAL
+  record. The rollback path assumes it is undoing whole operations, and
+  this would hand it half of one.
+- Cooperative checks — a deadline threaded through `Executor` and checked
+  by every operator between rows. Safe, but it touches every operator in
+  `Execution\` for one setting, and a check between rows still cannot cut
+  off one slow page read or a long sort.
+
+So `$queryTimeoutSeconds` stays a recorded, unenforced field, named as such
+in `ServerConfig`'s docblock, `docs/protocol.md` and `docs/security.md`
+rather than silently ignored.

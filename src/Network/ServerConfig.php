@@ -10,14 +10,16 @@ use PhpMiniDatabase\Infrastructure\Path;
  * A server's settings — PLAN.md §7.1's `config/server.php` shape, as a
  * typed object instead of a bare array.
  *
- * `$idleTimeoutSeconds`/`$queryTimeoutSeconds` are recorded but not yet
- * enforced: closing a connection that has gone idle, or a query that has
- * run too long, needs `Session`/`EventLoop` to track elapsed time against
- * every open socket, which this phase's tick-driven loop does not do yet —
- * a named gap, the same shape as `Transaction\LockManager` existing before
- * anything could really contend for a lock (Phase 8). `$maxConnections`
- * and `$backlog` *are* enforced, by `SessionManager` and `Acceptor`
- * respectively.
+ * `$idleTimeoutSeconds` is enforced by `Server`: a connection whose
+ * client has sent nothing for longer than this is closed (`0` or less
+ * disables the check). `$queryTimeoutSeconds` is recorded but *not*
+ * enforced, and is not expected to be in this design: a statement runs to
+ * completion inside one synchronous `Executor` call on the server's only
+ * thread, so nothing is left running to notice a deadline until the
+ * statement has already finished — and interrupting it from a signal
+ * handler would abandon a storage write halfway. See DECISIONS.md.
+ * `$maxConnections` and `$backlog` are enforced too, by `SessionManager`
+ * and `Acceptor` respectively.
  *
  * `$authEnabled` defaults to `false` — Milestone 12's "dev mode" stays the
  * default so every test and example written against it keeps working

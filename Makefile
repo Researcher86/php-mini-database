@@ -1,4 +1,4 @@
-.PHONY: up down shell build install test bench analyse format format-check
+.PHONY: up down shell htop build install test bench analyse format format-check
 
 # CI has no terminal to attach to (GitHub Actions sets CI=true), so exec runs
 # without one there; locally it keeps the TTY for colours and interactive use.

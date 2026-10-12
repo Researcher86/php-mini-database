@@ -158,7 +158,7 @@ and a crash partway through can leave a table whose records and schema
 disagree, which only a restore from backup puts right.
 
 `CREATE [UNIQUE] INDEX name ON table (column)` — one column per index; no
-multi-column or expression indexes. `DROP INDEX name`.
+multi-column or expression indexes. `DROP INDEX name ON table`.
 
 ## Column types
 

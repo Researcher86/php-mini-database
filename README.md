@@ -1,6 +1,6 @@
 # PHP Mini Database
 
-**[🧪 PHP Systems Lab](https://github.com/Researcher86/php-systems-lab)** · Level 7 of 8 · ← [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server) · [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) →
+**[🧪 PHP Systems Lab](https://github.com/Researcher86/php-systems-lab)** · Level 7 of 9 · ← [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server) · [`php-mini-search`](https://github.com/Researcher86/php-mini-search) →
 
 > A small, readable relational database written in PHP — built to explore how databases actually work from the inside.
 
@@ -684,12 +684,13 @@ infrastructure in order to understand them. The recommended order:
 | 5 | 💾 [`php-mini-cache`](https://github.com/Researcher86/php-mini-cache) | event-driven in-memory server: RESP, pipelining, TTL, Pub/Sub |
 | 6 | 🌐 [`php-mini-http-server`](https://github.com/Researcher86/php-mini-http-server) | event-driven HTTP server: parsing, routing, middleware, keep-alive |
 | **7** | 🗄️ **`php-mini-database`** (this project) | **relational engine: pages, B-trees, SQL, transactions, WAL, recovery** |
-| 8 | 🏗️ [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) | integration of the components into one backend platform |
+| 8 | 🔎 [`php-mini-search`](https://github.com/Researcher86/php-mini-search) | full-text search: analysis, stemming, inverted index, BM25, reindexing |
+| 9 | 🏗️ [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) | integration of the components into one backend platform |
 
 These are teaching projects, not libraries: a mechanism travels between them
-by being read in one and reimplemented in the next. Levels 1–7 do not depend
+by being read in one and reimplemented in the next. Levels 1–8 do not depend
 on each other as packages. Only [`php-systems-platform`](https://github.com/Researcher86/php-systems-platform) requires the
-five components (worker pool, job queue, cache, HTTP server, database)
+six components (worker pool, job queue, cache, HTTP server, database, search)
 through Composer and runs them together as one system.
 
 ### How this project relates
@@ -704,6 +705,11 @@ loops: the background for database locking and concurrent clients.
 **[`php-mini-cache`](https://github.com/Researcher86/php-mini-cache)** — the opposite side of the persistence problem.
 The cache asks *how can data be kept fast?*; this project asks *how can data
 be kept safe and durable?*
+
+**[`php-mini-search`](https://github.com/Researcher86/php-mini-search)** — the next level, and the other half of the
+same idea. Its index is derived from rows that live here: this project keeps
+data safe, that one makes it findable. It reuses the WAL's discipline (append,
+fsync, replay, a torn tail cut on startup) in a deliberately smaller form.
 
 **[`php-systems-platform`](https://github.com/Researcher86/php-systems-platform)** — uses this database as its storage tier
 (`src/Storage/Database.php`, through the client's `ConnectionPool`).

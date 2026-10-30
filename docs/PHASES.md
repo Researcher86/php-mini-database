@@ -380,6 +380,8 @@ for an explicit, still-open transaction — a bare autocommit `SELECT` never
 takes one. All of this is scoped to single-table statements: a `JOIN`'s
 rows lose their per-table `RecordId` once `Qualify`/`NestedLoopJoin`/
 `HashJoin` merge them, so there is nothing left to attach a row lock to.
+(Lifted later: `compileScan()` now locks each side before the merge — see
+DECISIONS.md.)
 
 Undoing a change is *logical replay* through the same
 `Schema\Table`/`Storage\HeapFile`/`Execution\IndexMaintainer` machinery a

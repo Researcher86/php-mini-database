@@ -15,11 +15,13 @@ use PhpMiniDatabase\Storage\RecordId;
  * shape PLAN.md §6.5 shows — `{"lsn":1,"tx":1,"op":"BEGIN"}` and so on —
  * one record per line, each carrying its own sequence number.
  *
- * Every write goes through `append()` before the corresponding change
- * reaches the heap file, and every `append()` is flushed and `fsync()`'d
- * before it returns — the log line for a change exists on disk before the
- * change itself is made, which is the one property "write-ahead" promises
- * and the one thing recovery depends on.
+ * Every `append()` is flushed and `fsync()`'d before it returns. Textbook
+ * write-ahead logging also appends before the change reaches the heap
+ * file; this engine does not: `Executor` mutates the heap and its indexes
+ * first and logs the change after, because a new row's `RecordId` is only
+ * known once it is inserted. A crash in between leaves a change with no
+ * log record — a named gap (see DECISIONS.md, "A row is mutated before its
+ * WAL record is appended").
  *
  * A row value can be a `DateTimeImmutable` or an arbitrary byte string
  * (`BLOB`), neither of which `json_encode()` handles on its own — a date

@@ -946,15 +946,19 @@ earlier phase already built them, at the cost of a reader and a writer
 sometimes blocking each other under `REPEATABLE_READ`/`SERIALIZABLE` where
 MVCC would not have to.
 
-Read-locking is deliberately narrow in two more ways. First, it only
-triggers for an explicit, still-open transaction — an autocommit `SELECT`
-has no *later* statement in the same transaction for a repeatable read to
-protect, so it takes no lock at all regardless of isolation level.
-Second, it only covers single-table statements: a `JOIN`'s rows lose their
-per-table `RecordId` once `Qualify`/`NestedLoopJoin`/`HashJoin` merge them
-into one qualified row, so there is no address left to attach a lock to.
-Both are named gaps, not silent ones — extending either needs work this
-phase did not need to do to prove the isolation levels' basic mechanics.
+Read-locking is deliberately narrow in one more way: it only triggers for
+an explicit, still-open transaction — an autocommit `SELECT` has no
+*later* statement in the same transaction for a repeatable read to
+protect, so it takes no lock at all regardless of isolation level. That
+is a named gap, not a silent one.
+
+A `JOIN` is not a gap, although this section once said it was. When
+read-locking was added, `lockForRead()` was called only from the
+single-table path, and a `JOIN`'s rows had already lost their per-table
+`RecordId` by the time anything could lock them. Since `compileScan()`
+took over, it wraps each side in `LockRows` *before* `Qualify` merges the
+rows, so both sides are locked by their own `RecordId`
+(`ExecutorTransactionTest::testRepeatableReadLocksTheRowsOfBothSidesOfAJoin`).
 
 ## A row is mutated before its WAL record is appended
 

@@ -16,9 +16,11 @@ namespace PhpMiniDatabase\Transaction;
 enum IsolationLevel: string
 {
     /**
-     * The default. A statement sees whatever is currently committed; locks
-     * taken to read a row are not held past the statement, only writes are
-     * held until commit (so a lost update is still prevented).
+     * The default. A statement sees whatever is currently committed; reads
+     * take no lock at all, and only writes are held until commit. That stops
+     * two transactions writing one row at once, not a lost read-modify-write
+     * update; inside a transaction that is prevented by there being only one
+     * open transaction at a time (see `Executor::withTransaction()`).
      */
     case READ_COMMITTED = 'READ COMMITTED';
 

@@ -140,10 +140,10 @@ use Throwable;
  * level atomicity. `undo()` is the other half of that wiring: the
  * `Closure` `TransactionManager` calls to physically reverse one logged
  * change, resolving what would otherwise be a circular dependency between
- * the two classes (see `TransactionManager`'s own docblock). Row/table
- * locking is scoped to single-table statements only — a `JOIN`'s rows
- * lose their per-table `RecordId` once merged, so there is nothing to
- * attach a lock to (see DECISIONS.md).
+ * the two classes (see `TransactionManager`'s own docblock). Read locks
+ * cover a `JOIN` too: `compileScan()` wraps each side in `LockRows` before
+ * `Qualify` merges the rows, so every row is locked by its own per-table
+ * `RecordId` while it still has one.
  */
 final readonly class Executor
 {

@@ -53,13 +53,12 @@ transaction snapshot — so "isolation" is entirely a function of which locks
 | `REPEATABLE_READ` | Every row a statement reads is shared-locked (`LockMode::SHARED`) for the rest of the transaction, so a second read of the same row is guaranteed unchanged. |
 | `SERIALIZABLE` | `REPEATABLE_READ`'s row locks, plus: a full table scan (not a single indexed lookup) also takes a shared *table* lock, blocking another transaction from inserting new rows into it — a coarse guard against phantom reads. |
 
-Two gaps are deliberate and named, not silent
+One gap is deliberate and named, not silent
 ([DECISIONS.md](DECISIONS.md)): read-locking only ever triggers inside an
 *explicit, still-open* transaction (an autocommit `SELECT` has no later
 statement of its own to protect, so it takes no lock at all regardless of
-level), and it only covers single-table statements — a `JOIN`'s rows lose
-their per-table `RecordId` once merged, so there is nothing to attach a
-lock to.
+level). A `JOIN` is covered: each side is locked by its own per-table
+`RecordId` before `Qualify` merges the rows.
 
 ### Because there is no MVCC, reads are dirty by default
 

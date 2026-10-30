@@ -245,6 +245,32 @@ final class ExecutorTransactionTest extends TestCase
     }
 
     /**
+     * A `JOIN` is covered too: `compileScan()` wraps each side in `LockRows`
+     * before `Qualify` merges the rows, so every row is locked by its own
+     * per-table `RecordId` while it still has one.
+     */
+    public function testRepeatableReadLocksTheRowsOfBothSidesOfAJoin(): void
+    {
+        $this->executor->run('CREATE TABLE orders (id INT PRIMARY KEY, user_id INT NOT NULL)');
+        $this->executor->run("INSERT INTO users (id, name) VALUES (1, 'Ann')");
+        $this->executor->run('INSERT INTO orders (id, user_id) VALUES (10, 1)');
+        $userId = $this->onlyRecordIdInUsers();
+        $orderId = $this->database->heapFile('orders')->scan()->key();
+
+        $this->executor->run('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        $this->query('SELECT u.name FROM users u JOIN orders o ON o.user_id = u.id');
+
+        foreach (['users' => $userId, 'orders' => $orderId] as $table => $id) {
+            try {
+                $this->database->locks()->acquireRowLock($table, $id, 999, LockMode::EXCLUSIVE);
+                self::fail("Expected the row of \"{$table}\" to be locked by the join.");
+            } catch (TransactionException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+    }
+
+    /**
      * A `ROLLBACK` whose durability barrier fails leaves the transaction
      * open on purpose, for the caller to retry — so the retry has to
      * work. It would not if the first attempt's undo were applied a

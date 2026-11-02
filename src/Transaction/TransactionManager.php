@@ -38,7 +38,7 @@ use PhpMiniDatabase\Storage\RecordId;
  * depending on the other's concrete type. `setSyncHandler()` is the same
  * pattern for a second capability only `Schema\Database` has: pushing
  * every page a transaction touched all the way to the device before its
- * WAL record is checkpointed away. See DECISIONS.md.
+ * `COMMIT`/`ROLLBACK` record is written. See DECISIONS.md.
  */
 final class TransactionManager
 {
@@ -68,12 +68,12 @@ final class TransactionManager
 
     /**
      * @param Closure(): void $handler called once, at the end of every
-     *        `commit()`/`rollback()`, right before the WAL is checkpointed
-     *        — see `Schema\Database::syncStorage()`, the real handler
-     *        `Execution\Executor` wires in. Optional: a `TransactionManager`
-     *        built without a real `Database` behind it (most of this
-     *        class's own tests) has nothing to sync and no handler to
-     *        configure.
+     *        `commit()`/`rollback()`, before its `COMMIT`/`ROLLBACK` record
+     *        is appended — see `Schema\Database::syncStorage()`, the real
+     *        handler `Execution\Executor` wires in. Optional: a
+     *        `TransactionManager` built without a real `Database` behind it
+     *        (most of this class's own tests) has nothing to sync and no
+     *        handler to configure.
      */
     public function setSyncHandler(Closure $handler): void
     {
